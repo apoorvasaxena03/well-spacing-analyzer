@@ -31,4 +31,4 @@ def reorder_columns(df: pd.DataFrame, columns_to_move: List[str], reference_colu
         columns_order.insert(ref_idx + 1, col)
     
     # Reorder the dataframe columns
-    return df[columns_order]
+    return df[columns_order].copy()

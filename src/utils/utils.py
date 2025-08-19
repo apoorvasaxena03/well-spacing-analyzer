@@ -1,5 +1,6 @@
 import pandas as pd
 from typing import List # Importing specific types from typing module
+import re  # Regular expression module for cleaning column names
 
 #%% Defining Functions
 
@@ -32,3 +33,21 @@ def reorder_columns(df: pd.DataFrame, columns_to_move: List[str], reference_colu
     
     # Reorder the dataframe columns
     return df[columns_order].copy()
+
+
+def clean_column_names(df):
+    """ 
+    Cleans the column names of a DataFrame by removing special characters,
+    replacing spaces with underscores, and converting to lowercase.
+    Args:
+        df (pd.DataFrame): The DataFrame whose column names need to be cleaned.
+    Returns:
+        pd.DataFrame: DataFrame with cleaned column names.
+    """
+    df.columns = [
+        re.sub(r'[^a-zA-Z0-9 ]', '', col)  # Remove special characters except space
+        .replace(' ', '_')                 # Replace space with underscore
+        .lower()                           # Convert to lowercase
+        for col in df.columns
+    ]
+    return df

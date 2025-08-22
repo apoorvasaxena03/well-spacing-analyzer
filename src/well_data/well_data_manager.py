@@ -710,46 +710,44 @@ class GeoSurveyProcessor:
     
     def filter_after_heel_point(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Keep rows at/after the first heel indicator per UWI.
+            Keep rows at/after the first high‑inclination point per UWI.
 
-        The method finds the first occurrence, per `uwi`, where the string in
-        `point_type_name` contains either `"80"` or `"heel"` (case-insensitive),
-        then retains that row and all subsequent rows for that `uwi`.
+            For each `uwi`, finds the first row where `inclination >= 80` (degrees),
+            then retains that row and all subsequent rows for that `uwi`.
 
-        Parameters
-        ----------
-        df : pandas.DataFrame
-            Directional survey data with at least:
-            - 'uwi' : well identifier
-            - 'md'  : measured depth (used for sorting)
-            - 'point_type_name' : text label containing '80' or 'heel' to indicate heel
+            Parameters
+            ----------
+            df : pandas.DataFrame
+                Directional survey data with at least:
+                - 'uwi'         : well identifier
+                - 'md'          : measured depth (used for sorting)
+                - 'inclination' : inclination in degrees
 
-        Returns
-        -------
-        pandas.DataFrame
-            Filtered DataFrame, index reset, sorted by ['uwi', 'md'] ascending.
+            Returns
+            -------
+            pandas.DataFrame
+                Filtered DataFrame, index reset, sorted by ['uwi', 'md'] ascending.
 
-        Notes
-        -----
-        - If a given `uwi` has no heel match, all its rows will be dropped
-          (because there is no "start index" to include).
+            Notes
+            -----
+            - If a given `uwi` has no row with `inclination >= 80`, all its rows are dropped.
 
-        Examples
-        --------
-        >>> df = pd.DataFrame({
-        ...     "uwi": ["A","A","A","B","B"],
-        ...     "md": [1000,1100,1200,900,1000],
-        ...     "point_type_name": ["kickoff","Heel","lateral","survey","80 deg"],
-        ... })
-        >>> out = GeoSurveyProcessor().filter_after_heel_point(df)
-        >>> out.groupby("uwi").size().to_dict()  # rows retained per UWI
-        {'A': 2, 'B': 2}
-        """
+            Examples
+            --------
+            >>> df = pd.DataFrame({
+            ...     "uwi": ["A","A","A","B","B"],
+            ...     "md": [1000,1100,1200,900,1000],
+            ...     "inclination": [10, 82, 90, 79, 85],
+            ... })
+            >>> out = GeoSurveyProcessor().filter_after_heel_point(df)
+            >>> out.groupby("uwi").size().to_dict()  # rows retained per UWI
+            {'A': 2, 'B': 1}
+            """
         # Ensure the data is sorted by MD in ascending order
         df = df.sort_values(by=["uwi", "md"], ascending=True).copy()
 
-        # Convert 'point_type_name' to lowercase and check for '80' or 'heel'
-        mask = df['point_type_name'].str.lower().str.contains(r'80|heel', regex=True, na=False)
+        # Numeric heel trigger (first row with inclination >= 80 deg)
+        mask = (df["inclination"] >= 80)
 
         # Identify the first occurrence for each uwi
         idx_start = df[mask].groupby('uwi', sort=False).head(1).index

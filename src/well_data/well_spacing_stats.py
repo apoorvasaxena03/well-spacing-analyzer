@@ -72,10 +72,89 @@ class WellSpacingCalculator:
         window_ft: float = 300.0,
     ) -> Optional[pd.DataFrame]:
         """
-        Compute spacing metrics for all well pairs, now with angle-aware routing:
-        - parallel-like pairs: crossline |Δy(x)| over true i-frame overlap (your existing method)
-        - oblique pairs: nearest-projection mean/median (walk along i, project to nearest point on k)
-        - perpendicular pairs: closest approach (min distance) and optional ±window_ft mean
+        Compute spacing metrics for all well pairs with angle-aware routing.
+
+        Workflow:
+        - Builds pair cache (local frames, coarse XY resamples, lateral lengths).
+        - Computes midpoints and drill directions.
+        - Prefilters well pairs by geographic proximity.
+        - Splits pairs into batches, processes each in parallel, and either saves
+        per-batch parquet files or concatenates into a single DataFrame.
+
+        Routing logic:
+        - Parallel-like (Δθ ≤ theta_parallel_deg):
+            Crossline spacing over true i-frame overlap (mean/median |Δy|).
+        - Oblique (theta_parallel_deg < Δθ < theta_perp_deg):
+            Nearest-projection mean/median distances along i.
+        - Perpendicular (Δθ ≥ theta_perp_deg):
+            Closest-approach minimum distance, with optional ±window mean.
+
+        Parameters
+        ----------
+        frac : float, default=0.5
+            Fractional location along lateral used for midpoint calculation.
+            (0.0 = heel, 1.0 = toe). Determines vertical distance reference.
+        batch_size : int, default=500_000
+            Number of well pairs per batch during processing.
+        max_distance_miles : float or None, default=20.0
+            Prefilter cutoff: drop pairs farther than this (approximate lat/lon miles).
+            None = disable filtering.
+        save_batches_dir : str or None, default=None
+            Directory path to save each processed batch as parquet.
+            If provided, returns None instead of a DataFrame.
+        use_interpolation : bool, default=False
+            If True, use MD-based interpolation for midpoints.
+            If False, use geometric heel-toe midpoint.
+
+        step_ft : int, default=100
+            Station spacing (ft) for sampling along overlap if n_samples is None.
+        n_samples : int or None, default=None
+            Fixed sample count override for overlap sampling.
+        max_crossline_ft : float or None, default=2000.0
+            Guardrail for parallel-like spacing. Reject if low-percentile crossline > this.
+            None disables.
+        crossline_percentile : float, default=5.0
+            Percentile of crossline spacing used for guardrail (e.g., P5).
+        ds_crossline_step_ft : int, default=200
+            Coarse resampling step (ft) in pair cache for prechecks.
+        emit_rejected : bool, default=True
+            If True, emit rows for rejected pairs with reason codes.
+        use_pca_axis : bool, default=True
+            Build i-frame using PCA (better for curved wells).
+            False = simple heel→toe axis.
+
+        theta_parallel_deg : float, default=25.0
+            Angle threshold (deg). ≤ this → parallel-like branch.
+        theta_perp_deg : float, default=65.0
+            Angle threshold (deg). ≥ this → perpendicular branch.
+            Between thresholds → oblique branch.
+        reject_misaligned : bool, default=False
+            If True, reject any non-parallel pairs outright.
+
+        use_windowed_mean : bool, default=False
+            For perpendicular pairs, compute mean distance within ±window_ft
+            around closest approach.
+        window_ft : float, default=300.0
+            Half-width (ft) for windowed mean in perpendicular branch.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            If `save_batches_dir` is None:
+                DataFrame with one row per well pair containing:
+                    - well_i, well_k
+                    - horizontal_dist, horizontal_dist_median
+                    - vertical_dist, 3D_dist
+                    - drill_direction_i, drill_direction_k
+                    - n_samples, dy_p5
+                    - angle_deg, pair_alignment
+                    - overlap_len_common_ft, LL_i, LL_k, overlap_pct_i, overlap_pct_k
+                    - min_distance_ft, mean_windowed_ft
+                    - direction_axis, direction_to_k_from_i_axis
+                    - direction_axis_confidence, direction_axis_distribution
+                    - reject_reason, axis_forced
+            If `save_batches_dir` is set:
+                Writes batches to parquet in that folder and returns None.
         """
         # Build the pair cache once (local frames + coarse arrays for precheck)
         self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)

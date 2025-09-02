@@ -18,11 +18,6 @@ import os # Importing os module for operating system dependent functionality
 # Importing necessary modules for plotting and data manipulation
 import matplotlib.pyplot as plt # Importing matplotlib.pyplot for plotting
 
-# Setting matplotlib to inline mode for Jupyter notebooks
-#%matplotlib inline
-
-#%config InlineBackend.figure_format = 'svg' # Configuring inline backend to use SVG format for figures
-
 # %%
 class WellDataLoader:
     """

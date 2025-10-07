@@ -20,7 +20,7 @@ def get_requirments(file_path:str)->List[str]:
     return requirements
 
 setup(
-    name = 'parent_child_spacing',
+    name = 'well-spacing-analyzer',
     version = '0.0.1',
     author = 'apoorva',
     author_email = 'apoorvasaxena207@gmail.com',

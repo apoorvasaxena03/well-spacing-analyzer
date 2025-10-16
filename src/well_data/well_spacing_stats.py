@@ -14,13 +14,92 @@ from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, I
 
 from tqdm import tqdm # Importing tqdm for progress bar functionality
 
+import datetime
+
 from joblib import Parallel, delayed # Importing Parallel and delayed for parallel processing
 
 from matplotlib import pyplot as plt # Importing pyplot from matplotlib for plotting
 
 from pyproj import Geod # Importing Geod class from pyproj for geodetic calculations
 
+from dataclasses import dataclass # Importing dataclass decorator for creating data classes
+from enum import Enum, auto # Importing Enum and auto for creating enumerations
+
 #%%
+class AlignmentType(Enum):
+    PARALLEL_LIKE = auto()
+    OBLIQUE = auto()
+    PERPENDICULAR = auto()
+    MISALIGNED = auto()
+
+@dataclass
+class SpacingResult:
+    # core identifiers
+    well_i: Any
+    well_k: Any
+
+    # spacing metrics (same names you already emit)
+    horizontal_dist: float
+    horizontal_dist_median: float
+    vertical_dist: float
+    dist3d: float
+
+    # overlap + LL (parallel-like; NaN otherwise)
+    overlap_len_common_ft: float
+    LL_i: float
+    LL_k: float
+    overlap_pct_i: float
+    overlap_pct_k: float
+
+    # diagnostics
+    n_samples: int
+    dy_p5: float
+    angle_deg: float
+    pair_alignment: str
+    min_distance_ft: float       # for oblique/perp (NaN for parallel-like)
+    mean_windowed_ft: float      # for oblique/perp (NaN for parallel-like)
+    reject_reason: str
+
+    # direction fields
+    direction_axis: Optional[str]
+    direction_to_k_from_i_axis: Optional[str]
+    direction_axis_confidence: float
+    direction_axis_distribution: str
+
+    # drill directions
+    drill_direction_i: str
+    drill_direction_k: str
+
+    # marker
+    axis_forced: bool = True
+
+@dataclass
+class PairArtifacts:
+    # Always useful
+    Xi_utm: Optional[np.ndarray] = None
+    Xk_utm: Optional[np.ndarray] = None
+    Xi_if: Optional[np.ndarray] = None
+    Xk_if: Optional[np.ndarray] = None
+    dir_axis: Optional[str] = None
+    has_latlon: bool = False
+
+    # Parallel-like only
+    overlap_band: Optional[Tuple[float, float]] = None
+    Xi_clip: Optional[np.ndarray] = None
+    Xk_clip: Optional[np.ndarray] = None
+    xgrid: Optional[np.ndarray] = None
+    yi: Optional[np.ndarray] = None
+    yk: Optional[np.ndarray] = None
+    Xi_utml: Optional[np.ndarray] = None
+    Xk_utml: Optional[np.ndarray] = None
+    theta_rose: Optional[np.ndarray] = None  # radians for polar plot
+
+    # Oblique/Perp only
+    s_targets: Optional[np.ndarray] = None
+    Pi: Optional[np.ndarray] = None          # samples on i (UTM)
+    Q: Optional[np.ndarray] = None           # nearest on k (UTM)
+    d_series: Optional[np.ndarray] = None    # nearest distances
+
 class WellSpacingCalculator:
     """
     Class for calculating well spacing metrics and directional relationships using
@@ -72,89 +151,10 @@ class WellSpacingCalculator:
         window_ft: float = 300.0,
     ) -> Optional[pd.DataFrame]:
         """
-        Compute spacing metrics for all well pairs with angle-aware routing.
-
-        Workflow:
-        - Builds pair cache (local frames, coarse XY resamples, lateral lengths).
-        - Computes midpoints and drill directions.
-        - Prefilters well pairs by geographic proximity.
-        - Splits pairs into batches, processes each in parallel, and either saves
-        per-batch parquet files or concatenates into a single DataFrame.
-
-        Routing logic:
-        - Parallel-like (Δθ ≤ theta_parallel_deg):
-            Crossline spacing over true i-frame overlap (mean/median |Δy|).
-        - Oblique (theta_parallel_deg < Δθ < theta_perp_deg):
-            Nearest-projection mean/median distances along i.
-        - Perpendicular (Δθ ≥ theta_perp_deg):
-            Closest-approach minimum distance, with optional ±window mean.
-
-        Parameters
-        ----------
-        frac : float, default=0.5
-            Fractional location along lateral used for midpoint calculation.
-            (0.0 = heel, 1.0 = toe). Determines vertical distance reference.
-        batch_size : int, default=500_000
-            Number of well pairs per batch during processing.
-        max_distance_miles : float or None, default=20.0
-            Prefilter cutoff: drop pairs farther than this (approximate lat/lon miles).
-            None = disable filtering.
-        save_batches_dir : str or None, default=None
-            Directory path to save each processed batch as parquet.
-            If provided, returns None instead of a DataFrame.
-        use_interpolation : bool, default=False
-            If True, use MD-based interpolation for midpoints.
-            If False, use geometric heel-toe midpoint.
-
-        step_ft : int, default=100
-            Station spacing (ft) for sampling along overlap if n_samples is None.
-        n_samples : int or None, default=None
-            Fixed sample count override for overlap sampling.
-        max_crossline_ft : float or None, default=2000.0
-            Guardrail for parallel-like spacing. Reject if low-percentile crossline > this.
-            None disables.
-        crossline_percentile : float, default=5.0
-            Percentile of crossline spacing used for guardrail (e.g., P5).
-        ds_crossline_step_ft : int, default=200
-            Coarse resampling step (ft) in pair cache for prechecks.
-        emit_rejected : bool, default=True
-            If True, emit rows for rejected pairs with reason codes.
-        use_pca_axis : bool, default=True
-            Build i-frame using PCA (better for curved wells).
-            False = simple heel→toe axis.
-
-        theta_parallel_deg : float, default=25.0
-            Angle threshold (deg). ≤ this → parallel-like branch.
-        theta_perp_deg : float, default=65.0
-            Angle threshold (deg). ≥ this → perpendicular branch.
-            Between thresholds → oblique branch.
-        reject_misaligned : bool, default=False
-            If True, reject any non-parallel pairs outright.
-
-        use_windowed_mean : bool, default=False
-            For perpendicular pairs, compute mean distance within ±window_ft
-            around closest approach.
-        window_ft : float, default=300.0
-            Half-width (ft) for windowed mean in perpendicular branch.
-
-        Returns
-        -------
-        pd.DataFrame or None
-            If `save_batches_dir` is None:
-                DataFrame with one row per well pair containing:
-                    - well_i, well_k
-                    - horizontal_dist, horizontal_dist_median
-                    - vertical_dist, 3D_dist
-                    - drill_direction_i, drill_direction_k
-                    - n_samples, dy_p5
-                    - angle_deg, pair_alignment
-                    - overlap_len_common_ft, LL_i, LL_k, overlap_pct_i, overlap_pct_k
-                    - min_distance_ft, mean_windowed_ft
-                    - direction_axis, direction_to_k_from_i_axis
-                    - direction_axis_confidence, direction_axis_distribution
-                    - reject_reason, axis_forced
-            If `save_batches_dir` is set:
-                Writes batches to parquet in that folder and returns None.
+        Compute spacing metrics for all well pairs, now with angle-aware routing:
+        - parallel-like pairs: crossline |Δy(x)| over true i-frame overlap (your existing method)
+        - oblique pairs: nearest-projection mean/median (walk along i, project to nearest point on k)
+        - perpendicular pairs: closest approach (min distance) and optional ±window_ft mean
         """
         # Build the pair cache once (local frames + coarse arrays for precheck)
         self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
@@ -496,7 +496,6 @@ class WellSpacingCalculator:
         Given arrays of matched i→k points (same length), compute geodetic azimuths and
         return axis-constrained label/conf/dist using the helpers above.
         """
-        from pyproj import Geod
         geod = Geod(ellps="WGS84")
         az12, _, _ = geod.inv(lon_i, lat_i, lon_k, lat_k)   # 0°=N, 90°=E
         comp = self._axis_component_from_az(az12, want_axis)
@@ -744,33 +743,6 @@ class WellSpacingCalculator:
             XYc, latc, lonc = XYc[keep], latc[keep], lonc[keep]
         return XYc, latc, lonc
     
-    def _arclength(self, X: np.ndarray) -> np.ndarray:
-        """Cumulative arclength for 2D polyline (x,y)."""
-        d = np.hypot(np.diff(X[:,0]), np.diff(X[:,1]))
-        return np.concatenate([[0.0], np.cumsum(d)])
-    
-    def _interp_by_arclength(self, X: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
-        """
-        Interpolate 2D polyline X to arclength grid s_targets. Returns Mx2 array.
-        """
-        s = self._arclength(X)
-        keep = np.concatenate([[True], np.diff(s) > 1e-9])  # drop zero-length steps
-        s, X = s[keep], X[keep]
-        xi = np.interp(s_targets, s, X[:,0])
-        yi = np.interp(s_targets, s, X[:,1])
-        return np.column_stack([xi, yi])
-    
-    def _interp_attr_by_arclength(
-        self,
-        X: np.ndarray,          # (N,2) polyline
-        attr: np.ndarray,       # (N,) attribute values (lat or lon)
-        s_targets: np.ndarray   # (M,) arclength positions
-    ) -> np.ndarray:
-        s = self._arclength(X)
-        keep = np.concatenate([[True], np.diff(s) > 1e-9])
-        s, Xattr = s[keep], attr[keep]
-        return np.interp(s_targets, s, Xattr)
-
     def _interp_y_of_x(self, X: np.ndarray, x_targets: np.ndarray) -> np.ndarray:
         """
         Piecewise-linear interpolation of y(x) on a 2D polyline X[:,0]=x, X[:,1]=y.
@@ -943,7 +915,45 @@ class WellSpacingCalculator:
         a = az_deg_from_north % 360.0
         idx = ((a + 45.0) // 90.0).astype(int) % 4  # 0:N, 1:E, 2:S, 3:W
         return self._DIR4_LABELS[idx]
-    
+
+    def _arclength(self, X: np.ndarray) -> np.ndarray:
+        """Cumulative arclength of a 2D polyline X[:,0]=x, X[:,1]=y."""
+        X = np.asarray(X)
+        if X.size == 0 or len(X) < 2:
+            return np.array([0.0], dtype=float)
+        d = np.hypot(np.diff(X[:, 0]), np.diff(X[:, 1]))
+        return np.concatenate([[0.0], np.cumsum(d)])
+
+    def _interp_by_arclength(self, X: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
+        """
+        Interpolate XY by arclength along polyline X at distances s_targets.
+        Collapses zero-length segments to avoid duplicates.
+        """
+        X = np.asarray(X)
+        s = self._arclength(X)
+        # drop zero-length steps to keep interp well-defined
+        keep = np.concatenate([[True], np.diff(s) > 1e-9])
+        s, Xc = s[keep], X[keep]
+        if s.size == 1:  # degenerate — return the single point repeated
+            xi = np.full_like(s_targets, Xc[0, 0], dtype=float)
+            yi = np.full_like(s_targets, Xc[0, 1], dtype=float)
+        else:
+            xi = np.interp(s_targets, s, Xc[:, 0])
+            yi = np.interp(s_targets, s, Xc[:, 1])
+        return np.column_stack([xi, yi])
+
+    def _interp_attr_by_arclength(self, X: np.ndarray, attr: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
+        """
+        Interpolate a 1D attribute sampled along polyline X at distances s_targets.
+        """
+        X = np.asarray(X); attr = np.asarray(attr)
+        s = self._arclength(X)
+        keep = np.concatenate([[True], np.diff(s) > 1e-9])
+        s, a = s[keep], attr[keep]
+        if s.size == 1:
+            return np.full_like(s_targets, a[0], dtype=float)
+        return np.interp(s_targets, s, a)
+
     def _modal_direction_geodetic_over_overlap(
         self,
         Xi_seg: np.ndarray, Xk_seg: np.ndarray,          # local XY clipped segments
@@ -992,6 +1002,520 @@ class WellSpacingCalculator:
         dist_str = ",".join(parts)
         return mode, conf, dist_str
     
+    def _classify_alignment(
+        self,
+        ex_i: np.ndarray,
+        ex_k: np.ndarray,
+        theta_parallel_deg: float,
+        theta_perp_deg: float
+    ) -> Tuple[AlignmentType, float]:
+        # use absolute dot (direction-agnostic)
+        dot_abs = float(np.abs(float(np.dot(ex_i, ex_k))))
+        angle_deg = float(np.degrees(np.arccos(np.clip(dot_abs, -1.0, 1.0))))
+        if angle_deg <= float(theta_parallel_deg):
+            return AlignmentType.PARALLEL_LIKE, angle_deg
+        if angle_deg >= float(theta_perp_deg):
+            return AlignmentType.PERPENDICULAR, angle_deg
+        return AlignmentType.OBLIQUE, angle_deg
+
+    def _compute_pair_metrics_and_artifacts(
+        self,
+        uwi_i: Any,
+        uwi_k: Any,
+        *,
+        step_ft: int,
+        n_samples: Optional[int],
+        max_crossline_ft: Optional[float],
+        crossline_percentile: float,
+        ds_crossline_step_ft: int,
+        use_pca_axis: bool,
+        theta_parallel_deg: float,
+        theta_perp_deg: float,
+        reject_misaligned: bool,
+        use_windowed_mean: bool,
+        window_ft: float,
+        drill_direction_i: Optional[str] = None,
+        drill_direction_k: Optional[str] = None,
+        tvd_i: Optional[float] = None,
+        tvd_k: Optional[float] = None,
+        want_artifacts: bool = True,
+    ) -> Tuple[SpacingResult, Optional[PairArtifacts]]:
+        """
+        Single source of truth for a pair's spacing + direction metrics.
+        Reuses the class helpers you already have. If want_artifacts=True,
+        returns all arrays the debug plots need; otherwise returns None for artifacts.
+        """
+        # Cache build if needed
+        if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
+            self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
+        cache = self._paircache
+        LL_cache = cache["LL"]
+
+        # Pull full-resolution trajectories
+        df_i = self.trajectories[uwi_i].sort_values("md")
+        df_k = self.trajectories[uwi_k].sort_values("md")
+        Xi_utm = df_i[["x", "y"]].to_numpy()
+        Xk_utm = df_k[["x", "y"]].to_numpy()
+
+        # Lat/lon availability
+        has_ll = ("latitude" in df_i.columns) and ("longitude" in df_i.columns) and \
+                ("latitude" in df_k.columns) and ("longitude" in df_k.columns)
+        geod = Geod(ellps="WGS84") if has_ll else None
+
+        # Build i-frame metadata (origin, ex, ey)
+        origin_i, ex_i, ey_i = self._build_local_frame_from_i(df_i, use_pca_axis=use_pca_axis)
+        # ex for k in its own frame (or global PCA) to classify
+        ex_k_global = cache["ex"][uwi_k]  # already consistent with use_pca_axis in cache
+
+        # Alignment class
+        align_type, angle_deg = self._classify_alignment(ex_i, ex_k_global, theta_parallel_deg, theta_perp_deg)
+
+        # Decide direction axis (same rule you use elsewhere)
+        # If i is NS → E/W; if i is EW → N/S. If not provided, compute.
+        if (drill_direction_i is None) or (drill_direction_k is None):
+            # Compute median az by group (like your _compute_drill_directions)
+            median_az = self._trajectory_df.groupby("uwi")["azimuth"].median()
+            is_ew = ((median_az >= 45) & (median_az <= 135)) | ((median_az >= 225) & (median_az <= 315))
+            dir_map = pd.Series(np.where(is_ew, "EW", "NS"), index=median_az.index).to_dict()
+            dir_i = dir_map.get(uwi_i, "EW")
+            dir_k = dir_map.get(uwi_k, "EW")
+        else:
+            # directions array indexed by self._compute_normalized_midpoints() index order (ids)
+            # If you call this from debug (uwi strings), we won't have the index; fallback above is fine.
+            # From batch, pass in the 2 labels explicitly:
+            dir_i = drill_direction_i
+            dir_k = drill_direction_k
+        # axis used for direction classification
+        dir_axis = "EW" if dir_i == "NS" else "NS"
+
+        # Project full polylines to i-frame
+        df_i_sorted = df_i  # already sorted
+        df_k_sorted = df_k
+        Xi_if = self._project_xy_to_frame(df_i_sorted, origin_i, ex_i, ey_i)
+        Xk_if = self._project_xy_to_frame(df_k_sorted, origin_i, ex_i, ey_i)
+
+        # Defaults for direction fields
+        dir_mode_axis = None
+        dir_conf_axis = np.nan
+        dir_dist_axis = ""
+        theta_rose = np.array([], dtype=float)
+
+        # vertical
+        if (tvd_i is not None) and (tvd_k is not None):
+            vertical = abs(float(tvd_k) - float(tvd_i))
+        else:
+            # same fallback
+            tvd_i = float((df_i["tvd"].iloc[0] + df_i["tvd"].iloc[-1]) / 2.0) if "tvd" in df_i.columns else 0.0
+            tvd_k = float((df_k["tvd"].iloc[0] + df_k["tvd"].iloc[-1]) / 2.0) if "tvd" in df_k.columns else 0.0
+            vertical = abs(tvd_k - tvd_i)
+
+        # Prepare artifacts container if requested
+        artifacts = PairArtifacts() if want_artifacts else None
+        if want_artifacts:
+            artifacts.Xi_utm = Xi_utm
+            artifacts.Xk_utm = Xk_utm
+            artifacts.Xi_if = Xi_if
+            artifacts.Xk_if = Xk_if
+            artifacts.dir_axis = dir_axis
+            artifacts.has_latlon = bool(has_ll)
+
+        # Parallel-like route: x-overlap + crossline |Δy(x)|
+        if align_type is AlignmentType.PARALLEL_LIKE:
+            xi_min, xi_max = float(Xi_if[:, 0].min()), float(Xi_if[:, 0].max())
+            xk_min, xk_max = float(Xk_if[:, 0].min()), float(Xk_if[:, 0].max())
+            x_lo, x_hi = max(xi_min, xk_min), min(xi_max, xk_max)
+
+            if not (x_hi > x_lo):
+                # no overlap; treat as reject in parallel bucket
+                result = SpacingResult(
+                    well_i=uwi_i, well_k=uwi_k,
+                    horizontal_dist=np.nan, horizontal_dist_median=np.nan,
+                    vertical_dist=float(vertical), dist3d=np.nan,
+                    overlap_len_common_ft=0.0, LL_i=float(LL_cache[uwi_i]), LL_k=float(LL_cache[uwi_k]),
+                    overlap_pct_i=np.nan, overlap_pct_k=np.nan,
+                    n_samples=0, dy_p5=np.nan, angle_deg=float(angle_deg),
+                    pair_alignment="parallel_like",
+                    min_distance_ft=np.nan, mean_windowed_ft=np.nan,
+                    reject_reason="no_overlap_x",
+                    direction_axis=dir_axis,
+                    direction_to_k_from_i_axis=None,
+                    direction_axis_confidence=np.nan,
+                    direction_axis_distribution="",
+                    drill_direction_i=dir_i, drill_direction_k=dir_k,
+                    axis_forced=True
+                )
+                if want_artifacts:
+                    artifacts.overlap_band = None
+                    artifacts.theta_rose = np.array([], dtype=float)
+                return result, artifacts
+
+            # clip to [x_lo, x_hi]
+            band = (x_lo, x_hi)
+            Xi_seg = self._clip_polyline_by_x_band(Xi_if, band)
+            Xk_seg = self._clip_polyline_by_x_band(Xk_if, band)
+
+            # spacing over overlap
+            cross_mean, n_used, Lmin = self._crossline_spacing_from_overlap(
+                Xi_seg, Xk_seg, step_ft=step_ft, n_samples=n_samples
+            )
+            cross_median, _, _ = self._crossline_spacing_median_from_overlap(
+                Xi_seg, Xk_seg, step_ft=step_ft, n_samples=n_samples
+            )
+
+            # dy percentile guardrail (optional)
+            # compute dy at same grid to obtain dy_p
+            if n_used > 0:
+                # rebuild x-grid to get dy series
+                xi_min2, xi_max2 = float(Xi_seg[:, 0].min()), float(Xi_seg[:, 0].max())
+                xk_min2, xk_max2 = float(Xk_seg[:, 0].min()), float(Xk_seg[:, 0].max())
+                x_lo2, x_hi2 = max(xi_min2, xk_min2), min(xi_max2, xk_max2)
+                step = max(int(step_ft or 100), 1)
+                N = max(int(np.floor((x_hi2 - x_lo2) / step)) + 1, 2)
+                xgrid = np.linspace(x_lo2, x_hi2, N)
+                yi = self._interp_y_of_x(Xi_seg, xgrid)
+                yk = self._interp_y_of_x(Xk_seg, xgrid)
+                dy = np.abs(yk - yi)
+                dy_p = float(np.percentile(dy, crossline_percentile))
+            else:
+                dy_p = np.nan
+                xgrid = np.array([], dtype=float)
+                yi = np.array([], dtype=float)
+                yk = np.array([], dtype=float)
+
+            # direction over overlap (axis-constrained)
+            dir_mode_axis = None; dir_conf_axis = np.nan; dir_dist_axis = ""
+            if has_ll and (n_used > 0):
+                lat_i_full = df_i["latitude"].to_numpy(float)
+                lon_i_full = df_i["longitude"].to_numpy(float)
+                lat_k_full = df_k["latitude"].to_numpy(float)
+                lon_k_full = df_k["longitude"].to_numpy(float)
+
+                Xi_seg_ll, lat_i_seg, lon_i_seg = self._clip_polyline_with_latlon_by_x_band(Xi_if, lat_i_full, lon_i_full, band)
+                Xk_seg_ll, lat_k_seg, lon_k_seg = self._clip_polyline_with_latlon_by_x_band(Xk_if, lat_k_full, lon_k_full, band)
+
+                dir_mode_axis, dir_conf_axis, dir_dist_axis = self._axis_constrained_direction_over_overlap(
+                    Xi_seg, Xk_seg,
+                    lat_i_seg, lon_i_seg, lat_k_seg, lon_k_seg,
+                    want_axis=dir_axis, step_ft=step_ft, n_samples=n_samples,
+                    deadband=0.15, tie_tol=0.05
+                )
+
+                # for rose plot (parallel-like): compute az per xgrid
+                lat_i_x = np.interp(xgrid, Xi_seg_ll[:, 0], lat_i_seg) if xgrid.size else np.array([])
+                lon_i_x = np.interp(xgrid, Xi_seg_ll[:, 0], lon_i_seg) if xgrid.size else np.array([])
+                lat_k_x = np.interp(xgrid, Xk_seg_ll[:, 0], lat_k_seg) if xgrid.size else np.array([])
+                lon_k_x = np.interp(xgrid, Xk_seg_ll[:, 0], lon_k_seg) if xgrid.size else np.array([])
+                if xgrid.size:
+                    az12, _, _ = geod.inv(lon_i_x, lat_i_x, lon_k_x, lat_k_x)
+                    theta_rose = np.deg2rad((90.0 - az12) % 360.0)
+                else:
+                    theta_rose = np.array([], dtype=float)
+            else:
+                theta_rose = np.array([], dtype=float)
+
+            horiz_mean = float(cross_mean)
+            horiz_med = float(cross_median)
+            dist3d = float(np.hypot(horiz_mean, vertical))
+
+            # overlap % against full LLs
+            Li = float(self._arclength(Xi_seg)[-1]) if Xi_seg.size else 0.0
+            Lk = float(self._arclength(Xk_seg)[-1]) if Xk_seg.size else 0.0
+            overlap_len_common = float(min(Li, Lk))
+            LL_i = float(LL_cache[uwi_i]); LL_k = float(LL_cache[uwi_k])
+            overlap_pct_i = (overlap_len_common / LL_i) if LL_i > 0 else np.nan
+            overlap_pct_k = (overlap_len_common / LL_k) if LL_k > 0 else np.nan
+
+            result = SpacingResult(
+                well_i=uwi_i, well_k=uwi_k,
+                horizontal_dist=horiz_mean, horizontal_dist_median=horiz_med,
+                vertical_dist=float(vertical), dist3d=dist3d,
+                overlap_len_common_ft=overlap_len_common,
+                LL_i=LL_i, LL_k=LL_k, overlap_pct_i=overlap_pct_i, overlap_pct_k=overlap_pct_k,
+                n_samples=int(n_used), dy_p5=float(dy_p), angle_deg=float(angle_deg),
+                pair_alignment="parallel_like",
+                min_distance_ft=np.nan, mean_windowed_ft=np.nan,
+                reject_reason="",
+                direction_axis=dir_axis,
+                direction_to_k_from_i_axis=dir_mode_axis,
+                direction_axis_confidence=float(dir_conf_axis) if np.isfinite(dir_conf_axis) else np.nan,
+                direction_axis_distribution=dir_dist_axis or "",
+                drill_direction_i=dir_i, drill_direction_k=dir_k,
+                axis_forced=True
+            )
+
+            if want_artifacts:
+                # Rebuild UTM pairs at xgrid for arrows
+                if xgrid.size:
+                    Xi_utml = origin_i[None, :] + xgrid[:, None]*ex_i[None, :] + yi[:, None]*ey_i[None, :]
+                    Xk_utml = origin_i[None, :] + xgrid[:, None]*ex_i[None, :] + yk[:, None]*ey_i[None, :]
+                else:
+                    Xi_utml = np.empty((0, 2)); Xk_utml = np.empty((0, 2))
+
+                artifacts.overlap_band = (float(x_lo), float(x_hi))
+                artifacts.Xi_clip = Xi_seg
+                artifacts.Xk_clip = Xk_seg
+                artifacts.xgrid = xgrid
+                artifacts.yi = yi
+                artifacts.yk = yk
+                artifacts.Xi_utml = Xi_utml
+                artifacts.Xk_utml = Xk_utml
+                artifacts.theta_rose = theta_rose
+
+            return result, artifacts
+
+        # Oblique/Perpendicular: nearest projection series
+        # sample along i
+        si = self._arclength(Xi_utm); Li = float(si[-1]) if si.size else 0.0
+        step = max(int(step_ft or 100), 1)
+        n = max(int(np.floor(Li / step)) + 1, 2)
+        s_targets = np.linspace(0.0, max(Li, 1e-6), n)
+        Pi = self._interp_by_arclength(Xi_utm, s_targets)
+        d, j_arr, t_arr = self._nearest_distances_to_polyline(Pi, Xk_utm)
+
+        # direction over nearest points if lat/lon available
+        if has_ll and n > 0:
+            lat_i = df_i["latitude"].to_numpy(float)
+            lon_i = df_i["longitude"].to_numpy(float)
+            lat_k = df_k["latitude"].to_numpy(float)
+            lon_k = df_k["longitude"].to_numpy(float)
+            lat_i_s = self._interp_attr_by_arclength(Xi_utm, lat_i, s_targets)
+            lon_i_s = self._interp_attr_by_arclength(Xi_utm, lon_i, s_targets)
+            lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
+            lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
+            dir_mode_axis, dir_conf_axis, dir_dist_axis = self._axis_constrained_direction_from_pairs(
+                lat_i_s, lon_i_s, lat_k_s, lon_k_s, want_axis=dir_axis,
+                deadband=0.15, tie_tol=0.05
+            )
+            az12, _, _ = geod.inv(lon_i_s, lat_i_s, lon_k_s, lat_k_s)
+            theta_rose = np.deg2rad((90.0 - az12) % 360.0)
+        else:
+            theta_rose = np.array([], dtype=float)
+
+        mean_d = float(d.mean())
+        median_d = float(np.median(d))
+        min_d = float(d.min()) if d.size else np.nan
+
+        mean_windowed = np.nan
+        if use_windowed_mean and d.size:
+            idx_min = int(np.argmin(d))
+            s0 = s_targets[idx_min]
+            mask = (s_targets >= s0 - window_ft) & (s_targets <= s0 + window_ft)
+            if mask.any():
+                mean_windowed = float(d[mask].mean())
+
+        dist3d = float(np.hypot(mean_d, vertical))
+
+        result = SpacingResult(
+            well_i=uwi_i, well_k=uwi_k,
+            horizontal_dist=mean_d, horizontal_dist_median=median_d,
+            vertical_dist=float(vertical), dist3d=dist3d,
+            overlap_len_common_ft=float("nan"),
+            LL_i=float(LL_cache[uwi_i]), LL_k=float(LL_cache[uwi_k]),
+            overlap_pct_i=float("nan"), overlap_pct_k=float("nan"),
+            n_samples=int(n), dy_p5=np.nan, angle_deg=float(angle_deg),
+            pair_alignment=("oblique" if align_type is AlignmentType.OBLIQUE else "perpendicular"),
+            min_distance_ft=min_d, mean_windowed_ft=mean_windowed,
+            reject_reason="",
+            direction_axis=dir_axis,
+            direction_to_k_from_i_axis=dir_mode_axis,
+            direction_axis_confidence=float(dir_conf_axis) if np.isfinite(dir_conf_axis) else np.nan,
+            direction_axis_distribution=dir_dist_axis or "",
+            drill_direction_i=dir_i, drill_direction_k=dir_k,
+            axis_forced=True
+        )
+
+        if want_artifacts:
+            # nearest targets Q on k
+            A = Xk_utm[:-1]; B = Xk_utm[1:]; AB = B - A
+            Q = A[j_arr] + t_arr[:, None]*(AB[j_arr])
+
+            artifacts.s_targets = s_targets
+            artifacts.Pi = Pi
+            artifacts.Q = Q
+            artifacts.d_series = d
+            artifacts.theta_rose = theta_rose
+
+        return result, artifacts
+
+    def debug_pair_spacing(
+        self,
+        uwi_i: Any,
+        uwi_k: Any,
+        *,
+        step_ft: int = 100,
+        use_pca_axis: bool = True,
+        theta_parallel_deg: float = 25.0,
+        theta_perp_deg: float = 65.0,
+        arrow_stride: int = 5,
+        save_dir: Optional[os.PathLike] = None,
+        figure_prefix: str = "spacing",
+        show: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Visual debug for a single pair (uwi_i, uwi_k). Uses the SAME core pair engine as batch.
+        Returns the metrics dict; optionally saves figures.
+        """
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+
+        # compute once, request artifacts
+        res, art = self._compute_pair_metrics_and_artifacts(
+            uwi_i=uwi_i, uwi_k=uwi_k,
+            step_ft=step_ft, n_samples=None,
+            max_crossline_ft=None, crossline_percentile=5.0, ds_crossline_step_ft=200,
+            use_pca_axis=use_pca_axis,
+            theta_parallel_deg=theta_parallel_deg, theta_perp_deg=theta_perp_deg,
+            reject_misaligned=False, use_windowed_mean=True, window_ft=300.0,
+            want_artifacts=True
+        )
+
+        paths: Dict[str, str] = {}
+        def _save(fig, key):
+            if save_dir is not None:
+                p = os.path.join(save_dir, f"{figure_prefix}_{key}.png")
+                fig.savefig(p, dpi=150, bbox_inches="tight")
+                paths[key] = p
+                plt.close(fig)
+            else:
+                plt.show()   # show immediately in notebook
+                plt.close(fig)
+
+        # Panel 1: UTM map
+        if art and art.Xi_utm is not None and art.Xk_utm is not None:
+            fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
+            ax.plot(art.Xi_utm[:, 0], art.Xi_utm[:, 1], label=f"{uwi_i}")
+            ax.plot(art.Xk_utm[:, 0], art.Xk_utm[:, 1], label=f"{uwi_k}")
+            ax.axis("equal"); ax.legend()
+            ax.set_title("Original UTM map view"); ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
+            _save(fig, "map_view")
+
+        # Panel 2: projected i-frame
+        if art and art.Xi_if is not None and art.Xk_if is not None:
+            fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
+            ax.plot(art.Xi_if[:, 0], art.Xi_if[:, 1], label="i in i-frame")
+            ax.plot(art.Xk_if[:, 0], art.Xk_if[:, 1], label="k in i-frame")
+            ax.axis("equal"); ax.legend()
+            ax.set_title("Projected into i-frame"); ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
+            _save(fig, "projected_iframe")
+
+        # Parallel-like specifics
+        if res.pair_alignment == "parallel_like":
+            # Overlap band
+            if art.overlap_band is not None:
+                x_lo, x_hi = art.overlap_band
+                fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
+                ax.plot(art.Xi_if[:, 0], art.Xi_if[:, 1], label="i (full)")
+                ax.plot(art.Xk_if[:, 0], art.Xk_if[:, 1], label="k (full)")
+                ax.axvline(x_lo, ls="--"); ax.axvline(x_hi, ls="--")
+                ax.axis("equal"); ax.legend()
+                ax.set_title("Overlap band (x in i-frame)"); ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
+                _save(fig, "overlap_band")
+
+            # Clipped segments
+            if art.Xi_clip is not None and art.Xi_clip.size and art.Xk_clip is not None and art.Xk_clip.size:
+                fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
+                ax.plot(art.Xi_clip[:, 0], art.Xi_clip[:, 1], label="i (clipped)")
+                ax.plot(art.Xk_clip[:, 0], art.Xk_clip[:, 1], label="k (clipped)")
+                ax.axis("equal"); ax.legend()
+                ax.set_title("Clipped segments used for spacing")
+                ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
+                _save(fig, "clipped_segments")
+
+            # Crossline dy series + quiver in UTM
+            if art.xgrid is not None and art.xgrid.size and art.yi is not None and art.yk is not None:
+                dy = np.abs(art.yk - art.yi)
+                fig = plt.figure(figsize=(8, 4)); ax = fig.add_subplot(111)
+                ax.plot(art.xgrid - art.overlap_band[0], dy)
+                ax.set_title(f"|Δy(x)|; mean={res.horizontal_dist:.1f} ft, median={res.horizontal_dist_median:.1f} ft")
+                ax.set_xlabel("Along-overlap x (ft from band start)"); ax.set_ylabel("|Δy| (ft)")
+                _save(fig, "crossline_dy_series")
+
+                # UTM arrows (i → k)
+                if art.Xi_utml is not None and art.Xi_utml.size and art.Xk_utml is not None and art.Xk_utml.size:
+                    U = art.Xk_utml[:, 0] - art.Xi_utml[:, 0]
+                    V = art.Xk_utml[:, 1] - art.Xi_utml[:, 1]
+                    fig = plt.figure(figsize=(8, 6)); ax = fig.add_subplot(111)
+                    ax.plot(art.Xi_utm[:, 0], art.Xi_utm[:, 1], label=f"{uwi_i}")
+                    ax.plot(art.Xk_utm[:, 0], art.Xk_utm[:, 1], label=f"{uwi_k}")
+                    ax.quiver(art.Xi_utml[::arrow_stride, 0], art.Xi_utml[::arrow_stride, 1],
+                            U[::arrow_stride], V[::arrow_stride],
+                            angles='xy', scale_units='xy', scale=1, width=0.002)
+                    ax.axis("equal"); ax.legend()
+                    ax.set_title("Crossline sampling pairs in UTM (i → k)")
+                    ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
+                    _save(fig, "pairs_utm_crossline_dir")
+
+        # Oblique/Perp specifics
+        if res.pair_alignment in ("oblique", "perpendicular"):
+            if art.s_targets is not None and art.d_series is not None:
+                fig = plt.figure(figsize=(8, 4)); ax = fig.add_subplot(111)
+                ax.plot(art.s_targets, art.d_series)
+                ax.set_title(f"Nearest distance along i; mean={res.horizontal_dist:.1f} ft, median={res.horizontal_dist_median:.1f} ft")
+                ax.set_xlabel("Distance along well i (ft)"); ax.set_ylabel("Nearest dist to k (ft)")
+                _save(fig, "nearest_projection_series")
+
+            # draw decimated nearest segments
+            if art.Pi is not None and art.Q is not None:
+                fig = plt.figure(figsize=(8, 6)); ax = fig.add_subplot(111)
+                ax.plot(art.Xi_utm[:, 0], art.Xi_utm[:, 1], label=f"{uwi_i}")
+                ax.plot(art.Xk_utm[:, 0], art.Xk_utm[:, 1], label=f"{uwi_k}")
+                stride = max(int(arrow_stride), 1)
+                for idx in range(0, len(art.Pi), stride):
+                    ax.plot([art.Pi[idx, 0], art.Q[idx, 0]], [art.Pi[idx, 1], art.Q[idx, 1]])
+                ax.axis("equal"); ax.legend()
+                ax.set_title("Nearest-projection segments in UTM (i samples → nearest on k)")
+                ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
+                _save(fig, "utm_nearest_segments")
+
+        # Direction rose (if any)
+        if art.theta_rose is not None and art.theta_rose.size:
+            fig = plt.figure(figsize=(6, 6))
+            ax = fig.add_subplot(111, projection='polar')
+            bins = np.linspace(0.0, 2*np.pi, 5)
+            counts_b, _ = np.histogram(art.theta_rose % (2*np.pi), bins=bins)
+            widths = np.diff(bins); centers_b = bins[:-1] + widths/2
+            ax.bar(centers_b, counts_b, width=widths, align='center')
+            ax.set_title(f"Direction i→k on {art.dir_axis} (modal={res.direction_to_k_from_i_axis}, conf={res.direction_axis_confidence:.2f})")
+            _save(fig, "direction_rose")
+
+        if show and paths:
+            # quick gallery grid in a simple order
+            keys = list(paths.keys())
+            n = len(keys); ncols = 2; nrows = (n + ncols - 1)//ncols
+            fig, axes = plt.subplots(nrows, ncols, figsize=(12, 5*nrows))
+            axes = np.atleast_2d(axes)
+            for idx, key in enumerate(keys):
+                r, c = divmod(idx, ncols)
+                img = plt.imread(paths[key])
+                axes[r, c].imshow(img); axes[r, c].set_title(key.replace("_", " "))
+                axes[r, c].axis("off")
+            # hide extra
+            for j in range(len(keys), nrows*ncols):
+                r, c = divmod(j, ncols); axes[r, c].axis("off")
+            plt.show()
+
+        # Return a compact metrics dict (same fields as before to avoid breaking downstream)
+        return {
+            "pair_alignment": res.pair_alignment,
+            "angle_deg": res.angle_deg,
+            "horizontal_dist": res.horizontal_dist,
+            "horizontal_dist_median": res.horizontal_dist_median,
+            "vertical_dist": res.vertical_dist,
+            "3D_dist": res.dist3d,
+            "overlap_len_common_ft": res.overlap_len_common_ft,
+            "LL_i": res.LL_i, "LL_k": res.LL_k,
+            "overlap_pct_i": res.overlap_pct_i, "overlap_pct_k": res.overlap_pct_k,
+            "n_samples": res.n_samples,
+            "dy_p5": res.dy_p5,
+            "min_distance_ft": res.min_distance_ft,
+            "mean_windowed_ft": res.mean_windowed_ft,
+            "direction_axis": res.direction_axis,
+            "direction_to_k_from_i_axis": res.direction_to_k_from_i_axis,
+            "direction_axis_confidence": res.direction_axis_confidence,
+            "direction_axis_distribution": res.direction_axis_distribution,
+            "paths": paths
+        }
+
     def _process_batch(
         self,
         i_idx: np.ndarray,
@@ -1025,30 +1549,37 @@ class WellSpacingCalculator:
         """
         rows: List[Dict] = []
 
+        def _res_to_row(res) -> Dict[str, Any]:
+            return {
+                "well_i": res.well_i, "well_k": res.well_k,
+                "horizontal_dist": res.horizontal_dist,
+                "horizontal_dist_median": res.horizontal_dist_median,
+                "vertical_dist": res.vertical_dist,
+                "3D_dist": res.dist3d,
+                "drill_direction_i": res.drill_direction_i,
+                "drill_direction_k": res.drill_direction_k,
+                "overlap_len_common_ft": res.overlap_len_common_ft,
+                "LL_i": res.LL_i, "LL_k": res.LL_k,
+                "overlap_pct_i": res.overlap_pct_i, "overlap_pct_k": res.overlap_pct_k,
+                "n_samples": res.n_samples,
+                "dy_p5": res.dy_p5,
+                "angle_deg": res.angle_deg,
+                "pair_alignment": res.pair_alignment,
+                "min_distance_ft": res.min_distance_ft,
+                "mean_windowed_ft": res.mean_windowed_ft,
+                "reject_reason": res.reject_reason,
+                "direction_axis": res.direction_axis,
+                "direction_to_k_from_i_axis": res.direction_to_k_from_i_axis,
+                "direction_axis_confidence": res.direction_axis_confidence,
+                "direction_axis_distribution": res.direction_axis_distribution,
+                "axis_forced": res.axis_forced
+            }
+
+
         if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
             self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
 
         cache = self._paircache
-        LL_cache = cache["LL"]    # <-- ADD
-
-        # --- tiny helpers used inside this function ---
-        def _arclength(X: np.ndarray) -> np.ndarray:
-            d = np.hypot(np.diff(X[:, 0]), np.diff(X[:, 1]))
-            return np.concatenate([[0.0], np.cumsum(d)])
-
-        def _interp_by_arclength(X: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
-            s = _arclength(X)
-            keep = np.concatenate([[True], np.diff(s) > 1e-9])
-            s, Xc = s[keep], X[keep]
-            xi = np.interp(s_targets, s, Xc[:, 0])
-            yi = np.interp(s_targets, s, Xc[:, 1])
-            return np.column_stack([xi, yi])
-
-        def _interp_attr_by_arclength(X: np.ndarray, attr: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
-            s = _arclength(X)
-            keep = np.concatenate([[True], np.diff(s) > 1e-9])
-            s, a = s[keep], attr[keep]
-            return np.interp(s_targets, s, a)
 
         # --- process pairs grouped by i (vectorized precheck on parallel-like branch) ---
         for i in np.unique(i_idx):
@@ -1163,118 +1694,31 @@ class WellSpacingCalculator:
                 if max_crossline_ft is not None:
                     keep &= np.isfinite(dy_p) & (dy_p <= max_crossline_ft)
 
-                # survivors → exact clip + spacing + axis-constrained direction
-                df_i = self.trajectories[uwi_i].sort_values("md")
-                Xi_full = self._project_xy_to_frame(df_i, origin_i, ex_i, ey_i)
-                lat_i_full = df_i["latitude"].to_numpy(float) if "latitude" in df_i.columns else None
-                lon_i_full = df_i["longitude"].to_numpy(float) if "longitude" in df_i.columns else None
-
-                from pyproj import Geod
-                geod = Geod(ellps="WGS84") if (lat_i_full is not None) else None
-
                 for local, k in enumerate(k_list):
                     if not (local in par_idx and keep[local]):
                         continue
-                    uwi_k = ids[k]
-                    band = (float(x_lo[local]), float(x_hi[local]))
 
-                    df_k = self.trajectories[uwi_k].sort_values("md")
-                    Xk_full = self._project_xy_to_frame(df_k, origin_i, ex_i, ey_i)
-
-                    Xi_seg = self._clip_polyline_by_x_band(Xi_full, band)
-                    Xk_seg = self._clip_polyline_by_x_band(Xk_full, band)
-
-                    if Xi_seg.shape[0] == 0 or Xk_seg.shape[0] == 0:
-                        if emit_rejected:
-                            rows.append({
-                                "well_i": uwi_i, "well_k": uwi_k,
-                                "horizontal_dist": np.nan, "horizontal_dist_median": np.nan,
-                                "vertical_dist": np.nan, "3D_dist": np.nan,
-                                "drill_direction_i": directions[i], "drill_direction_k": directions[k],
-                                "n_samples": np.nan, "dy_p5": np.nan,
-                                "angle_deg": float(angles[local]),
-                                "pair_alignment": "parallel_like",
-                                "min_distance_ft": np.nan,
-                                "mean_windowed_ft": np.nan,
-                                "reject_reason": "no_overlap_x",
-                                "direction_axis": dir_axis_i,
-                                "direction_to_k_from_i_axis": None,
-                                "direction_axis_confidence": np.nan,
-                                "direction_axis_distribution": "",
-                                "axis_forced": True
-                            })
-                        continue
-
-                    # direction over overlap (axis-constrained, geodetic if available)
-                    if (lat_i_full is not None) and ("latitude" in df_k.columns):
-                        lat_k_full = df_k["latitude"].to_numpy(float)
-                        lon_k_full = df_k["longitude"].to_numpy(float)
-
-                        Xi_seg_ll, lat_i_seg, lon_i_seg = self._clip_polyline_with_latlon_by_x_band(
-                            Xi_full, lat_i_full, lon_i_full, band
-                        )
-                        Xk_seg_ll, lat_k_seg, lon_k_seg = self._clip_polyline_with_latlon_by_x_band(
-                            Xk_full, lat_k_full, lon_k_full, band
-                        )
-
-                        dir_mode_axis, dir_conf_axis, dir_dist_axis = self._axis_constrained_direction_over_overlap(
-                            Xi_seg, Xk_seg,
-                            lat_i_seg, lon_i_seg, lat_k_seg, lon_k_seg,
-                            want_axis=dir_axis_i,
-                            step_ft=step_ft, n_samples=n_samples,
-                            deadband=0.15, tie_tol=0.05
-                        )
-                    else:
-                        dir_mode_axis, dir_conf_axis, dir_dist_axis = None, np.nan, ""
-
-                    # spacing stats
-                    horiz_mean, n_used, Lmin = self._crossline_spacing_from_overlap(
-                        Xi_seg, Xk_seg, step_ft=step_ft, n_samples=n_samples
+                    # Hand off exact math to the unified pair engine
+                    res, _ = self._compute_pair_metrics_and_artifacts(
+                        uwi_i=uwi_i,
+                        uwi_k=ids[k],
+                        step_ft=step_ft,
+                        n_samples=n_samples,
+                        max_crossline_ft=max_crossline_ft,
+                        crossline_percentile=crossline_percentile,
+                        ds_crossline_step_ft=ds_crossline_step_ft,
+                        use_pca_axis=use_pca_axis,
+                        theta_parallel_deg=theta_parallel_deg,
+                        theta_perp_deg=theta_perp_deg,
+                        reject_misaligned=reject_misaligned,
+                        use_windowed_mean=use_windowed_mean,
+                        window_ft=window_ft,
+                        drill_direction_i=directions[i],
+                        drill_direction_k=directions[k],
+                        tvd_i=float(coords[i, 2]), tvd_k=float(coords[k, 2]),
+                        want_artifacts=False
                     )
-                    horiz_med,  _,     _  = self._crossline_spacing_median_from_overlap(
-                        Xi_seg, Xk_seg, step_ft=step_ft, n_samples=n_samples
-                    )
-
-                    A = coords[i]; B = coords[k]
-                    vertical = float(abs(B[2] - A[2])); dist3d = float(np.hypot(horiz_mean, vertical))
-
-                    # --- NEW: derive per-segment lengths used, full LLs, and overlap% ---
-                    Li = float(self._arclength(Xi_seg)[-1]) if Xi_seg.size else 0.0          # NEW
-                    Lk = float(self._arclength(Xk_seg)[-1]) if Xk_seg.size else 0.0          # NEW
-                    overlap_len_common = float(min(Li, Lk))                                   # NEW
-
-                    LL_i = float(LL_cache[uwi_i])                                             # NEW
-                    LL_k = float(LL_cache[uwi_k])                                             # NEW
-                    overlap_pct_i = (overlap_len_common / LL_i) if LL_i > 0 else float("nan") # NEW
-                    overlap_pct_k = (overlap_len_common / LL_k) if LL_k > 0 else float("nan") # NEW
-
-                    rows.append({
-                        "well_i": uwi_i, "well_k": uwi_k,
-                        "horizontal_dist": horiz_mean, "horizontal_dist_median": horiz_med, "vertical_dist": vertical,
-                        "3D_dist": dist3d,
-                        "drill_direction_i": directions[i], "drill_direction_k": directions[k],
-
-                        # NEW: clearer alias with same value
-                        "overlap_len_common_ft": overlap_len_common,                           # NEW
-
-                        # NEW: full laterals + overlap%
-                        "LL_i": LL_i, "LL_k": LL_k,                                           # NEW
-                        "overlap_pct_i": overlap_pct_i,                                       # NEW
-                        "overlap_pct_k": overlap_pct_k,                                       # NEW
-
-                        "n_samples": n_used,
-                        "dy_p5": float(dy_p[local]) if np.isfinite(dy_p[local]) else np.nan,
-                        "angle_deg": float(angles[local]),
-                        "pair_alignment": "parallel_like",
-                        "min_distance_ft": np.nan,
-                        "mean_windowed_ft": np.nan,
-                        "reject_reason": "",
-                        "direction_axis": dir_axis_i,
-                        "direction_to_k_from_i_axis": dir_mode_axis,
-                        "direction_axis_confidence": dir_conf_axis,
-                        "direction_axis_distribution": dir_dist_axis,
-                        "axis_forced": True
-                    })
+                    rows.append(_res_to_row(res))
 
 
             # -------------------- OBLIQUE / PERPENDICULAR branch (nearest projection) --------------------
@@ -1318,89 +1762,27 @@ class WellSpacingCalculator:
                         })
                     continue
 
-                uwi_k = ids[k]
-                df_k_full = self.trajectories[uwi_k].sort_values("md")
-                Xk_utm = df_k_full[["x", "y"]].to_numpy()
-
-                # sample along i
-                si = _arclength(Xi_utm); Li = si[-1]
-                if n_samples is None:
-                    step = max(int(step_ft), 1)
-                    n = max(int(np.floor(Li / step)) + 1, 2)
-                else:
-                    n = max(int(n_samples), 2)
-                s_targets = np.linspace(0.0, Li, n)
-                Pi = _interp_by_arclength(Xi_utm, s_targets)
-
-                # nearest on k for each Pi (vectorized)
-                d, j_arr, t_arr = self._nearest_distances_to_polyline(Pi, Xk_utm)
-
-                # geodetic directions (axis-constrained) if lat/lon available
-                dir_mode_axis, dir_conf_axis, dist_str_axis = None, np.nan, ""
-                if (geod is not None) and ("latitude" in df_k_full.columns):
-                    lat_k_full = df_k_full["latitude"].to_numpy(float)
-                    lon_k_full = df_k_full["longitude"].to_numpy(float)
-
-                    # i: arclength-interpolated lat/lon at s_targets
-                    lat_i_s = _interp_attr_by_arclength(Xi_utm, lat_i_full, s_targets)
-                    lon_i_s = _interp_attr_by_arclength(Xi_utm, lon_i_full, s_targets)
-
-                    # k: nearest segment interpolation at (j,t)
-                    lat_k_s = lat_k_full[j_arr] + t_arr*(lat_k_full[j_arr+1] - lat_k_full[j_arr])
-                    lon_k_s = lon_k_full[j_arr] + t_arr*(lon_k_full[j_arr+1] - lon_k_full[j_arr])
-
-                    dir_mode_axis, dir_conf_axis, dist_str_axis = self._axis_constrained_direction_from_pairs(
-                        lat_i_s, lon_i_s, lat_k_s, lon_k_s, want_axis=dir_axis_i,
-                        deadband=0.15, tie_tol=0.05
-                    )
-
-                mean_d = float(d.mean())
-                median_d = float(np.median(d))
-                min_d = float(d.min())
-
-                mean_windowed = np.nan
-                if use_windowed_mean:
-                    # average distance in a ±window_ft band around the minimum
-                    idx_min = int(np.argmin(d))
-                    s0 = s_targets[idx_min]
-                    win_mask = (s_targets >= s0 - window_ft) & (s_targets <= s0 + window_ft)
-                    if win_mask.any():
-                        mean_windowed = float(d[win_mask].mean())
-
-                A = coords[i]; B = coords[k]
-                vertical = float(abs(B[2] - A[2]))
-                dist3d = float(np.hypot(mean_d, vertical))
-
-                rows.append({
-                    "well_i": uwi_i, "well_k": uwi_k,
-                    "horizontal_dist": mean_d,
-                    "horizontal_dist_median": median_d,
-                    "vertical_dist": vertical, "3D_dist": dist3d,
-                    "drill_direction_i": directions[i], "drill_direction_k": directions[k],
-
-                    # keep NaN for no x-overlap concept
-                    "overlap_len_common_ft": float("nan"),          # NEW
-
-                    # NEW: still emit full LLs; overlap% not applicable here
-                    "LL_i": float(LL_cache[uwi_i]),                 # NEW
-                    "LL_k": float(LL_cache[uwi_k]),                 # NEW
-                    "overlap_pct_i": float("nan"),                  # NEW
-                    "overlap_pct_k": float("nan"),                  # NEW
-
-                    "n_samples": int(n),
-                    "dy_p5": np.nan,
-                    "angle_deg": float(angles[idx_k]),
-                    "pair_alignment": "oblique" if is_oblique[idx_k] else "perpendicular",
-                    "min_distance_ft": min_d,
-                    "mean_windowed_ft": mean_windowed,
-                    "reject_reason": "",
-                    "direction_axis": dir_axis_i,
-                    "direction_to_k_from_i_axis": dir_mode_axis,
-                    "direction_axis_confidence": dir_conf_axis,
-                    "direction_axis_distribution": dist_str_axis,
-                    "axis_forced": True
-                })
-
+                # Survivors after coarse cull → unified pair engine
+                res, _ = self._compute_pair_metrics_and_artifacts(
+                    uwi_i=uwi_i,
+                    uwi_k=ids[k],
+                    step_ft=step_ft,
+                    n_samples=n_samples,
+                    max_crossline_ft=max_crossline_ft,
+                    crossline_percentile=crossline_percentile,
+                    ds_crossline_step_ft=ds_crossline_step_ft,
+                    use_pca_axis=use_pca_axis,
+                    theta_parallel_deg=theta_parallel_deg,
+                    theta_perp_deg=theta_perp_deg,
+                    reject_misaligned=reject_misaligned,
+                    use_windowed_mean=use_windowed_mean,
+                    window_ft=window_ft,
+                    drill_direction_i=directions[i],
+                    drill_direction_k=directions[k],
+                    tvd_i=float(coords[i, 2]), tvd_k=float(coords[k, 2]),
+                    want_artifacts=False
+                )
+                rows.append(_res_to_row(res))
 
         return pd.DataFrame(rows)
 #%%
@@ -1734,540 +2116,3 @@ class DirectionalBenchNeighbors:
             raise ValueError(f"spacing_df missing required columns: {sorted(missing_s)}")
         if missing_h:
             raise ValueError(f"header_df missing required columns: {sorted(missing_h)}")
-
-#%%
-
-def debug_pair_spacing(
-    df: pd.DataFrame,
-    uwi_i: Union[str, int],
-    uwi_k: Union[str, int],
-    *,
-    step_ft: int = 100,
-    use_pca_axis: bool = True,
-    theta_parallel_deg: float = 25.0,
-    theta_perp_deg: float = 65.0,
-    arrow_stride: int = 5,
-    save_dir: Optional[Union[str, os.PathLike]] = None,
-    figure_prefix: str = "spacing",
-    show: bool = True,
-) -> Dict[str, Any]:
-    # ---------- checks ----------
-    for col in ("uwi", "md", "x", "y"):
-        if col not in df.columns:
-            raise ValueError(f"df must contain column '{col}'")
-    has_ll = ("latitude" in df.columns) and ("longitude" in df.columns)
-
-    geod = None
-    if has_ll:
-        try:
-            from pyproj import Geod
-            geod = Geod(ellps="WGS84")
-        except Exception:
-            geod = None
-
-    if save_dir is not None:
-        os.makedirs(save_dir, exist_ok=True)
-
-    df_i = df[df["uwi"] == uwi_i].sort_values("md").copy()
-    df_k = df[df["uwi"] == uwi_k].sort_values("md").copy()
-    if df_i.empty or df_k.empty:
-        raise ValueError("One or both UWIs not found in df.")
-
-    # ---------- helpers ----------
-    def build_ex_from_df(df_: pd.DataFrame, use_pca: bool) -> np.ndarray:
-        XY = df_[["x", "y"]].to_numpy()
-        heel, toe = XY[0], XY[-1]
-        if use_pca and len(XY) >= 2:
-            C = XY - XY.mean(0)
-            _, _, Vt = np.linalg.svd(C, full_matrices=False)
-            ex_ = Vt[0]
-            if np.dot(ex_, toe - heel) < 0:
-                ex_ = -ex_
-        else:
-            v = toe - heel
-            ex_ = v / (np.linalg.norm(v) + 1e-12)
-        return ex_
-
-    def build_local_frame_from_i(df_i_: pd.DataFrame, use_pca: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        XY = df_i_[["x", "y"]].to_numpy()
-        origin_ = XY[0].copy()
-        ex_ = build_ex_from_df(df_i_, use_pca)
-        ey_ = np.array([-ex_[1], ex_[0]])
-        return origin_, ex_, ey_
-
-    def project_xy_to_frame(df_: pd.DataFrame, origin_: np.ndarray, ex_: np.ndarray, ey_: np.ndarray) -> np.ndarray:
-        XY = df_[["x", "y"]].to_numpy()
-        R = XY - origin_
-        return np.column_stack([R @ ex_, R @ ey_])
-
-    def arclength(X: np.ndarray) -> np.ndarray:
-        d = np.hypot(np.diff(X[:, 0]), np.diff(X[:, 1]))
-        return np.concatenate([[0.0], np.cumsum(d)])
-
-    def interp_by_arclength(X: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
-        s = arclength(X)
-        keep = np.concatenate([[True], np.diff(s) > 1e-9])
-        s, Xc = s[keep], X[keep]
-        xi = np.interp(s_targets, s, Xc[:, 0])
-        yi = np.interp(s_targets, s, Xc[:, 1])
-        return np.column_stack([xi, yi])
-
-    def x_overlap_interval(Xi_: np.ndarray, Xk_: np.ndarray) -> Optional[Tuple[float, float]]:
-        xi_min, xi_max = Xi_[:, 0].min(), Xi_[:, 0].max()
-        xk_min, xk_max = Xk_[:, 0].min(), Xk_[:, 0].max()
-        x_lo_, x_hi_ = max(xi_min, xk_min), min(xi_max, xk_max)
-        return (x_lo_, x_hi_) if (x_hi_ > x_lo_) else None
-
-    def clip_by_x_band(X: np.ndarray, band: Tuple[float, float]) -> np.ndarray:
-        x_lo_, x_hi_ = band
-        x = X[:, 0]
-        pts = []
-        for j in range(len(X) - 1):
-            x0, x1 = x[j], x[j + 1]
-            P0, P1 = X[j], X[j + 1]
-            seg_min, seg_max = (x0, x1) if x0 <= x1 else (x1, x0)
-            if seg_max < x_lo_ or seg_min > x_hi_:
-                continue
-            if x_lo_ <= x0 <= x_hi_:
-                pts.append(P0)
-            for xb in (x_lo_, x_hi_):
-                denom = (x1 - x0)
-                if denom != 0.0 and (x0 - xb) * (x1 - xb) < 0.0:
-                    t = (xb - x0) / denom
-                    pts.append(P0 + t * (P1 - P0))
-            if j == len(X) - 2 and (x_lo_ <= x1 <= x_hi_):
-                pts.append(P1)
-        if not pts:
-            return np.empty((0, 2))
-        P = np.vstack(pts)
-        if len(P) > 1:
-            dup = np.all(np.isclose(np.diff(P, axis=0), 0.0, atol=1e-9), axis=1)
-            keep = np.ones(len(P), dtype=bool); keep[1:] = ~dup
-            P = P[keep]
-        return P
-
-    def interp_y_of_x(X: np.ndarray, x_targets: np.ndarray) -> np.ndarray:
-        x = X[:, 0]; y = X[:, 1]
-        order = np.argsort(x)
-        xs, ys = x[order], y[order]
-        keep = np.concatenate([[True], np.diff(xs) > 1e-9])
-        xs, ys = xs[keep], ys[keep]
-        if xs.size == 0: return np.zeros_like(x_targets, dtype=float)
-        if xs.size == 1: return np.full_like(x_targets, ys[0], dtype=float)
-        xq = np.clip(x_targets, xs[0], xs[-1])
-        return np.interp(xq, xs, ys)
-
-    def clip_with_latlon_by_x_band(
-        X: np.ndarray, lat: np.ndarray, lon: np.ndarray, band: Tuple[float, float]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        x_lo_, x_hi_ = band
-        x = X[:, 0]
-        pts_xy, pts_lat, pts_lon = [], [], []
-        for j in range(len(X) - 1):
-            x0, x1 = x[j], x[j + 1]
-            P0, P1 = X[j], X[j + 1]
-            lat0, lat1 = lat[j], lat[j + 1]
-            lon0, lon1 = lon[j], lon[j + 1]
-            seg_min, seg_max = (x0, x1) if x0 <= x1 else (x1, x0)
-            if seg_max < x_lo_ or seg_min > x_hi_:
-                continue
-            if x_lo_ <= x0 <= x_hi_:
-                pts_xy.append(P0); pts_lat.append(lat0); pts_lon.append(lon0)
-            for xb in (x_lo_, x_hi_):
-                denom = (x1 - x0)
-                if denom != 0.0 and (x0 - xb) * (x1 - xb) < 0.0:
-                    t = (xb - x0) / denom
-                    pts_xy.append(P0 + t * (P1 - P0))
-                    pts_lat.append(lat0 + t * (lat1 - lat0))
-                    pts_lon.append(lon0 + t * (lon1 - lon0))
-            if j == len(X) - 2 and (x_lo_ <= x1 <= x_hi_):
-                pts_xy.append(P1); pts_lat.append(lat1); pts_lon.append(lon1)
-        if not pts_xy:
-            return np.empty((0, 2)), np.empty((0,)), np.empty((0,))
-        XYc = np.vstack(pts_xy)
-        latc = np.asarray(pts_lat, dtype=float)
-        lonc = np.asarray(pts_lon, dtype=float)
-        if len(XYc) > 1:
-            dup = np.all(np.isclose(np.diff(XYc, axis=0), 0.0, atol=1e-9), axis=1)
-            keep = np.ones(len(XYc), dtype=bool); keep[1:] = ~dup
-            XYc, latc, lonc = XYc[keep], latc[keep], lonc[keep]
-        return XYc, latc, lonc
-
-    def crossline_stats_from_overlap(
-        Xi_seg_: np.ndarray, Xk_seg_: np.ndarray, step: int
-    ) -> Tuple[float, float, float, float, int, np.ndarray, np.ndarray, np.ndarray]:
-        if Xi_seg_.size == 0 or Xk_seg_.size == 0:
-            return (np.nan, np.nan, np.nan, np.nan, 0,
-                    np.empty((0,)), np.empty((0,)), np.empty((0,)))
-        xi_min, xi_max = float(Xi_seg_[:, 0].min()), float(Xi_seg_[:, 0].max())
-        xk_min, xk_max = float(Xk_seg_[:, 0].min()), float(Xk_seg_[:, 0].max())
-        x_lo_, x_hi_ = max(xi_min, xk_min), min(xi_max, xk_max)
-        if not (x_hi_ > x_lo_):
-            return (np.nan, np.nan, np.nan, np.nan, 0,
-                    np.empty((0,)), np.empty((0,)), np.empty((0,)))
-        step = max(int(step), 1)
-        N = max(int(np.floor((x_hi_ - x_lo_) / step)) + 1, 2)
-        xgrid = np.linspace(x_lo_, x_hi_, N)
-        yi = interp_y_of_x(Xi_seg_, xgrid)
-        yk = interp_y_of_x(Xk_seg_, xgrid)
-        dy = np.abs(yk - yi)
-        return float(dy.mean()), float(np.median(dy)), float(np.percentile(dy, 5)), float(np.percentile(dy, 95)), int(N), xgrid, yi, yk
-
-    def local_to_utm(X_local: np.ndarray, origin_: np.ndarray, ex_: np.ndarray, ey_: np.ndarray) -> np.ndarray:
-        return origin_[None, :] + X_local[:, [0]] * ex_[None, :] + X_local[:, [1]] * ey_[None, :]
-
-    def bin4_from_geod_az(az_deg_from_north: np.ndarray) -> np.ndarray:
-        labels = np.array(["N", "E", "S", "W"], dtype=object)
-        a = az_deg_from_north % 360.0
-        idx = ((a + 45.0) // 90.0).astype(int) % 4
-        return labels[idx]
-
-    def vec_nearest_to_polyline(P: np.ndarray, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        A = X[:-1]; B = X[1:]; AB = B - A
-        AP = P[:, None, :] - A[None, :, :]
-        denom = (AB[None, :, 0]**2 + AB[None, :, 1]**2)
-        denom = np.where(denom == 0.0, 1e-12, denom)
-        t = (AP[...,0]*AB[None,:,0] + AP[...,1]*AB[None,:,1]) / denom
-        t = np.clip(t, 0.0, 1.0)
-        Qall = A[None, :, :] + t[..., None] * AB[None, :, :]
-        diff = Qall - P[:, None, :]
-        d2 = diff[...,0]**2 + diff[...,1]**2
-        j = np.argmin(d2, axis=1)
-        d = np.sqrt(d2[np.arange(P.shape[0]), j])
-        t_sel = t[np.arange(P.shape[0]), j]
-        Q = Qall[np.arange(P.shape[0]), j]
-        return d, j, t_sel, Q
-
-    # ---------- frames & angle ----------
-    origin, ex_i, ey_i = build_local_frame_from_i(df_i, use_pca_axis)
-    Xi = project_xy_to_frame(df_i, origin, ex_i, ey_i)
-    Xk = project_xy_to_frame(df_k, origin, ex_i, ey_i)
-
-    ex_k_global = build_ex_from_df(df_k, use_pca_axis)
-    angle_deg = float(np.degrees(np.arccos(np.clip(abs(np.dot(ex_i, ex_k_global)), -1.0, 1.0))))
-    alignment = "parallel_like" if angle_deg <= theta_parallel_deg else ("perpendicular" if angle_deg >= theta_perp_deg else "oblique")
-
-    # ---------- always save map + i-frame ----------
-    paths: Dict[str, str] = {}
-    def save_fig(fig, key):
-        if save_dir is not None:
-            p = os.path.join(save_dir, f"{figure_prefix}_{key}.png")
-            fig.savefig(p, dpi=150, bbox_inches="tight"); paths[key] = p
-        plt.close(fig)
-
-    fig_map = plt.figure(figsize=(8, 5)); ax = fig_map.add_subplot(111)
-    ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}")
-    ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}")
-    ax.axis("equal"); ax.legend()
-    ax.set_title("Original UTM map view")
-    ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
-    save_fig(fig_map, "map_view")
-
-    fig_if = plt.figure(figsize=(8, 5)); ax = fig_if.add_subplot(111)
-    ax.plot(Xi[:, 0], Xi[:, 1], label="i in i-frame")
-    ax.plot(Xk[:, 0], Xk[:, 1], label="k in i-frame")
-    ax.axis("equal"); ax.legend()
-    ax.set_title("Projected into i-frame")
-    ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
-    save_fig(fig_if, "projected_iframe")
-
-    # we’ll collect panels with kind info: ("title","cart/polar", drawer OR theta)
-    panels: List[Tuple[str, str, Any]] = []
-    panels.append(("Original UTM map view", "cart",
-                   lambda ax: (ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}"),
-                               ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}"),
-                               ax.axis("equal"), ax.legend(),
-                               ax.set_xlabel("Easting (ft)"), ax.set_ylabel("Northing (ft)"))))
-    panels.append(("Projected into i-frame", "cart",
-                   lambda ax: (ax.plot(Xi[:, 0], Xi[:, 1], label="i in i-frame"),
-                               ax.plot(Xk[:, 0], Xk[:, 1], label="k in i-frame"),
-                               ax.axis("equal"), ax.legend(),
-                               ax.set_xlabel("x (along i)"), ax.set_ylabel("y (crossline)"))))
-
-    metrics: Dict[str, Any] = {"pair_alignment": alignment, "angle_deg": angle_deg, "paths": paths}
-
-    # ---------- PARALLEL-LIKE ----------
-    if alignment == "parallel_like":
-        band = x_overlap_interval(Xi, Xk)
-
-        fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
-        ax.plot(Xi[:, 0], Xi[:, 1], label="i (full)")
-        ax.plot(Xk[:, 0], Xk[:, 1], label="k (full)")
-        if band is not None:
-            x_lo, x_hi = band
-            ax.axvline(x_lo, linestyle="--"); ax.axvline(x_hi, linestyle="--")
-        ax.axis("equal"); ax.legend()
-        ax.set_title("Overlap band (x in i-frame)")
-        ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
-        save_fig(fig, "overlap_band")
-
-        panels.append(("Overlap band (x in i-frame)", "cart",
-                      lambda ax: (ax.plot(Xi[:, 0], Xi[:, 1], label="i (full)"),
-                                  ax.plot(Xk[:, 0], Xk[:, 1], label="k (full)"),
-                                  (band is not None and (ax.axvline(x_lo, ls="--"), ax.axvline(x_hi, ls="--"))),
-                                  ax.axis("equal"), ax.legend(),
-                                  ax.set_xlabel("x (along i)"), ax.set_ylabel("y (crossline)"))))
-
-        if band is None:
-            metrics.update({
-                "overlap_x_band": None,
-                "crossline_mean_ft": np.nan, "crossline_median_ft": np.nan,
-                "crossline_p05_ft": np.nan, "crossline_p95_ft": np.nan,
-                "crossline_n_stations": 0,
-                "direction_mode_4way": None, "direction_confidence": np.nan,
-                "direction_distribution": {},
-            })
-        else:
-            x_lo, x_hi = band
-            Xi_seg = clip_by_x_band(Xi, band)
-            Xk_seg = clip_by_x_band(Xk, band)
-
-            # clipped segments figure
-            fig = plt.figure(figsize=(8, 5)); ax = fig.add_subplot(111)
-            if Xi_seg.size: ax.plot(Xi_seg[:, 0], Xi_seg[:, 1], label="i (clipped)")
-            if Xk_seg.size: ax.plot(Xk_seg[:, 0], Xk_seg[:, 1], label="k (clipped)")
-            ax.axis("equal"); ax.legend()
-            ax.set_title("Clipped segments used for spacing")
-            ax.set_xlabel("x (along i)"); ax.set_ylabel("y (crossline)")
-            save_fig(fig, "clipped_segments")
-
-            panels.append(("Clipped segments for spacing", "cart",
-                           lambda ax: ((Xi_seg.size and ax.plot(Xi_seg[:, 0], Xi_seg[:, 1], label="i (clipped)")),
-                                       (Xk_seg.size and ax.plot(Xk_seg[:, 0], Xk_seg[:, 1], label="k (clipped)")),
-                                       ax.axis("equal"), ax.legend(),
-                                       ax.set_xlabel("x (along i)"), ax.set_ylabel("y (crossline)"))))
-
-            # crossline stats
-            cross_mean, cross_median, cross_p05, cross_p95, N, xgrid, yi, yk = crossline_stats_from_overlap(
-                Xi_seg, Xk_seg, step=step_ft
-            )
-            if N > 0:
-                dy = np.abs(yk - yi)
-                fig = plt.figure(figsize=(8, 4)); ax = fig.add_subplot(111)
-                ax.plot(xgrid - x_lo, dy)
-                ax.set_title(f"Crossline |Δy(x)|; mean={cross_mean:.1f} ft, median={cross_median:.1f} ft")
-                ax.set_xlabel("Along-overlap x (ft from band start)"); ax.set_ylabel("|Δy| (ft)")
-                save_fig(fig, "crossline_dy_series")
-
-                panels.append((f"Crossline |Δy(x)|; mean={cross_mean:.1f}, median={cross_median:.1f}", "cart",
-                               lambda ax: (ax.plot(xgrid - x_lo, np.abs(yk - yi)),
-                                           ax.set_xlabel("Along-overlap x (ft)"),
-                                           ax.set_ylabel("|Δy| (ft)"))))
-
-                # UTM arrows
-                Xi_utml = local_to_utm(np.column_stack([xgrid, yi]), origin, ex_i, ey_i)
-                Xk_utml = local_to_utm(np.column_stack([xgrid, yk]), origin, ex_i, ey_i)
-                U = Xk_utml[:, 0] - Xi_utml[:, 0]
-                V = Xk_utml[:, 1] - Xi_utml[:, 1]
-                fig = plt.figure(figsize=(8, 6)); ax = fig.add_subplot(111)
-                ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}")
-                ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}")
-                ax.quiver(Xi_utml[::arrow_stride, 0], Xi_utml[::arrow_stride, 1],
-                          U[::arrow_stride], V[::arrow_stride],
-                          angles='xy', scale_units='xy', scale=1, width=0.002)
-                ax.axis("equal"); ax.legend()
-                ax.set_title("Crossline sampling pairs in UTM with direction arrows (i → k)")
-                ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
-                save_fig(fig, "pairs_utm_crossline_dir")
-
-                panels.append(("Crossline pairs in UTM (i→k arrows)", "cart",
-                               lambda ax: (ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}"),
-                                           ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}"),
-                                           ax.quiver(Xi_utml[::arrow_stride, 0], Xi_utml[::arrow_stride, 1],
-                                                     U[::arrow_stride], V[::arrow_stride],
-                                                     angles='xy', scale_units='xy', scale=1, width=0.002),
-                                           ax.axis("equal"), ax.legend(),
-                                           ax.set_xlabel("Easting (ft)"), ax.set_ylabel("Northing (ft)"))))
-
-                # directions
-                if has_ll:
-                    lat_i = df_i["latitude"].to_numpy(float); lon_i = df_i["longitude"].to_numpy(float)
-                    lat_k = df_k["latitude"].to_numpy(float); lon_k = df_k["longitude"].to_numpy(float)
-                    Xi_seg_ll, lat_i_seg, lon_i_seg = clip_with_latlon_by_x_band(Xi, lat_i, lon_i, band)
-                    Xk_seg_ll, lat_k_seg, lon_k_seg = clip_with_latlon_by_x_band(Xk, lat_k, lon_k, band)
-                    if (lat_i_seg.size > 0) and (lat_k_seg.size > 0) and geod is not None:
-                        lat_i_x = np.interp(xgrid, Xi_seg_ll[:, 0], lat_i_seg)
-                        lon_i_x = np.interp(xgrid, Xi_seg_ll[:, 0], lon_i_seg)
-                        lat_k_x = np.interp(xgrid, Xk_seg_ll[:, 0], lat_k_seg)
-                        lon_k_x = np.interp(xgrid, Xk_seg_ll[:, 0], lon_k_seg)
-                        az12, _, _ = geod.inv(lon_i_x, lat_i_x, lon_k_x, lat_k_x)
-                        labels = bin4_from_geod_az(az12)
-                        theta_rose = np.deg2rad((90.0 - az12) % 360.0)
-                    else:
-                        dv = Xk_utml - Xi_utml
-                        ang_east = np.degrees(np.arctan2(dv[:, 1], dv[:, 0]))
-                        az_from_n = (90.0 - ang_east) % 360.0
-                        labels = bin4_from_geod_az(az_from_n)
-                        theta_rose = np.deg2rad((90.0 - az_from_n) % 360.0)
-                else:
-                    dv = Xk_utml - Xi_utml
-                    ang_east = np.degrees(np.arctan2(dv[:, 1], dv[:, 0]))
-                    az_from_n = (90.0 - ang_east) % 360.0
-                    labels = bin4_from_geod_az(az_from_n)
-                    theta_rose = np.deg2rad((90.0 - az_from_n) % 360.0)
-
-                uniq, counts = np.unique(labels, return_counts=True)
-                best = int(np.argmax(counts))
-                dir_mode = str(uniq[best]); dir_conf = counts[best] / float(labels.size)
-                dist_map = {str(u): float(c) / float(labels.size) for u, c in zip(uniq, counts)}
-
-                # save standalone polar
-                fig = plt.figure(figsize=(6, 6))
-                ax = fig.add_subplot(111, projection='polar')
-                bins = np.linspace(0.0, 2*np.pi, 5)
-                counts_b, _ = np.histogram(theta_rose % (2*np.pi), bins=bins)
-                widths = np.diff(bins); centers_b = bins[:-1] + widths/2
-                ax.bar(centers_b, counts_b, width=widths, align='center')
-                ax.set_title(f"Direction i→k (modal {dir_mode}, conf {dir_conf:.2f})")
-                save_fig(fig, "direction_rose")
-
-                # add to combined grid as POLAR
-                panels.append((f"Direction i→k (modal {dir_mode}, conf {dir_conf:.2f})",
-                               "polar", theta_rose))
-
-                metrics.update({
-                    "overlap_x_band": (float(x_lo), float(x_hi)),
-                    "overlap_len_ft": float(x_hi - x_lo),
-                    "crossline_mean_ft": float(cross_mean),
-                    "crossline_median_ft": float(cross_median),
-                    "crossline_p05_ft": float(cross_p05),
-                    "crossline_p95_ft": float(cross_p95),
-                    "crossline_n_stations": int(N),
-                    "direction_mode_4way": dir_mode,
-                    "direction_confidence": float(dir_conf),
-                    "direction_distribution": dist_map,
-                })
-            else:
-                metrics.update({
-                    "overlap_x_band": (float(x_lo), float(x_hi)),
-                    "overlap_len_ft": float(x_hi - x_lo),
-                    "crossline_mean_ft": np.nan, "crossline_median_ft": np.nan,
-                    "crossline_p05_ft": np.nan, "crossline_p95_ft": np.nan,
-                    "crossline_n_stations": 0,
-                    "direction_mode_4way": None, "direction_confidence": np.nan,
-                    "direction_distribution": {},
-                })
-
-    # ---------- OBLIQUE / PERP ----------
-    else:
-        Xi_utm = df_i[["x", "y"]].to_numpy()
-        Xk_utm = df_k[["x", "y"]].to_numpy()
-        si = arclength(Xi_utm); Li = float(si[-1])
-        step = max(int(step_ft), 1)
-        n = max(int(np.floor(Li / step)) + 1, 2)
-        s_targets = np.linspace(0.0, Li, n)
-        Pi = interp_by_arclength(Xi_utm, s_targets)
-
-        d, j_arr, t_arr, Q = vec_nearest_to_polyline(Pi, Xk_utm)
-        mean_d = float(d.mean()); median_d = float(np.median(d)); min_d = float(d.min())
-
-        # nearest series (save + panel)
-        fig = plt.figure(figsize=(8, 4)); ax = fig.add_subplot(111)
-        ax.plot(s_targets, d)
-        ax.set_title(f"Nearest-projection distance (i → k); mean={mean_d:.1f} ft, median={median_d:.1f} ft")
-        ax.set_xlabel("Distance along well i (ft)"); ax.set_ylabel("Nearest distance to k (ft)")
-        save_fig(fig, "nearest_projection_series")
-
-        panels.append((f"Nearest distance along i; mean={mean_d:.1f}, median={median_d:.1f}",
-                       "cart", lambda ax: (ax.plot(s_targets, d),
-                                           ax.set_xlabel("Distance along i (ft)"),
-                                           ax.set_ylabel("Nearest dist to k (ft)"))))
-
-        # UTM nearest segments (decimated)
-        fig = plt.figure(figsize=(8, 6)); ax = fig.add_subplot(111)
-        ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}")
-        ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}")
-        stride = max(int(arrow_stride), 1)
-        for idx in range(0, len(Pi), stride):
-            ax.plot([Pi[idx, 0], Q[idx, 0]], [Pi[idx, 1], Q[idx, 1]])
-        ax.axis("equal"); ax.legend()
-        ax.set_title("Nearest-projection segments in UTM (i samples to nearest on k)")
-        ax.set_xlabel("Easting (ft)"); ax.set_ylabel("Northing (ft)")
-        save_fig(fig, "utm_nearest_segments")
-
-        panels.append(("Nearest segments in UTM", "cart",
-                       lambda ax: (ax.plot(df_i["x"], df_i["y"], label=f"Well {uwi_i}"),
-                                   ax.plot(df_k["x"], df_k["y"], label=f"Well {uwi_k}"),
-                                   [ax.plot([Pi[idx, 0], Q[idx, 0]], [Pi[idx, 1], Q[idx, 1]])
-                                    for idx in range(0, len(Pi), stride)],
-                                   ax.axis("equal"), ax.legend(),
-                                   ax.set_xlabel("Easting (ft)"), ax.set_ylabel("Northing (ft)"))))
-
-        # directions for nearest segments
-        if has_ll and geod is not None:
-            lat_i = df_i["latitude"].to_numpy(float); lon_i = df_i["longitude"].to_numpy(float)
-            lat_k = df_k["latitude"].to_numpy(float); lon_k = df_k["longitude"].to_numpy(float)
-            lat_i_s = np.interp(s_targets, si, lat_i)
-            lon_i_s = np.interp(s_targets, si, lon_i)
-            lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
-            lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
-            az12, _, _ = geod.inv(lon_i_s, lat_i_s, lon_k_s, lat_k_s)
-            labels = bin4_from_geod_az(az12)
-            theta_rose = np.deg2rad((90.0 - az12) % 360.0)
-        else:
-            dv = Q - Pi
-            ang_east = np.degrees(np.arctan2(dv[:, 1], dv[:, 0]))
-            az_from_n = (90.0 - ang_east) % 360.0
-            labels = bin4_from_geod_az(az_from_n)
-            theta_rose = np.deg2rad((90.0 - az_from_n) % 360.0)
-
-        uniq, counts = np.unique(labels, return_counts=True)
-        best = int(np.argmax(counts))
-        dir_mode = str(uniq[best]); dir_conf = counts[best] / float(labels.size)
-        dist_map = {str(u): float(c) / float(labels.size) for u, c in zip(uniq, counts)}
-
-        # save standalone polar
-        fig = plt.figure(figsize=(6, 6))
-        ax = fig.add_subplot(111, projection='polar')
-        bins = np.linspace(0.0, 2*np.pi, 5)
-        counts_b, _ = np.histogram(theta_rose % (2*np.pi), bins=bins)
-        widths = np.diff(bins); centers_b = bins[:-1] + widths/2
-        ax.bar(centers_b, counts_b, width=widths, align='center')
-        ax.set_title(f"Direction i→k (modal {dir_mode}, conf {dir_conf:.2f})")
-        save_fig(fig, "direction_rose")
-
-        # add to combined grid as POLAR
-        panels.append((f"Direction i→k (modal {dir_mode}, conf {dir_conf:.2f})",
-                       "polar", theta_rose))
-
-        metrics.update({
-            "nearest_mean_ft": mean_d, "nearest_median_ft": median_d, "nearest_min_ft": min_d,
-            "n_samples": int(n),
-            "direction_mode_4way": dir_mode,
-            "direction_confidence": float(dir_conf),
-            "direction_distribution": dist_map,
-        })
-
-    # ---------- combined grid (with polar support) ----------
-    if show and panels:
-        n_cols = 2
-        n_rows = int(np.ceil(len(panels) / n_cols))
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 5 * n_rows), constrained_layout=True)
-        axes = np.atleast_2d(axes)
-
-        for idx, (title, kind, payload) in enumerate(panels):
-            r, c = divmod(idx, n_cols)
-            ax = axes[r, c]
-            if kind == "cart":
-                ax.set_title(title)
-                payload(ax)  # drawer
-            else:
-                # replace this cell with a polar subplot
-                fig.delaxes(ax)
-                axp = fig.add_subplot(n_rows, n_cols, idx + 1, projection="polar")
-                axp.set_title(title)
-                theta = payload
-                if theta.size > 0:
-                    bins = np.linspace(0.0, 2*np.pi, 5)
-                    counts_b, _ = np.histogram(theta % (2*np.pi), bins=bins)
-                    widths = np.diff(bins); centers_b = bins[:-1] + widths/2
-                    axp.bar(centers_b, counts_b, width=widths, align='center')
-
-        # hide unused cells
-        for j in range(len(panels), n_rows * n_cols):
-            r, c = divmod(j, n_cols)
-            axes[r, c].axis("off")
-        plt.show()
-
-    return metrics
-#%%

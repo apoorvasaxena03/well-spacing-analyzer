@@ -1,37 +1,37 @@
-#%%
-from __future__ import annotations # Enabling future annotations for type hinting
+#%% Imports
+from __future__ import annotations 
 
-import os # Importing os module for operating system dependent functionality
+import os
+from pathlib import Path
 
-import pandas as pd # Importing pandas package
+import pandas as pd 
 
-# Set the maximum number of columns to display to None
-pd.set_option('display.max_columns', None)
+pd.set_option('display.max_columns', None) # show all columns when printing DataFrames
 
-import numpy as np # Importing numpy package
+import numpy as np
 
-from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable # Importing specific types from typing module
+import math
 
-from tqdm import tqdm # Importing tqdm for progress bar functionality
+from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable
 
-import datetime
+from tqdm import tqdm 
 
-from joblib import Parallel, delayed # Importing Parallel and delayed for parallel processing
+from joblib import Parallel, delayed 
 
-from matplotlib import pyplot as plt # Importing pyplot from matplotlib for plotting
+from matplotlib import pyplot as plt 
 
-from pyproj import Geod # Importing Geod class from pyproj for geodetic calculations
+from pyproj import Geod 
 
-from dataclasses import dataclass # Importing dataclass decorator for creating data classes
-from enum import Enum, auto # Importing Enum and auto for creating enumerations
+from dataclasses import dataclass 
+from enum import Enum, auto
 
-#%%
+#%% # ==================== Well Spacing Calculator ====================
+
 class AlignmentType(Enum):
     PARALLEL_LIKE = auto()
     OBLIQUE = auto()
     PERPENDICULAR = auto()
     MISALIGNED = auto()
-
 @dataclass
 class SpacingResult:
     # core identifiers
@@ -73,6 +73,13 @@ class SpacingResult:
     # marker
     axis_forced: bool = True
 
+    # contact + coverage metrics for oblique/perp ---
+    contact_threshold_ft: float = float("nan")
+    contact_len_i_ft: float = float("nan")
+    contact_pct_i: float = float("nan")
+    contact_len_i_interior_ft: float = float("nan")
+    contact_pct_i_interior: float = float("nan")
+    proj_coverage_i_pct: float = float("nan")
 @dataclass
 class PairArtifacts:
     # Always useful
@@ -125,6 +132,117 @@ class WellSpacingCalculator:
             ).reset_index(drop=True)
         else:
             raise ValueError("Invalid type for trajectories. Must be DataFrame or Dict.")
+        
+    def _apply_effective_horizontal(
+        self,
+        spacing_df: pd.DataFrame,
+        *,
+        inplace: bool = True,
+        keep_effective_3d_audit: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Normalize the horizontal metric across alignments and recompute 3D distance (vectorized).
+
+        This post-processing step makes the *live* ``horizontal_dist`` semantically correct for all
+        alignment classes so downstream consumers (e.g., :class:`DirectionalBenchNeighbors`) can
+        rank/filter on a single column:
+
+        - ``pair_alignment == "parallel_like"``  → keep the original crossline-mean spacing
+        (computed over the true overlap band in the i-frame).
+        - ``pair_alignment in {"oblique", "perpendicular", "misaligned"}`` → use
+        ``min_distance_ft`` (closest approach from the nearest-projection series).
+
+        Audit columns are added/preserved to keep full transparency, and ``3D_dist`` is overwritten
+        to reflect the effective horizontal spacing.
+
+        Parameters
+        ----------
+        spacing_df : pandas.DataFrame
+            Spacing output with **one row per (well_i, well_k)**. Must contain at least:
+            ``["horizontal_dist", "vertical_dist", "pair_alignment", "min_distance_ft"]``.
+            If ``"3D_dist"`` exists, it will be **overwritten**.
+        inplace : bool, default True
+            If True, modify ``spacing_df`` in place and return it. If False, operate on a copy.
+        keep_effective_3d_audit : bool, default True
+            If True, also write an audit copy of the recomputed 3D as ``"3D_dist_effective"`` before
+            overwriting ``"3D_dist"``.
+
+        Returns
+        -------
+        pandas.DataFrame
+            The modified DataFrame (same object if ``inplace=True``) with these columns updated/added:
+            - ``horizontal_crossline_mean_ft`` : float
+                Audit copy of the *pre-modification* ``horizontal_dist``.
+                *Note*: for oblique/perp/misaligned rows, this reflects the **nearest-projection mean**
+                (because that was the original definition of ``horizontal_dist`` for those rows).
+            - ``hz_effective`` : float
+                Effective horizontal used for selection/cutoffs (crossline mean for parallel_like;
+                min nearest for oblique/perpendicular/misaligned).
+            - ``hz_basis`` : {"crossline_mean", "min_nearest"}
+                Provenance flag for ``hz_effective``.
+            - ``horizontal_dist`` : float
+                **Overwritten** with ``hz_effective`` so all downstream logic uses the right metric.
+            - ``3D_dist`` : float
+                **Overwritten** as ``hypot(horizontal_dist, vertical_dist)`` using the effective horizontal.
+            - ``3D_dist_effective`` : float, optional
+                Present only when ``keep_effective_3d_audit=True``; duplicate of the recomputed 3D.
+
+        Raises
+        ------
+        ValueError
+            If any required column is missing from ``spacing_df``.
+
+        Notes
+        -----
+        - This method is intended to be called **once** at the end of the spacing computation
+        (e.g., inside ``_calculate_spacing_statistics`` right before returning or saving batches),
+        so parquet outputs are already normalized.
+        - Rows with non-parallel alignment but missing/NaN ``min_distance_ft`` will keep NaN
+        in the effective fields and naturally fall out under standard distance cutoffs.
+
+        Examples
+        --------
+        >>> out = wsc._process_batch(...)          # internal pipeline step
+        >>> out = wsc._apply_effective_horizontal(out, inplace=False)
+        >>> out.filter(items=["well_i","well_k","pair_alignment",
+        ...                   "horizontal_crossline_mean_ft","hz_effective",
+        ...                   "hz_basis","horizontal_dist","vertical_dist","3D_dist"]).head()
+        """
+        required = {"horizontal_dist", "vertical_dist", "pair_alignment", "min_distance_ft"}
+        missing = required - set(spacing_df.columns)
+        if missing:
+            raise ValueError(f"spacing_df is missing required columns: {sorted(missing)}")
+
+        df = spacing_df if inplace else spacing_df.copy()
+
+        # Preserve original horizontal_dist for QA (name kept for continuity)
+        if "horizontal_crossline_mean_ft" not in df.columns:
+            df["horizontal_crossline_mean_ft"] = df["horizontal_dist"]
+
+        # Vectorized effective horizontal
+        align = (
+            df["pair_alignment"].astype(str).str.lower().str.replace(" ", "_", regex=False)
+        )
+        is_parallel = align.eq("parallel_like")
+
+        hz_eff = np.where(
+            is_parallel.to_numpy(),
+            df["horizontal_dist"].to_numpy(),   # crossline mean (parallel_like)
+            df["min_distance_ft"].to_numpy(),   # min nearest (oblique/perp)
+        )
+        df["hz_effective"] = hz_eff
+        df["hz_basis"] = np.where(is_parallel.to_numpy(), "crossline_mean", "min_nearest")
+
+        # Overwrite live horizontal_dist so downstream consumers (e.g., DBN) use the right number
+        df["horizontal_dist"] = df["hz_effective"]
+
+        # Recompute and overwrite 3D using the effective horizontal
+        eff_3d = np.hypot(df["horizontal_dist"].to_numpy(), df["vertical_dist"].to_numpy())
+        if keep_effective_3d_audit:
+            df["3D_dist_effective"] = eff_3d
+        df["3D_dist"] = eff_3d
+
+        return df
 
     def _calculate_spacing_statistics(
         self,
@@ -149,6 +267,9 @@ class WellSpacingCalculator:
         # perpendicular optional smoothing
         use_windowed_mean: bool = False,
         window_ft: float = 300.0,
+        # --- NEW: oblique/perp adjacency metrics ---
+        contact_threshold_ft: float = 300.0,     # distance T for "contact" along i
+        coverage_epsilon: float = 1e-3,          # interior cutoff for t in (ε, 1-ε)
     ) -> Optional[pd.DataFrame]:
         """
         Compute spacing metrics for all well pairs, now with angle-aware routing:
@@ -199,7 +320,13 @@ class WellSpacingCalculator:
                 reject_misaligned=reject_misaligned,
                 use_windowed_mean=use_windowed_mean,
                 window_ft=window_ft,
+                contact_threshold_ft=contact_threshold_ft,
+                coverage_epsilon=coverage_epsilon,
             )
+
+            # ▶ Apply effective horizontal ONCE per batch (so saved parquet is already normalized)
+            self._apply_effective_horizontal(batch_df, inplace=True, keep_effective_3d_audit=True)
+
             if save_batches_dir:
                 filepath = os.path.join(save_batches_dir, f"spacing_batch_{batch_number:04d}.parquet")
                 batch_df.to_parquet(filepath, index=False)
@@ -223,7 +350,10 @@ class WellSpacingCalculator:
             print(f"✅ All batches saved to {save_batches_dir}")
             return None
         else:
-            return pd.concat(results, ignore_index=True)
+            out = pd.concat(results, ignore_index=True)
+            # ▶ Apply effective horizontal ONCE globally if not saving batches
+            out = self._apply_effective_horizontal(out, inplace=False, keep_effective_3d_audit=True)
+            return out
     
     def _load_saved_batches(self, batch_folder: str) -> pd.DataFrame:
         """
@@ -1034,6 +1164,8 @@ class WellSpacingCalculator:
         reject_misaligned: bool,
         use_windowed_mean: bool,
         window_ft: float,
+        contact_threshold_ft: float,
+        coverage_epsilon: float,
         drill_direction_i: Optional[str] = None,
         drill_direction_k: Optional[str] = None,
         tvd_i: Optional[float] = None,
@@ -1272,6 +1404,28 @@ class WellSpacingCalculator:
         Pi = self._interp_by_arclength(Xi_utm, s_targets)
         d, j_arr, t_arr = self._nearest_distances_to_polyline(Pi, Xk_utm)
 
+        # --- NEW: contact length + projection coverage (vectorized) ---
+        T = float(contact_threshold_ft) if contact_threshold_ft is not None else float("nan")
+        eps = max(float(coverage_epsilon), 0.0)
+
+        if d.size:
+            # thresholded "contact" along i
+            mask_contact = d <= T if np.isfinite(T) else np.zeros_like(d, dtype=bool)
+            contact_pct = float(mask_contact.mean()) if np.isfinite(T) else np.nan
+            contact_len = contact_pct * Li if np.isfinite(T) else np.nan
+
+            # interior-only mask based on orthogonal projection parameter t∈(ε,1-ε)
+            mask_interior = (t_arr > eps) & (t_arr < (1.0 - eps))
+            proj_cov_pct = float(mask_interior.mean())
+
+            # combined: contact AND interior
+            mask_contact_int = mask_contact & mask_interior if np.isfinite(T) else np.zeros_like(mask_interior, dtype=bool)
+            contact_pct_int = float(mask_contact_int.mean()) if np.isfinite(T) else np.nan
+            contact_len_int = contact_pct_int * Li if np.isfinite(T) else np.nan
+        else:
+            contact_pct = contact_len = proj_cov_pct = contact_pct_int = contact_len_int = np.nan
+
+
         # direction over nearest points if lat/lon available
         if has_ll and n > 0:
             lat_i = df_i["latitude"].to_numpy(float)
@@ -1321,7 +1475,13 @@ class WellSpacingCalculator:
             direction_axis_confidence=float(dir_conf_axis) if np.isfinite(dir_conf_axis) else np.nan,
             direction_axis_distribution=dir_dist_axis or "",
             drill_direction_i=dir_i, drill_direction_k=dir_k,
-            axis_forced=True
+            axis_forced=True,
+            contact_threshold_ft=T,
+            contact_len_i_ft=contact_len,
+            contact_pct_i=contact_pct,
+            contact_len_i_interior_ft=contact_len_int,
+            contact_pct_i_interior=contact_pct_int,
+            proj_coverage_i_pct=proj_cov_pct,
         )
 
         if want_artifacts:
@@ -1350,6 +1510,8 @@ class WellSpacingCalculator:
         save_dir: Optional[os.PathLike] = None,
         figure_prefix: str = "spacing",
         show: bool = True,
+        contact_threshold_ft: float = 300,
+        coverage_epsilon: float = 1e-3,
     ) -> Dict[str, Any]:
         """
         Visual debug for a single pair (uwi_i, uwi_k). Uses the SAME core pair engine as batch.
@@ -1366,7 +1528,9 @@ class WellSpacingCalculator:
             use_pca_axis=use_pca_axis,
             theta_parallel_deg=theta_parallel_deg, theta_perp_deg=theta_perp_deg,
             reject_misaligned=False, use_windowed_mean=True, window_ft=300.0,
-            want_artifacts=True
+            want_artifacts=True,
+            contact_threshold_ft=contact_threshold_ft,
+            coverage_epsilon=coverage_epsilon,
         )
 
         paths: Dict[str, str] = {}
@@ -1450,7 +1614,11 @@ class WellSpacingCalculator:
             if art.s_targets is not None and art.d_series is not None:
                 fig = plt.figure(figsize=(8, 4)); ax = fig.add_subplot(111)
                 ax.plot(art.s_targets, art.d_series)
-                ax.set_title(f"Nearest distance along i; mean={res.horizontal_dist:.1f} ft, median={res.horizontal_dist_median:.1f} ft")
+                # --- NEW: visualize T ---
+                if np.isfinite(res.contact_threshold_ft):
+                    ax.axhline(res.contact_threshold_ft, linestyle="--")
+                ax.set_title(f"Nearest distance along i; mean={res.horizontal_dist:.1f} ft, "
+                            f"median={res.horizontal_dist_median:.1f} ft")
                 ax.set_xlabel("Distance along well i (ft)"); ax.set_ylabel("Nearest dist to k (ft)")
                 _save(fig, "nearest_projection_series")
 
@@ -1513,7 +1681,13 @@ class WellSpacingCalculator:
             "direction_to_k_from_i_axis": res.direction_to_k_from_i_axis,
             "direction_axis_confidence": res.direction_axis_confidence,
             "direction_axis_distribution": res.direction_axis_distribution,
-            "paths": paths
+            "paths": paths,
+            "proj_coverage_i_pct": res.proj_coverage_i_pct,
+            "contact_threshold_ft": res.contact_threshold_ft,
+            "contact_len_i_ft": res.contact_len_i_ft,
+            "contact_pct_i": res.contact_pct_i,
+            "contact_len_i_interior_ft": res.contact_len_i_interior_ft,
+            "contact_pct_i_interior": res.contact_pct_i_interior,
         }
 
     def _process_batch(
@@ -1537,6 +1711,8 @@ class WellSpacingCalculator:
         reject_misaligned: bool,
         use_windowed_mean: bool,
         window_ft: float,
+        contact_threshold_ft: float,
+        coverage_epsilon: float,
     ) -> pd.DataFrame:
         """
         Angle-aware routing:
@@ -1550,7 +1726,7 @@ class WellSpacingCalculator:
         rows: List[Dict] = []
 
         def _res_to_row(res) -> Dict[str, Any]:
-            return {
+            row = {
                 "well_i": res.well_i, "well_k": res.well_k,
                 "horizontal_dist": res.horizontal_dist,
                 "horizontal_dist_median": res.horizontal_dist_median,
@@ -1572,8 +1748,50 @@ class WellSpacingCalculator:
                 "direction_to_k_from_i_axis": res.direction_to_k_from_i_axis,
                 "direction_axis_confidence": res.direction_axis_confidence,
                 "direction_axis_distribution": res.direction_axis_distribution,
-                "axis_forced": res.axis_forced
+                "axis_forced": res.axis_forced,
+                "proj_coverage_i_pct": res.proj_coverage_i_pct,
+                "contact_threshold_ft": res.contact_threshold_ft,
+                "contact_len_i_ft": res.contact_len_i_ft,
+                "contact_pct_i": res.contact_pct_i,
+                "contact_len_i_interior_ft": res.contact_len_i_interior_ft,
+                "contact_pct_i_interior": res.contact_pct_i_interior,
             }
+
+            # Threshold-tagged duplicates (e.g., T300) for instant readability
+            if np.isfinite(res.contact_threshold_ft):
+                Ttag = f"T{int(round(res.contact_threshold_ft))}"
+                row[f"contact_len_i_ft_{Ttag}"] = res.contact_len_i_ft
+                row[f"contact_pct_i_{Ttag}"] = res.contact_pct_i
+                row[f"contact_len_i_interior_ft_{Ttag}"] = res.contact_len_i_interior_ft
+                row[f"contact_pct_i_interior_{Ttag}"] = res.contact_pct_i_interior
+
+            # return combined
+            base = {
+                "well_i": res.well_i, "well_k": res.well_k,
+                "horizontal_dist": res.horizontal_dist,
+                "horizontal_dist_median": res.horizontal_dist_median,
+                "vertical_dist": res.vertical_dist,
+                "3D_dist": res.dist3d,
+                "drill_direction_i": res.drill_direction_i,
+                "drill_direction_k": res.drill_direction_k,
+                "overlap_len_common_ft": res.overlap_len_common_ft,
+                "LL_i": res.LL_i, "LL_k": res.LL_k,
+                "overlap_pct_i": res.overlap_pct_i, "overlap_pct_k": res.overlap_pct_k,
+                "n_samples": res.n_samples,
+                "dy_p5": res.dy_p5,
+                "angle_deg": res.angle_deg,
+                "pair_alignment": res.pair_alignment,
+                "min_distance_ft": res.min_distance_ft,
+                "mean_windowed_ft": res.mean_windowed_ft,
+                "reject_reason": res.reject_reason,
+                "direction_axis": res.direction_axis,
+                "direction_to_k_from_i_axis": res.direction_to_k_from_i_axis,
+                "direction_axis_confidence": res.direction_axis_confidence,
+                "direction_axis_distribution": res.direction_axis_distribution,
+                "axis_forced": res.axis_forced,
+            }
+            base.update(row)
+            return base
 
 
         if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
@@ -1716,6 +1934,8 @@ class WellSpacingCalculator:
                         drill_direction_i=directions[i],
                         drill_direction_k=directions[k],
                         tvd_i=float(coords[i, 2]), tvd_k=float(coords[k, 2]),
+                        contact_threshold_ft=contact_threshold_ft,
+                        coverage_epsilon=coverage_epsilon,
                         want_artifacts=False
                     )
                     rows.append(_res_to_row(res))
@@ -1780,81 +2000,225 @@ class WellSpacingCalculator:
                     drill_direction_i=directions[i],
                     drill_direction_k=directions[k],
                     tvd_i=float(coords[i, 2]), tvd_k=float(coords[k, 2]),
+                    contact_threshold_ft=contact_threshold_ft,
+                    coverage_epsilon=coverage_epsilon,
                     want_artifacts=False
                 )
                 rows.append(_res_to_row(res))
 
         return pd.DataFrame(rows)
-#%%
+    
+
+#%% # ==================== Directional Bench Neighbors ====================
 
 class DirectionalBenchNeighbors:
     """
-    Summarize nearest neighbors per well_i by bench and opposite direction.
+    Vectorized nearest-neighbor summarizer by bench *and* opposite direction.
 
-    For each well_i, produce:
-      - SAME-bench closest (any direction, or axis-limited) -> *_same_1
-      - SAME-bench closest in the OPPOSITE direction of same_1 -> *_same_2
-      - DIFFERENT-bench closest (any direction, or axis-limited) -> *_near_1
-      - DIFFERENT-bench closest in the OPPOSITE direction of near_1 -> *_near_2
+    This class reduces a well-to-well spacing table to **one row per `well_i`**, picking:
+      1) SAME-bench closest neighbor (axis-limited or any) → `*_same_1`
+      2) SAME-bench closest neighbor in the **opposite** compass direction of `same_1` → `*_same_2`
+      3) DIFFERENT-bench closest neighbor (axis-limited or any) → `*_near_1`
+      4) DIFFERENT-bench closest neighbor in the **opposite** compass direction of `near_1` → `*_near_2`
 
-    Required columns
-    ----------------
-    spacing_df:
-        'well_i', 'well_k', 'horizontal_dist', 'vertical_dist', '3D_dist',
-        'direction_to_k_from_i_axis', 'overlap_pct_k'
-        # overlap_pct_k is only required if overlap_pct_k_min is provided.
-    header_df:
-        'uwi', 'bench'
+    The selection is done in three vectorized phases per category (`same` / `near`):
+      (a) For each `(well_i, direction)`, select the argmin pair by `horizontal_dist`
+          (ties broken stably by `tie_break_on`, default `well_k`).
+      (b) Among **eligible directions** (controlled by `axis_mode`), pick the overall best for `*_1`.
+          If `prefer_axis` is set and there’s a tie, bias toward that axis family.
+      (c) For `*_2`, pick the best in the **opposite** direction of `*_1` (E↔W, N↔S), if any.
 
-    Parameters (at call-time)
-    -------------------------
+    All filtering (horizontal, vertical, overlap) is vectorized and applied *before* the above selection.
+
+    ----------
+    Required inputs
+    ----------
+    spacing_df : pandas.DataFrame
+        Pairwise spacing table with **one row per (well_i, well_k)** and at least:
+          - 'well_i' : str/int (will be coerced to str)
+          - 'well_k' : str/int (will be coerced to str)
+          - 'horizontal_dist' : float (feet)
+          - 'vertical_dist'   : float (feet)
+          - '3D_dist'         : float (feet)
+          - 'direction_to_k_from_i_axis' : {'E','W','N','S'}
+
+        If `overlap_pct_k_min` is provided globally or via overrides, you must also include:
+          - 'overlap_pct_k' : float in [0, 1]
+
+    header_df : pandas.DataFrame
+        Map of well → bench with:
+          - 'uwi'   : str/int (will be coerced to str; must match `well_i`/`well_k`)
+          - 'bench' : str (formation/bench label)
+
+    ----------
+    Parameters (at call time)
+    ----------
     cutoff_ft : float
-        Horizontal cutoff distance (feet).
+        Global horizontal cutoff (ft). Pairs with `horizontal_dist > cutoff_ft` are excluded,
+        unless a **per-well override** supplies a different cutoff for that `well_i`.
+
     vertical_cutoff_ft : float, optional
-        If provided, also require vertical_dist <= vertical_cutoff_ft.
-        If None, no vertical filter is applied.
+        Global vertical cutoff (ft). If provided, a row must also satisfy `vertical_dist <= vertical_cutoff_ft`.
+        If None, *no vertical rule* is applied globally (but per-well overrides can still add one).
+
     axis_mode : {'any', 'EW', 'NS'}, default 'any'
-        If 'EW', only E/W directions are eligible for the *_1 pick.
-        If 'NS', only N/S directions are eligible for the *_1 pick.
-        If 'any', all four directions can compete for *_1.
-    prefer_axis : {'EW', 'NS'} | None, default None
-        If set and there is a tie in horizontal distance for *_1 across axes,
-        prefer the candidate whose direction belongs to that axis family.
+        Direction eligibility for the initial pick (`*_1`):
+          - 'EW' → only E/W are eligible
+          - 'NS' → only N/S are eligible
+          - 'any' → all four directions are eligible
+
+    prefer_axis : {'EW', 'NS'} or None, default None
+        If there is a tie in `horizontal_dist` for `*_1` across directions, prefer the axis family here.
+
     overlap_pct_k_min : float, optional
-        If provided, require that overlap_pct_k >= this value for a pair
-        to be considered. This ensures that well_k overlaps well_i by at
-        least the given percentage of k’s own lateral length.
+        Global overlap rule for *k relative to itself* (k’s own lateral length):
+        require `overlap_pct_k >= overlap_pct_k_min`. If None, *no global overlap rule* is applied
+        (but per-well overrides can still add one).
 
+    overrides_df : pandas.DataFrame, optional
+        **Per-well_i rule overrides** (vectorized). Lets you tailor cutoffs for selected wells while keeping
+        a global default for the rest. Recognized columns (all optional):
+
+          - 'well_i'  (or 'uwi'): well identifier (required if `overrides_df` is supplied)
+          - 'cutoff_ft'          : horizontal cutoff for this well (ft)
+          - 'vertical_cutoff_ft' : vertical cutoff for this well (ft)
+          - 'overlap_pct_k_min'  : overlap minimum for this well (unit fraction, e.g., 0.80)
+
+        **Fallback semantics (per well):**
+          - For each field, if the per-well value is NaN/missing, it falls back to the global value.
+          - If both per-well **and** global are missing for a rule (vertical/overlap), that rule is *not applied* to that well.
+
+        **Axis behavior** (`axis_mode`, `prefer_axis`) remains **global** for all wells.
+
+    ----------
     Output columns
-    --------------
-      uwi_same_1,  hz_ft_to_same_1,  vt_ft_to_same_1,  3d_ft_to_same_1,
-      uwi_same_2,  hz_ft_to_same_2,  vt_ft_to_same_2,  3d_ft_to_same_2,
-      uwi_near_1,  hz_ft_to_near_1,  vt_ft_to_near_1,  3d_ft_to_near_1,
-      uwi_near_2,  hz_ft_to_near_2,  vt_ft_to_near_2,  3d_ft_to_near_2
+    ----------
+    Neighbor picks (per category 'same'/'near'):
+        uwi_same_1,  hz_ft_to_same_1,  vt_ft_to_same_1,  3d_ft_to_same_1
+        uwi_same_2,  hz_ft_to_same_2,  vt_ft_to_same_2,  3d_ft_to_same_2
+        uwi_near_1,  hz_ft_to_near_1,  vt_ft_to_near_1,  3d_ft_to_near_1
+        uwi_near_2,  hz_ft_to_near_2,  vt_ft_to_near_2,  3d_ft_to_near_2
 
+    Audit / transparency columns (one row per `well_i`):
+        override_applied           : bool
+            True if *any* override field was specified for this well in `overrides_df`.
+        eff_cutoff_ft              : float
+            The **effective** horizontal cutoff used for this well (override → global).
+        eff_vertical_cutoff_ft     : float or NaN
+            Effective vertical cutoff (ft), or NaN if **no vertical rule** applied to this well.
+        eff_overlap_pct_k_min      : float or NaN
+            Effective overlap-min (unit fraction), or NaN if **no overlap rule** applied to this well.
+
+    Notes:
+        - A well can have all neighbor columns NaN (no survivors after filters) and still carry the audit columns.
+        - Distances are in **feet**.
+
+    ----------
+    Selection & filtering logic (concise)
+    ----------
+      1) Build per-row effective thresholds by mapping overrides onto `well_i` and falling back to globals.
+      2) Apply masks:
+            horizontal_dist <= eff_cutoff_ft
+            if eff_vertical_cutoff_ft present → vertical_dist <= eff_vertical_cutoff_ft
+            if eff_overlap_pct_k_min present → overlap_pct_k >= eff_overlap_pct_k_min
+      3) Split survivors into SAME (bench_i == bench_k) and NEAR (bench_i != bench_k).
+      4) Per category:
+           a) For each (well_i, direction), keep the argmin by horizontal_dist (tie → `tie_break_on`).
+           b) Among eligible directions (axis_mode), pick best overall → `*_1`
+              (tie bias → `prefer_axis`).
+           c) Opposite direction (E↔W, N↔S) best → `*_2` (if exists).
+
+    ----------
+    Error handling
+    ----------
+      - Missing required columns raise `ValueError`.
+      - If any overlap rule (global or per-well) is active but `spacing_df` lacks `overlap_pct_k`, raise `ValueError`.
+      - If `overrides_df` is provided without an id column ('well_i' or 'uwi'), raise `ValueError`.
+
+    ----------
     Examples
-    --------
+    ----------
     >>> nb = DirectionalBenchNeighbors()
 
-    # Example 1: horizontal cutoff only
-    >>> out1 = nb.summarize(spacing_df, header_df, cutoff_ft=1320.0)
-    >>> out1.filter(regex="^uwi_|^hz_ft_").head()
+    # 1) Global horizontal cutoff only
+    >>> out1 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ... )
+    >>> out1.filter(regex="^uwi_|^hz_ft_|^override_|^eff_").head()
 
-    # Example 2: add vertical cutoff of 200 ft
-    >>> out2 = nb.summarize(spacing_df, header_df,
-    ...                     cutoff_ft=1320.0, vertical_cutoff_ft=200.0)
+    # 2) Add a global vertical rule (200 ft)
+    >>> out2 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ...     vertical_cutoff_ft=200.0,
+    ... )
 
-    # Example 3: restrict initial pick to EW directions only
-    >>> out3 = nb.summarize(spacing_df, header_df,
-    ...                     cutoff_ft=1320.0, axis_mode="EW")
+    # 3) Restrict the initial pick to EW directions only
+    >>> out3 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ...     axis_mode="EW",
+    ... )
 
-    # Example 4: allow any axis but prefer NS in case of ties
-    >>> out4 = nb.summarize(spacing_df, header_df,
-    ...                     cutoff_ft=1320.0, axis_mode="any", prefer_axis="NS")
+    # 4) Prefer NS when ties occur (still allow any direction)
+    >>> out4 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ...     axis_mode="any",
+    ...     prefer_axis="NS",
+    ... )
 
-    # Example 5: require at least 80% overlap of k relative to i
-    >>> out5 = nb.summarize(spacing_df, header_df,
-    ...                     cutoff_ft=1320.0, overlap_pct_k_min=0.80)
+    # 5) Require at least 80% overlap of k relative to *k* (k's own lateral length)
+    >>> out5 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ...     overlap_pct_k_min=0.80,
+    ... )
+
+    # 6) Per-well overrides (horizontal only for some wells; others fall back to 1320 ft)
+    >>> overrides = pd.DataFrame({
+    ...     "well_i": ["30025410040100", "30025421210000"],
+    ...     "cutoff_ft": [2200.0, 900.0],
+    ... })
+    >>> out6 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,                # global fallback for non-listed wells
+    ...     overrides_df=overrides,
+    ... )
+    >>> out6.loc[out6["well_i"].isin(overrides["well_i"]),
+    ...          ["well_i", "override_applied", "eff_cutoff_ft"]]
+
+    # 7) Mixed overrides with vertical and overlap rules, plus global defaults
+    >>> overrides2 = pd.DataFrame({
+    ...     "uwi": ["30025426220000", "30025428730000"],   # 'uwi' also accepted
+    ...     "cutoff_ft": [1800.0, np.nan],                 # second uses global 1320.0
+    ...     "vertical_cutoff_ft": [250.0, 200.0],          # both have per-well vertical
+    ...     "overlap_pct_k_min": [0.70, np.nan],           # second falls back to global 0.60
+    ... })
+    >>> out7 = nb.summarize(
+    ...     spacing_df, header_df,
+    ...     cutoff_ft=1320.0,
+    ...     vertical_cutoff_ft=150.0,       # global vertical default
+    ...     overlap_pct_k_min=0.60,         # global overlap default
+    ...     overrides_df=overrides2,
+    ... )
+    >>> out7.loc[out7["well_i"].isin(overrides2["uwi"]),
+    ...          ["well_i", "override_applied",
+    ...           "eff_cutoff_ft", "eff_vertical_cutoff_ft", "eff_overlap_pct_k_min"]]
+
+    ----------
+    Performance
+    ----------
+      - All operations are vectorized (`Series.map`, boolean masks, grouped argmin via sort+drop_duplicates).
+      - No Python loops over wells; suitable for basin-scale runs.
+      - Deterministic outputs via stable tie-breaks (`tie_break_on`).
+
+    Parameters
+    ----------
+    tie_break_on : str, default 'well_k'
+        Secondary stable key when distances tie (used in per-direction argmin).
+
     """
 
     # --- Type aliases inside the class ---
@@ -1864,7 +2228,8 @@ class DirectionalBenchNeighbors:
 
     _OPPOSITE: Dict[Direction, Direction] = {"E": "W", "W": "E", "N": "S", "S": "N"}
 
-    def __init__(self, *, tie_break_on: str = "well_k") -> None:
+    def __init__(self, *, tie_break_on: str = "well_k", 
+                 overrides_df: Optional[pd.DataFrame] = None) -> None:
         """
         Parameters
         ----------
@@ -1872,6 +2237,10 @@ class DirectionalBenchNeighbors:
             Secondary stable key when distances tie.
         """
         self.tie_break_on = tie_break_on
+        self._overrides_df_default = overrides_df
+
+    def _resolve_overrides(self, overrides_df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        return overrides_df if overrides_df is not None else self._overrides_df_default
 
     # ---------- Public API ----------
 
@@ -1884,9 +2253,10 @@ class DirectionalBenchNeighbors:
         vertical_cutoff_ft: Optional[float] = None,
         axis_mode: AxisMode = "any",
         prefer_axis: Optional[AxisPref] = None,
-        overlap_pct_k_min: Optional[float] = None,  # <-- NEW
+        overlap_pct_k_min: Optional[float] = None,
+        overrides_df: Optional[pd.DataFrame] = None,
+        proj_coverage_min: Optional[float] = None,
     ) -> pd.DataFrame:
-        self._validate_inputs(spacing_df, header_df)
         """Return one summary row per well_i with *_same_{1,2} and *_near_{1,2}.
 
         See class docstring for details on behavior and examples.
@@ -1896,10 +2266,15 @@ class DirectionalBenchNeighbors:
         ValueError
             If required columns are missing or inputs are inconsistent.
         """
+        overrides_df = self._resolve_overrides(overrides_df)
+        
+        self._validate_inputs(spacing_df, header_df)
+
         # Normalize IDs to strings
         spacing = spacing_df.copy()
         spacing["well_i"] = spacing["well_i"].astype(str)
         spacing["well_k"] = spacing["well_k"].astype(str)
+
         header = header_df.copy()
         header["uwi"] = header["uwi"].astype(str)
 
@@ -1908,41 +2283,159 @@ class DirectionalBenchNeighbors:
         spacing["bench_i"] = spacing["well_i"].map(bench_map)
         spacing["bench_k"] = spacing["well_k"].map(bench_map)
 
-        # --- Apply cutoffs ---
-        mask = spacing["horizontal_dist"] <= cutoff_ft
-        if vertical_cutoff_ft is not None:
-            mask &= spacing["vertical_dist"] <= vertical_cutoff_ft
 
-        # NEW: optional overlap filter on k
-        if overlap_pct_k_min is not None:
-            if "overlap_pct_k" not in spacing.columns:
-                raise ValueError(
-                    "spacing_df missing required column 'overlap_pct_k' when overlap_pct_k_min is provided."
-                )
-            mask &= spacing["overlap_pct_k"] >= overlap_pct_k_min
+        # --- NEW: adaptive adjacency percentage (parallel uses overlap; oblique/perp use contact)
+        # Expect these columns to exist from your updated spacing:
+        #   'pair_alignment', 'overlap_pct_k', 'contact_pct_i_interior', 'contact_pct_i', 'proj_coverage_i_pct'
+        if "pair_alignment" not in spacing.columns:
+            raise ValueError("spacing_df is missing 'pair_alignment' needed for adaptive adjacency.")
+
+        # Prefer interior contact percentage for oblique/perp; fallback to contact_pct_i if interior is NaN
+        contact_interior = spacing.get("contact_pct_i_interior")
+        contact_any      = spacing.get("contact_pct_i")
+
+        adj_oblique_perp = None
+        if contact_interior is not None:
+            adj_oblique_perp = contact_interior.copy()
+            if contact_any is not None:
+                adj_oblique_perp = adj_oblique_perp.fillna(contact_any)
+        else:
+            # If interior metric not present, fall back entirely to contact_pct_i (may be all-NaN for parallel rows)
+            adj_oblique_perp = contact_any
+
+        # Build unified adjacency percentage
+        spacing["adj_pct"] = np.where(
+            spacing["pair_alignment"].eq("parallel_like"),
+            spacing.get("overlap_pct_k", np.nan),
+            (adj_oblique_perp if adj_oblique_perp is not None else np.nan)
+        ).astype(float)
+
+
+        # ---------- NEW: set up per-well effective rules (independent of filtering) ----------
+        all_wells = spacing_df["well_i"].astype(str).drop_duplicates().reset_index(drop=True)
+
+        # Defaults: no overrides
+        override_wells = set()
+        ov_cut = ov_vcut = ov_omin = pd.Series(dtype=float)
+
+        if overrides_df is not None:
+            ov = overrides_df.copy()
+            if "well_i" not in ov.columns and "uwi" in ov.columns:
+                ov = ov.rename(columns={"uwi": "well_i"})
+            if "well_i" not in ov.columns:
+                raise ValueError("overrides_df must contain 'well_i' (or 'uwi').")
+
+            ov["well_i"] = ov["well_i"].astype(str)
+            ov = ov.set_index("well_i")
+
+            # Which wells have ANY override specified?
+            ov_any = ov.reindex(columns=["cutoff_ft", "vertical_cutoff_ft", "overlap_pct_k_min"])
+            ov_any_flag = ov_any.notna().any(axis=1)
+            override_wells = set(ov_any_flag.index[ov_any_flag])
+
+            # Pull series (may be empty if column absent)
+            ov_cut  = ov["cutoff_ft"]           if "cutoff_ft" in ov.columns           else pd.Series(dtype=float)
+            ov_vcut = ov["vertical_cutoff_ft"]  if "vertical_cutoff_ft" in ov.columns  else pd.Series(dtype=float)
+            ov_omin = ov["overlap_pct_k_min"]   if "overlap_pct_k_min" in ov.columns   else pd.Series(dtype=float)
+
+        # Effective horizontal cutoff per WELL (always defined via override→global)
+        eff_cutoff_well = all_wells.map(ov_cut) if not ov_cut.empty else pd.Series(np.nan, index=all_wells.index)
+        eff_cutoff_well = eff_cutoff_well.fillna(cutoff_ft)
+
+        # Effective vertical cutoff per WELL (NaN means "no vertical rule")
+        if vertical_cutoff_ft is not None or not ov_vcut.empty:
+            eff_vcut_well = all_wells.map(ov_vcut) if not ov_vcut.empty else pd.Series(np.nan, index=all_wells.index)
+            if vertical_cutoff_ft is not None:
+                eff_vcut_well = eff_vcut_well.fillna(vertical_cutoff_ft)
+        else:
+            eff_vcut_well = pd.Series(np.nan, index=all_wells.index)
+
+        # Effective overlap min per WELL (NaN means "no overlap rule")
+        if overlap_pct_k_min is not None or not ov_omin.empty:
+            eff_omin_well = all_wells.map(ov_omin) if not ov_omin.empty else pd.Series(np.nan, index=all_wells.index)
+            if overlap_pct_k_min is not None:
+                eff_omin_well = eff_omin_well.fillna(overlap_pct_k_min)
+        else:
+            eff_omin_well = pd.Series(np.nan, index=all_wells.index)
+
+        # Build a tiny audit frame we’ll merge into the final output
+        audit_df = pd.DataFrame({
+            "well_i": all_wells,
+            "override_applied": all_wells.isin(override_wells),
+            "eff_cutoff_ft": eff_cutoff_well.values,
+            "eff_vertical_cutoff_ft": eff_vcut_well.values,
+            "eff_overlap_pct_k_min": eff_omin_well.values,
+        })
+
+        # ---------- Existing per-row effective rules for filtering (unchanged behavior) ----------
+        # (We could reuse the *_well series by mapping, but keeping row-wise is fine & clear.)
+        if overrides_df is not None:
+            eff_hcut = spacing["well_i"].map(ov_cut) if not ov_cut.empty else pd.Series(np.nan, index=spacing.index)
+            eff_hcut = eff_hcut.fillna(cutoff_ft)
+
+            if vertical_cutoff_ft is not None or not ov_vcut.empty:
+                eff_vcut = spacing["well_i"].map(ov_vcut) if not ov_vcut.empty else pd.Series(np.nan, index=spacing.index)
+                if vertical_cutoff_ft is not None:
+                    eff_vcut = eff_vcut.fillna(vertical_cutoff_ft)
+            else:
+                eff_vcut = pd.Series(np.nan, index=spacing.index)
+
+            if overlap_pct_k_min is not None or not ov_omin.empty:
+                eff_omin = spacing["well_i"].map(ov_omin) if not ov_omin.empty else pd.Series(np.nan, index=spacing.index)
+                if overlap_pct_k_min is not None:
+                    eff_omin = eff_omin.fillna(overlap_pct_k_min)
+            else:
+                eff_omin = pd.Series(np.nan, index=spacing.index)
+        else:
+            eff_hcut = pd.Series(cutoff_ft, index=spacing.index)
+            eff_vcut = pd.Series(vertical_cutoff_ft, index=spacing.index)  # may be all-None/NaN
+            eff_omin = pd.Series(overlap_pct_k_min, index=spacing.index)   # may be all-None/NaN
+
+        # Apply filters (same logic as before)
+        mask = spacing["horizontal_dist"] <= eff_hcut
+        if eff_vcut.notna().any():
+            has_vrule = eff_vcut.notna()
+            mask &= (~has_vrule) | (spacing["vertical_dist"] <= eff_vcut)
+        # --- NEW: adaptive adjacency rule (reuses eff_omin threshold for all alignments)
+        if eff_omin.notna().any():
+            has_orule = eff_omin.notna()
+            # If adj_pct is NaN for a row with a rule, it fails (same behavior as before).
+            mask &= (~has_orule) | (spacing["adj_pct"] >= eff_omin)
+
+        # --- NEW: optional coverage quality gate for oblique/perp only
+        if proj_coverage_min is not None:
+            if "proj_coverage_i_pct" not in spacing.columns:
+                raise ValueError("proj_coverage_min provided but 'proj_coverage_i_pct' missing in spacing_df.")
+            # Keep parallel_like rows as-is; gate only oblique/perp
+            ok_cov = np.where(
+                spacing["pair_alignment"].eq("parallel_like"),
+                True,
+                spacing["proj_coverage_i_pct"] >= float(proj_coverage_min)
+            )
+            mask &= ok_cov
 
         spacing = spacing.loc[mask].copy()
 
         if spacing.empty:
-            wells = spacing_df["well_i"].astype(str).unique()
-            return self._empty_summary(wells)
+            out = self._empty_summary(all_wells)
+            # Merge audit columns even when no neighbors survive
+            out = out.merge(audit_df, on="well_i", how="left")
+            return out
 
-        # SAME vs NEAR
+        # SAME vs NEAR summaries (unchanged)
         spacing["is_same"] = spacing["bench_i"] == spacing["bench_k"]
         same = spacing.loc[spacing["is_same"]].copy()
         near = spacing.loc[~spacing["is_same"]].copy()
 
-        same_summary = self._compute_category_summary(
-            same, category="same", axis_mode=axis_mode, prefer_axis=prefer_axis
-        )
-        near_summary = self._compute_category_summary(
-            near, category="near", axis_mode=axis_mode, prefer_axis=prefer_axis
-        )
+        same_summary = self._compute_category_summary(same, category="same", axis_mode=axis_mode, prefer_axis=prefer_axis)
+        near_summary = self._compute_category_summary(near, category="near", axis_mode=axis_mode, prefer_axis=prefer_axis)
 
-        all_wells = spacing_df["well_i"].astype(str).drop_duplicates().to_frame(name="well_i")
         out = (
-            all_wells.merge(same_summary, on="well_i", how="left")
-                     .merge(near_summary, on="well_i", how="left")
+            all_wells.to_frame(name="well_i")
+            .merge(same_summary, on="well_i", how="left")
+            .merge(near_summary, on="well_i", how="left")
+            # ---------- NEW: audit columns ----------
+            .merge(audit_df, on="well_i", how="left")
         )
 
         ordered_cols = (
@@ -1951,10 +2444,235 @@ class DirectionalBenchNeighbors:
             + self._category_cols("same", 2)
             + self._category_cols("near", 1)
             + self._category_cols("near", 2)
+            + ["override_applied", "eff_cutoff_ft", "eff_vertical_cutoff_ft", "eff_overlap_pct_k_min"]
         )
         existing_cols = [c for c in ordered_cols if c in out.columns]
         return out[existing_cols + [c for c in out.columns if c not in existing_cols]]
     
+
+    def summarize_avg_spacing(
+        self,
+        spacing_df: pd.DataFrame,
+        *,
+        cutoff_ft: float,
+        vertical_cutoff_ft: Optional[float] = None,
+        overlap_pct_k_min: Optional[float] = None,
+        overrides_df: Optional[pd.DataFrame] = None,
+        proj_coverage_min: Optional[float] = None,
+        axis_mode: "DirectionalBenchNeighbors.AxisMode" = "any",
+        include_unweighted: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Collapse a pairwise spacing table into a per-well average spacing roll-up,
+        using the same eligibility rules as neighbor summarization.
+
+        Logic
+        -----
+        1) Eligibility mask (vectorized; per-row, per-well-i):
+            - horizontal_dist <= eff_cutoff_ft
+            - if eff_vertical_cutoff_ft exists: vertical_dist <= eff_vertical_cutoff_ft
+            - adaptive adjacency (reuses overlap_pct_k_min as a generic "adjacency-min"):
+                * parallel_like  -> compare overlap_pct_k
+                * oblique/perp   -> compare contact_pct_i_interior (fallback contact_pct_i)
+            - optional quality gate for non-parallel rows:
+                * proj_coverage_i_pct >= proj_coverage_min
+            - optional axis filter: keep only E/W or N/S directions
+
+        2) Weights = adjacency length on well_i:
+            - parallel_like  -> overlap_len_common_ft
+            - oblique/perp   -> contact_len_i_interior_ft (fallback contact_len_i_ft)
+            - if length fields are missing, fall back to 1.0 (unweighted) for robustness.
+
+        3) Per-well_i weighted means:
+            avg_hz_spacing_ft = Σ(horizontal_dist * weight) / Σ(weight)
+            avg_vt_spacing_ft = Σ(vertical_dist   * weight) / Σ(weight)
+
+        Also returns:
+            - neighbors_considered      : count of eligible neighbors used
+            - adjacency_coverage_i_pct  : min( Σ(weight) / LL_i , 1.0 ) as unit fraction (0..1)
+
+        If Σ(weight) == 0, averages are NaN.
+
+        Parameters
+        ----------
+        spacing_df : pd.DataFrame
+            Pairwise spacing output (one row per (well_i, well_k)) from WellSpacingCalculator
+            AFTER your Option A adjustments (i.e., 'horizontal_dist' is already the effective metric).
+            Required columns (case-sensitive):
+                'well_i', 'well_k', 'horizontal_dist', 'vertical_dist',
+                'pair_alignment', 'direction_to_k_from_i_axis', 'LL_i'
+            For adaptive adjacency mask:
+                parallel_like needs: 'overlap_pct_k'
+                oblique/perp need:   'contact_pct_i_interior' or 'contact_pct_i'
+            For weights:
+                parallel_like needs: 'overlap_len_common_ft'
+                oblique/perp need:   'contact_len_i_interior_ft' or 'contact_len_i_ft'
+            For quality gate (if used): 'proj_coverage_i_pct'
+
+        cutoff_ft, vertical_cutoff_ft, overlap_pct_k_min, overrides_df, proj_coverage_min, axis_mode
+            Same semantics as in summarize(); axis_mode limits the rows used for the averages.
+
+        include_unweighted : bool, default False
+            Also emit simple (unweighted) means for horizontal_dist/vertical_dist across eligible rows.
+
+        Returns
+        -------
+        pd.DataFrame with one row per well_i:
+            - well_i
+            - avg_hz_spacing_ft
+            - avg_vt_spacing_ft
+            - neighbors_considered
+            - adjacency_coverage_i_pct          (unit fraction in [0,1])
+            - [optional] avg_hz_spacing_ft_unw  (if include_unweighted=True)
+            - [optional] avg_vt_spacing_ft_unw  (if include_unweighted=True)
+        """
+        overrides_df = self._resolve_overrides(overrides_df)
+
+        # -------- Prep / validation (minimal, targeted) --------
+        spacing = spacing_df.copy()
+        spacing["well_i"] = spacing["well_i"].astype(str)
+        spacing["well_k"] = spacing["well_k"].astype(str)
+
+        req_base = {"well_i", "well_k", "horizontal_dist", "vertical_dist", "pair_alignment", "direction_to_k_from_i_axis", "LL_i"}
+        missing = req_base - set(spacing.columns)
+        if missing:
+            raise ValueError(f"summarize_avg_spacing: spacing_df missing required columns: {sorted(missing)}")
+
+        all_wells = spacing["well_i"].drop_duplicates().reset_index(drop=True)
+
+        # -------- Effective per-row thresholds (reuse summarize() semantics) --------
+        ov_cut = ov_vcut = ov_omin = None
+        if overrides_df is not None and not overrides_df.empty:
+            ov = overrides_df.copy()
+            if "well_i" not in ov.columns and "uwi" in ov.columns:
+                ov = ov.rename(columns={"uwi": "well_i"})
+            if "well_i" in ov.columns:
+                ov["well_i"] = ov["well_i"].astype(str)
+                ov = ov.set_index("well_i")
+                ov_cut  = ov["cutoff_ft"]          if "cutoff_ft" in ov.columns else None
+                ov_vcut = ov["vertical_cutoff_ft"] if "vertical_cutoff_ft" in ov.columns else None
+                ov_omin = ov["overlap_pct_k_min"]  if "overlap_pct_k_min" in ov.columns else None
+
+        # Horizontal cutoff per row
+        if ov_cut is not None:
+            eff_hcut = spacing["well_i"].map(ov_cut).astype(float)
+            eff_hcut = eff_hcut.fillna(float(cutoff_ft))
+        else:
+            eff_hcut = pd.Series(float(cutoff_ft), index=spacing.index)
+
+        # Vertical cutoff per row (NaN = no rule)
+        if (vertical_cutoff_ft is not None) or (ov_vcut is not None):
+            eff_vcut = spacing["well_i"].map(ov_vcut).astype(float) if ov_vcut is not None else pd.Series(np.nan, index=spacing.index)
+            if vertical_cutoff_ft is not None:
+                eff_vcut = eff_vcut.fillna(float(vertical_cutoff_ft))
+        else:
+            eff_vcut = pd.Series(np.nan, index=spacing.index)
+
+        # Overlap/Adjacency min per row (NaN = no rule)
+        if (overlap_pct_k_min is not None) or (ov_omin is not None):
+            eff_omin = spacing["well_i"].map(ov_omin).astype(float) if ov_omin is not None else pd.Series(np.nan, index=spacing.index)
+            if overlap_pct_k_min is not None:
+                eff_omin = eff_omin.fillna(float(overlap_pct_k_min))
+        else:
+            eff_omin = pd.Series(np.nan, index=spacing.index)
+
+        # -------- Adaptive adjacency percentage (parallel vs non-parallel) --------
+        if "pair_alignment" not in spacing.columns:
+            raise ValueError("summarize_avg_spacing: 'pair_alignment' not found.")
+
+        contact_interior = spacing["contact_pct_i_interior"] if "contact_pct_i_interior" in spacing.columns else pd.Series(np.nan, index=spacing.index)
+        contact_any      = spacing["contact_pct_i"]          if "contact_pct_i"          in spacing.columns else pd.Series(np.nan, index=spacing.index)
+
+        adj_oblique_perp = contact_interior.copy().astype(float)
+        adj_oblique_perp = adj_oblique_perp.fillna(contact_any.astype(float))
+
+        spacing["adj_pct"] = np.where(
+            spacing["pair_alignment"].eq("parallel_like"),
+            spacing.get("overlap_pct_k", np.nan).astype(float),
+            adj_oblique_perp
+        ).astype(float)
+
+        # -------- Core mask (vectorized) --------
+        mask = (spacing["horizontal_dist"].astype(float) <= eff_hcut)
+
+        if eff_vcut.notna().any():
+            has_vrule = eff_vcut.notna()
+            mask &= (~has_vrule) | (spacing["vertical_dist"].astype(float) <= eff_vcut)
+
+        if eff_omin.notna().any():
+            has_orule = eff_omin.notna()
+            mask &= (~has_orule) | (spacing["adj_pct"] >= eff_omin)
+
+        if proj_coverage_min is not None:
+            if "proj_coverage_i_pct" not in spacing.columns:
+                raise ValueError("summarize_avg_spacing: proj_coverage_min set but 'proj_coverage_i_pct' missing in spacing_df.")
+            ok_cov = np.where(
+                spacing["pair_alignment"].eq("parallel_like"),
+                True,
+                spacing["proj_coverage_i_pct"].astype(float) >= float(proj_coverage_min)
+            )
+            mask &= ok_cov
+
+        # Optional axis eligibility
+        if axis_mode == "EW":
+            elig_dirs = {"E", "W"}
+            mask &= spacing["direction_to_k_from_i_axis"].isin(elig_dirs)
+        elif axis_mode == "NS":
+            elig_dirs = {"N", "S"}
+            mask &= spacing["direction_to_k_from_i_axis"].isin(elig_dirs)
+
+        survivors = spacing.loc[mask].copy()
+
+        # -------- Build adjacency-length weights (ft) --------
+        is_parallel = survivors["pair_alignment"].eq("parallel_like")
+
+        # parallel_like: overlap length
+        w_parallel = survivors.get("overlap_len_common_ft", pd.Series(0.0, index=survivors.index)).astype(float)
+
+        # oblique/perp: contact interior length (fallback to any contact length; fallback again to 1.0)
+        cint = survivors.get("contact_len_i_interior_ft", pd.Series(np.nan, index=survivors.index)).astype(float)
+        cany = survivors.get("contact_len_i_ft",          pd.Series(np.nan, index=survivors.index)).astype(float)
+        w_nonparallel = cint.fillna(cany).fillna(1.0)  # last-resort fallback keeps things defined
+
+        survivors["adj_len_i_ft"] = np.where(is_parallel, w_parallel, w_nonparallel).astype(float)
+        # Guardrail: non-negative
+        survivors.loc[survivors["adj_len_i_ft"] < 0, "adj_len_i_ft"] = 0.0
+
+        # Precompute weighted numerators
+        survivors["_hz_w"] = survivors["horizontal_dist"].astype(float) * survivors["adj_len_i_ft"]
+        survivors["_vt_w"] = survivors["vertical_dist"].astype(float)   * survivors["adj_len_i_ft"]
+
+        # -------- Aggregate per well_i --------
+        g = survivors.groupby("well_i", sort=False)
+        sum_w   = g["adj_len_i_ft"].sum()
+        hz_num  = g["_hz_w"].sum()
+        vt_num  = g["_vt_w"].sum()
+        cnt     = g.size()
+
+        avg_hz = hz_num.div(sum_w).replace([np.inf, -np.inf], np.nan)
+        avg_vt = vt_num.div(sum_w).replace([np.inf, -np.inf], np.nan)
+
+        # Coverage: fraction of well_i's lateral length
+        LL_i = spacing.groupby("well_i", sort=False)["LL_i"].first().astype(float)
+        coverage = sum_w.reindex(LL_i.index).div(LL_i).clip(lower=0.0, upper=1.0)
+
+        out = pd.DataFrame({"well_i": all_wells.astype(str)})
+        out = out.merge(avg_hz.rename("avg_hz_spacing_ft"), on="well_i", how="left")
+        out = out.merge(avg_vt.rename("avg_vt_spacing_ft"), on="well_i", how="left")
+        out = out.merge(cnt.rename("neighbors_considered"), on="well_i", how="left")
+        out = out.merge(coverage.rename("adjacency_coverage_i_pct"), on="well_i", how="left")
+
+        out["neighbors_considered"] = out["neighbors_considered"].fillna(0).astype(int)
+
+        if include_unweighted:
+            unwh = survivors.groupby("well_i", sort=False)["horizontal_dist"].mean()
+            unwv = survivors.groupby("well_i", sort=False)["vertical_dist"].mean()
+            out = out.merge(unwh.rename("avg_hz_spacing_ft_unw"), on="well_i", how="left")
+            out = out.merge(unwv.rename("avg_vt_spacing_ft_unw"), on="well_i", how="left")
+
+        return out
+
+
     # ---------- Internals: category computation ----------
 
     def _compute_category_summary(
@@ -2116,3 +2834,1038 @@ class DirectionalBenchNeighbors:
             raise ValueError(f"spacing_df missing required columns: {sorted(missing_s)}")
         if missing_h:
             raise ValueError(f"header_df missing required columns: {sorted(missing_h)}")
+
+
+#%% # ==================== Floating Section WPS ====================
+
+Orientation = Literal["cardinal", "i_frame", "corridor"]
+@dataclass(frozen=True)
+class BoxSpec:
+    """Half-sizes of the floating section box (ft)."""
+    half_width_ft: float   # x-half-size (east-west extent / 2)
+    half_height_ft: float  # y-half-size (north-south extent / 2)
+@dataclass(frozen=True)
+class CorridorSpec:
+    """
+    Corridor-style floating region around the reference lateral.
+
+    The corridor lives in the reference well's own azimuth-aligned frame:
+
+      - Along-well half-length = 0.5 * lateral_length + extra_along_ft
+      - Cross-well half-width  = half_width_ft
+    """
+    half_width_ft: float          # cross-well half-width (normal to lateral)
+    extra_along_ft: float = 0.0   # margin beyond heel/toe along the lateral
+
+class FloatingSectionWPS:
+    """
+    Floating section Well-Per-Section (WPS) counter on projected feet coordinates.
+
+    This class counts, for each reference well_i, how many other wells have at least
+    `min_inside_ft` lateral **inside** a 2D rectangular window (the "floating section")
+    centered on well_i.
+
+    Supported orientations
+    ----------------------
+    - 'cardinal':
+        Box is axis-aligned to map (north-up, east-right). Uses BoxSpec.
+    - 'i_frame':
+        Box is rotated so the reference lateral is along +x. Uses the same BoxSpec
+        half-sizes but in the ref-well frame.
+    - 'corridor':
+        A lateral-following corridor: rectangle in the ref-well frame whose
+        along-direction half-length is derived from that well's lateral length plus
+        an optional margin, and whose cross-direction half-width is set by
+        CorridorSpec.half_width_ft.
+
+    Required input DataFrame columns (projected feet, e.g., UTM):
+        - 'uwi' : unique id (str/int)
+        - 'heel_x','heel_y','toe_x','toe_y' : lateral endpoints in feet
+      Optional:
+        - 'mid_x','mid_y' : midpoint in feet (computed if missing)
+        - 'azimuth_deg'   : geodetic-style: 0°=N, 90°=E (computed if missing)
+
+    Parameters
+    ----------
+    wells_df : pd.DataFrame
+        Table of well laterals in projected feet.
+    box : BoxSpec
+        Box half-sizes (ft). For a 1×1 mile box, pass BoxSpec(2640, 2640).
+        Used for 'cardinal' and 'i_frame' orientations.
+    min_inside_ft : float, default 660.0
+        Minimum **inside-lateral length** required to count a neighbor.
+    exclude_self : bool, default True
+        Whether to exclude well_i when counting its own box.
+    corridor : CorridorSpec or None, default None
+        Corridor geometry used only when orientation='corridor'.
+    """
+
+    def __init__(
+        self,
+        wells_df: pd.DataFrame,
+        box: BoxSpec = BoxSpec(half_width_ft=2640.0, half_height_ft=2640.0),
+        *,
+        min_inside_ft: float = 660.0,
+        exclude_self: bool = True,
+        corridor: Optional[CorridorSpec] = None,
+    ) -> None:
+        self.box = box
+        self.corridor = corridor
+        self.min_inside_ft = float(min_inside_ft)
+        self.exclude_self = bool(exclude_self)
+
+        df = wells_df.copy()
+
+        # Basic validation
+        need = {"uwi", "heel_x", "heel_y", "toe_x", "toe_y"}
+        missing = need - set(df.columns)
+        if missing:
+            raise ValueError(f"wells_df missing required columns: {sorted(missing)}")
+
+        # Ensure dtypes
+        df["uwi"] = df["uwi"].astype(str)
+        for c in ["heel_x", "heel_y", "toe_x", "toe_y"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        # Midpoints if missing
+        if not {"mid_x", "mid_y"}.issubset(df.columns):
+            df["mid_x"] = 0.5 * (df["heel_x"] + df["toe_x"])
+            df["mid_y"] = 0.5 * (df["heel_y"] + df["toe_y"])
+
+        # Azimuth if missing (0°=N, 90°=E). Uses heel->toe direction.
+        if "azimuth_deg" not in df.columns:
+            dx = df["toe_x"].to_numpy(float) - df["heel_x"].to_numpy(float)
+            dy = df["toe_y"].to_numpy(float) - df["heel_y"].to_numpy(float)
+            # arctan2(x,y) to get 0°=N,90°=E (swap args)
+            az = (np.degrees(np.arctan2(dx, dy)) + 360.0) % 360.0
+            df["azimuth_deg"] = az
+
+        self.df = df.reset_index(drop=True)
+        # Prebuild arrays for vectorized ops
+        self._x0 = self.df["heel_x"].to_numpy(float)
+        self._y0 = self.df["heel_y"].to_numpy(float)
+        self._x1 = self.df["toe_x"].to_numpy(float)
+        self._y1 = self.df["toe_y"].to_numpy(float)
+        self._mx = self.df["mid_x"].to_numpy(float)
+        self._my = self.df["mid_y"].to_numpy(float)
+        self._az = self.df["azimuth_deg"].to_numpy(float)
+        self._uwi = self.df["uwi"].to_numpy(str)
+
+
+    # -------------------- helpers: directional survey -> endpoints -----------
+    @staticmethod
+    def ds_to_lateral_endpoints(ds: pd.DataFrame, *, assume_units: str = "ft") -> pd.DataFrame:
+        """
+        Collapse a directional-survey style table (many rows per UWI with 'md','x','y')
+        into one row per UWI with heel/toe UTM coords (in feet), plus mid & azimuth.
+
+        Required columns in `ds`: 'uwi','md','x','y'
+        """
+        required = {"uwi", "md", "x", "y"}
+        if not required <= set(ds.columns):
+            missing = required - set(ds.columns)
+            raise ValueError(f"ds_to_lateral_endpoints: missing columns {sorted(missing)}")
+
+        # Sort so that 'first' and 'last' line up with heel & toe
+        base = (
+            ds.sort_values(["uwi", "md"])
+            .groupby("uwi", as_index=False)
+            .agg(
+                heel_x=("x", "first"),
+                heel_y=("y", "first"),
+                toe_x=("x", "last"),
+                toe_y=("y", "last"),
+            )
+        )
+
+        out = base.copy()
+
+        # If your x/y are meters, convert once here (the class works in FEET)
+        if assume_units == "m":
+            out[["heel_x", "toe_x", "heel_y", "toe_y"]] *= 3.28084
+
+        out["mid_x"] = 0.5 * (out["heel_x"] + out["toe_x"])
+        out["mid_y"] = 0.5 * (out["heel_y"] + out["toe_y"])
+
+        # azimuth from North (deg), CW
+        dx = out["toe_x"] - out["heel_x"]
+        dy = out["toe_y"] - out["heel_y"]
+        out["azimuth_deg"] = (np.degrees(np.arctan2(dx, dy)) % 360.0).astype(float)
+
+        return out[["uwi", "heel_x", "heel_y", "toe_x", "toe_y", "mid_x", "mid_y", "azimuth_deg"]]
+
+
+    # ----------------------- math helpers (vectorized) -----------------------
+
+    @staticmethod
+    def _rotate_points(
+        x: np.ndarray,
+        y: np.ndarray,
+        theta_deg: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Rotate points by -theta_deg around origin in the usual math sense:
+        - 0° is the +X axis (Easting),
+        - positive angles are counter-clockwise.
+
+        This is a low-level helper. Higher-level helpers take care of converting
+        from geodetic azimuth (0°=N, 90°=E).
+        """
+        t = math.radians(theta_deg)
+        c, s = math.cos(t), math.sin(t)
+        xr = c * x + s * y
+        yr = -s * x + c * y
+        return xr, yr
+
+    # --- azimuth / frame helpers --------------------------------------------
+
+    @staticmethod
+    def _az_to_theta_iframe(az_deg: float) -> float:
+        """
+        Convert geodetic azimuth (0°=N, 90°=E) into a theta (deg) for
+        `_rotate_points` such that the well's azimuth maps to +X in the
+        local i-frame.
+
+        `_rotate_points(x, y, theta)` always rotates by -theta.
+        """
+        return 90.0 - az_deg
+
+    @classmethod
+    def _world_to_iframe(
+        cls,
+        x: np.ndarray,
+        y: np.ndarray,
+        az_deg: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Rotate world (map) coordinates into the i-frame where:
+
+          +X = along the well (heel→toe, azimuth az_deg)
+          +Y = left-of-well (cross-well)
+        """
+        theta = cls._az_to_theta_iframe(az_deg)
+        return cls._rotate_points(x, y, theta)
+
+    @classmethod
+    def _iframe_to_world(
+        cls,
+        x: np.ndarray,
+        y: np.ndarray,
+        az_deg: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Rotate from the i-frame (aligned with the well) back to world
+        map coordinates.
+        """
+        theta = -cls._az_to_theta_iframe(az_deg)  # = az_deg - 90
+        return cls._rotate_points(x, y, theta)
+
+    @staticmethod
+    def _liang_barsky_clip_len(
+        x0: np.ndarray,
+        y0: np.ndarray,
+        x1: np.ndarray,
+        y1: np.ndarray,
+        a: float,
+        b: float,
+    ) -> np.ndarray:
+        """
+        Vectorized Liang–Barsky clipping against axis-aligned rectangle centered at origin:
+            x in [-a, a], y in [-b, b]
+        Returns inside-length for each segment; 0 if fully outside.
+        """
+        dx = x1 - x0
+        dy = y1 - y0
+
+        p = np.stack([-dx, dx, -dy, dy], axis=0)
+        q = np.stack([x0 + a, a - x0, y0 + b, b - y0], axis=0)
+
+        u0 = np.zeros_like(dx, dtype=float)
+        u1 = np.ones_like(dx, dtype=float)
+
+        for i in range(4):
+            pi = p[i]
+            qi = q[i]
+            mask_zero = np.isclose(pi, 0.0)
+            # If pi == 0 and qi < 0 → parallel outside → reject (len=0)
+            reject = mask_zero & (qi < 0.0)
+            if np.any(reject):
+                u0[reject] = 1.0
+                u1[reject] = 0.0
+
+            # Non-parallel edges
+            nz = ~mask_zero
+            ti = qi[nz] / pi[nz]
+            neg = (pi[nz] < 0.0)
+            pos = ~neg
+            # entering boundary
+            u0_n = u0[nz]
+            u1_n = u1[nz]
+            u0_n = np.maximum(u0_n, np.where(neg, ti, u0_n))
+            # leaving boundary
+            u1_n = np.minimum(u1_n, np.where(pos, ti, u1_n))
+            u0[nz] = u0_n
+            u1[nz] = u1_n
+
+        # invalid where u1<u0
+        invalid = u1 < u0
+        seg_len = np.hypot(dx, dy)
+        inside_len = seg_len * np.clip(u1 - u0, 0.0, None)
+        inside_len[invalid] = 0.0
+        return inside_len
+
+    # ----------------------- geometry helpers -----------------------
+
+    def _get_half_sizes(
+        self,
+        ref_idx: int,
+        orientation: Orientation,
+    ) -> Tuple[float, float]:
+        """
+        Return (a, b) half-sizes for the clipping rectangle for a given reference well.
+
+        - 'cardinal' / 'i_frame' -> use global BoxSpec.
+        - 'corridor'             -> use per-well lateral length + CorridorSpec.
+        """
+        if orientation == "corridor":
+            if self.corridor is None:
+                raise ValueError(
+                    "orientation='corridor' requires FloatingSectionWPS.corridor to be set"
+                )
+            dx = self._x1[ref_idx] - self._x0[ref_idx]
+            dy = self._y1[ref_idx] - self._y0[ref_idx]
+            L = float(np.hypot(dx, dy))  # ref lateral length
+            a = 0.5 * L + float(self.corridor.extra_along_ft)   # along-well
+            b = float(self.corridor.half_width_ft)              # cross-well
+            return a, b
+
+        # DSU-style fixed box for 'cardinal' and 'i_frame'
+        return self.box.half_width_ft, self.box.half_height_ft
+
+    # ----------------------- core counters -----------------------
+
+    def _inside_lengths_for_ref(
+        self,
+        ref_idx: int,
+        *,
+        orientation: Orientation,
+    ) -> np.ndarray:
+        """
+        Vectorized inside-lengths (ft) of all segments w.r.t. the floating region
+        centered on a reference well.
+
+        orientation:
+            - 'cardinal' → axis-aligned box in map frame,
+            - 'i_frame'  → rotate world by -az_ref so ref lateral is along +x,
+            - 'corridor' → same rotation as 'i_frame' but with per-well corridor
+                           half-sizes derived from that ref lateral's length.
+        """
+        cx = self._mx[ref_idx]
+        cy = self._my[ref_idx]
+        a, b = self._get_half_sizes(ref_idx, orientation)
+
+        # translate all segments so the region center is at origin
+        x0 = self._x0 - cx
+        y0 = self._y0 - cy
+        x1 = self._x1 - cx
+        y1 = self._y1 - cy
+
+        # Any azimuth-aligned orientations rotate the world into the ref frame
+        if orientation in ("i_frame", "corridor"):
+            az_ref = float(self._az[ref_idx])
+            x0, y0 = self._world_to_iframe(x0, y0, az_ref)
+            x1, y1 = self._world_to_iframe(x1, y1, az_ref)
+
+        return self._liang_barsky_clip_len(x0, y0, x1, y1, a, b)
+
+    def count_for_reference(
+        self,
+        uwi_ref: str,
+        *,
+        orientation: Orientation = "cardinal",
+        include_lengths: bool = True,
+    ) -> pd.DataFrame:
+        """
+        Return a neighbor table for one reference well showing which wells contribute
+        and by how much.
+
+        Columns: ['well_k','inside_len_ft','passes_min_inside','orientation','uwi_ref']
+
+        orientation may be 'cardinal', 'i_frame', or 'corridor'.
+        """
+        ref_idx = int(np.where(self._uwi == str(uwi_ref))[0][0])
+        inside = self._inside_lengths_for_ref(ref_idx, orientation=orientation)
+
+        # apply 660-ft rule
+        passes = inside >= self.min_inside_ft
+        if self.exclude_self:
+            passes[ref_idx] = False
+
+        out = pd.DataFrame(
+            {
+                "uwi_ref": str(uwi_ref),
+                "orientation": orientation,
+                "well_k": self._uwi,
+                "inside_len_ft": inside if include_lengths else np.nan,
+                "passes_min_inside": passes,
+            }
+        )
+        return out.loc[passes].sort_values("inside_len_ft", ascending=False).reset_index(drop=True)
+
+    # ----------------------- per-well summaries -----------------------
+
+    def summarize_per_well(
+        self
+    ) -> pd.DataFrame:
+        """
+        Compute WPS for every well in both DSU-style modes + anisotropy index.
+
+        wps_iframe > wps_cardinal → more crowding along the well direction.
+        wps_iframe < wps_cardinal → more stacked / across-strike crowding.
+
+        If `include_corridor=True`, also compute `wps_corridor` using the
+        corridor definition for each well as the reference.
+
+        Returns a DataFrame with one row per well_i:
+
+            ['well_i',
+            'wps_cardinal',
+            'wps_iframe',
+            'anisotropy_ratio',
+            'anisotropy_delta',
+            'azimuth_deg',
+            'mid_x',
+            'mid_y',
+            ('wps_corridor' if requested)]
+
+        Note: corridor-based WPS requires `self.corridor` to be set.
+        """
+        n = len(self._uwi)
+        wps_card = np.empty(n, dtype=int)
+        wps_ifrm = np.empty(n, dtype=int)
+        wps_corr = np.empty(n, dtype=int)
+
+        for i in range(n):
+            # Cardinal box
+            inside_c = self._inside_lengths_for_ref(i, orientation="cardinal")
+            # i-frame box
+            inside_i = self._inside_lengths_for_ref(i, orientation="i_frame")
+
+            if self.exclude_self:
+                inside_c[i] = 0.0
+                inside_i[i] = 0.0
+
+            wps_card[i] = int(np.sum(inside_c >= self.min_inside_ft))
+            wps_ifrm[i] = int(np.sum(inside_i >= self.min_inside_ft))
+
+            # Corridor box
+            inside_corr = self._inside_lengths_for_ref(i, orientation="corridor")
+            if self.exclude_self:
+                inside_corr[i] = 0.0
+            wps_corr[i] = int(np.sum(inside_corr >= self.min_inside_ft))
+
+        # Anisotropy metrics (cardinal vs i-frame)
+        eps = 1.0  # guard small denominators for a stable ratio
+        ratio = (wps_ifrm.astype(float) / np.maximum(eps, wps_card.astype(float)))
+        delta = wps_ifrm.astype(float) - wps_card.astype(float)
+
+        data = {
+            "well_i": self._uwi,
+            "wps_cardinal": wps_card,
+            "wps_iframe": wps_ifrm,
+            "wps_corridor": wps_corr,
+            "anisotropy_ratio": ratio,
+            "anisotropy_delta": delta,
+            "azimuth_deg": self._az,
+            "mid_x": self._mx,
+            "mid_y": self._my,
+        }
+
+        return pd.DataFrame(data)
+
+    # ----------------------- diagnostics -----------------------
+
+    def plot_map_for(
+        self,
+        uwi_ref: str,
+        *,
+        show_boxes: bool = True,
+        arrow_stride: int = 1,
+        figsize: Tuple[int, int] = (8, 7),
+    ) -> plt.Figure:
+        """
+        Map diagnostic for a single reference well:
+
+          - Plots all laterals,
+          - Draws the **cardinal** and **i-frame** floating boxes centered at uwi_ref,
+          - Annotates WPS counts in both DSU-style modes.
+
+        (This helper does not draw the corridor; use `plot_map_with_neighbors` or
+        `visualize` with orientation='corridor' instead.)
+        """
+        ref_idx = int(np.where(self._uwi == str(uwi_ref))[0][0])
+        cx, cy = self._mx[ref_idx], self._my[ref_idx]
+        az = float(self._az[ref_idx])
+
+        # counts
+        inside_c = self._inside_lengths_for_ref(ref_idx, orientation="cardinal")
+        inside_i = self._inside_lengths_for_ref(ref_idx, orientation="i_frame")
+
+        if self.exclude_self:
+            inside_c[ref_idx] = 0.0
+            inside_i[ref_idx] = 0.0
+
+        c_cnt = int(np.sum(inside_c >= self.min_inside_ft))
+        i_cnt = int(np.sum(inside_i >= self.min_inside_ft))
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # all laterals
+        for i in range(len(self._uwi)):
+            ax.plot([self._x0[i], self._x1[i]], [self._y0[i], self._y1[i]])
+
+        if show_boxes:
+            a, b = self.box.half_width_ft, self.box.half_height_ft
+
+            # cardinal box
+            rx = np.array([-a, a, a, -a, -a]) + cx
+            ry = np.array([-b, -b, b, b, -b]) + cy
+            ax.plot(rx, ry)
+
+            # i-frame box: draw rotated rectangle aligned with ref azimuth
+            rect = np.array([[-a, -b], [a, -b], [a, b], [-a, b], [-a, -b]], dtype=float)
+            rr_x, rr_y = self._iframe_to_world(rect[:, 0], rect[:, 1], az)
+            ax.plot(rr_x + cx, rr_y + cy)
+
+            ax.annotate(
+                f"cardinal={c_cnt}, i-frame={i_cnt}",
+                xy=(cx, cy),
+                xytext=(cx + 0.6 * a, cy + 0.6 * b),
+                arrowprops=dict(arrowstyle="->"),
+            )
+
+        ax.set_title(f"Floating section boxes for {uwi_ref}")
+        ax.set_xlabel("Easting (ft)")
+        ax.set_ylabel("Northing (ft)")
+        ax.grid(True, alpha=0.2)
+        return fig
+
+    def plot_polar_azimuth_hist(
+        self,
+        *,
+        bins: int = 12,
+        figsize: Tuple[int, int] = (6, 6),
+    ) -> plt.Figure:
+        """
+        Polar histogram of lateral azimuths (0°=N, 90°=E). Useful for **stratification**.
+        """
+        th = np.deg2rad(self._az % 360.0)
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111, projection="polar")
+        edges = np.linspace(0.0, 2.0 * math.pi, bins + 1)
+        counts, edges = np.histogram(th, bins=edges)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+        ax.bar(centers, counts, width=np.diff(edges), align="center")
+        ax.set_title("Azimuth distribution (for stratification)")
+        return fig
+
+    def plot_wps_by_azimuth_bins(
+        self,
+        *,
+        bin_edges_deg: Iterable[float] = (0, 60, 120, 180),
+        figsize: Tuple[int, int] = (7, 5),
+    ) -> plt.Figure:
+        """
+        Bar chart comparing mean WPS across user-specified azimuth bins,
+        for both **cardinal** and **i-frame** counts (a normalization view).
+        """
+        summary = self.summarize_per_well()
+        az = summary["azimuth_deg"].to_numpy(float) % 180.0  # mirror symmetry
+        wps_c = summary["wps_cardinal"].to_numpy(int)
+        wps_i = summary["wps_iframe"].to_numpy(int)
+
+        edges = np.array(list(bin_edges_deg), dtype=float)
+        means_c, means_i, labels = [], [], []
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            mask = (az >= lo) & (az < hi)
+            labels.append(f"{int(lo)}–{int(hi)}°")
+            if np.any(mask):
+                means_c.append(np.mean(wps_c[mask]))
+                means_i.append(np.mean(wps_i[mask]))
+            else:
+                means_c.append(0.0)
+                means_i.append(0.0)
+
+        xpos = np.arange(len(labels))
+        width = 0.35
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.bar(xpos - width / 2, means_c, width, label="cardinal")
+        ax.bar(xpos + width / 2, means_i, width, label="i_frame")
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(labels)
+        ax.set_ylabel("Mean WPS")
+        ax.set_title("Mean WPS by azimuth bins (normalization view)")
+        ax.legend()
+        ax.grid(True, axis="y", alpha=0.3)
+        return fig
+
+    # ----------------------- diagnostics (enhanced) -----------------------
+
+    def visualize(
+        self,
+        uwi_ref: str,
+        *,
+        orientation: Orientation = "cardinal",
+        min_len_ft: Optional[float] = None,
+        annotate: bool = True,
+        max_labels: int = 30,
+        figsize: Tuple[float, float] = (7.5, 7.5),
+        ax: Optional[plt.Axes] = None,
+    ) -> plt.Figure:
+        """
+        Floating-section view for one reference well, with neighbors colored by category.
+
+        Categories are based on the floating box or corridor centered on `uwi_ref`:
+
+          - \">=min_len_ft\" : inside-lateral length >= min_len_ft
+          - \"intersect\"    : segment intersects region but inside length < min_len_ft
+          - \"midpoint\"     : midpoint lies inside region, but no intersection
+          - \"outside\"      : none of the above (not drawn)
+
+        The PLOT is in a **map-style frame** centered on the reference midpoint:
+          - X = Easting (ft, local)
+          - Y = Northing (ft, local)
+
+        For `orientation` in {'i_frame','corridor'}, we *only* rotate into the
+        ref-lateral frame internally for classification and clipping; wells are
+        still drawn in map orientation.
+        """
+        threshold = float(min_len_ft) if min_len_ft is not None else self.min_inside_ft
+
+        # Locate reference well
+        uwi_ref = str(uwi_ref)
+        try:
+            ref_idx = int(np.where(self._uwi == uwi_ref)[0][0])
+        except IndexError:
+            raise ValueError(f"Reference UWI {uwi_ref!r} not found in FloatingSectionWPS.df")
+
+        # Region half-sizes (a = along, b = cross for corridor / i_frame)
+        a, b = self._get_half_sizes(ref_idx, orientation)
+
+        # Center in world coords
+        cx, cy = self._mx[ref_idx], self._my[ref_idx]
+
+        # Inside lengths (already uses the correct frame internally)
+        inside = self._inside_lengths_for_ref(ref_idx, orientation=orientation)
+        if self.exclude_self:
+            inside[ref_idx] = 0.0
+
+        # ---------- Coordinates for plotting vs classification ----------
+
+        # World coordinates, translated so ref midpoint is at (0,0) – used for plotting
+        x0_plot = self._x0 - cx
+        y0_plot = self._y0 - cy
+        x1_plot = self._x1 - cx
+        y1_plot = self._y1 - cy
+        mid_x_plot = self._mx - cx
+        mid_y_plot = self._my - cy
+
+        # Local (box-aligned) coordinates for classification:
+        #   cardinal → same as plot coords
+        #   i_frame / corridor → rotate world into the ref-lateral frame
+        if orientation == "cardinal":
+            x0_loc, y0_loc = x0_plot, y0_plot
+            x1_loc, y1_loc = x1_plot, y1_plot
+            mid_x_loc, mid_y_loc = mid_x_plot, mid_y_plot
+        else:
+            az_ref = float(self._az[ref_idx])
+            x0_loc, y0_loc = self._world_to_iframe(x0_plot, y0_plot, az_ref)
+            x1_loc, y1_loc = self._world_to_iframe(x1_plot, y1_plot, az_ref)
+            mid_x_loc, mid_y_loc = self._world_to_iframe(mid_x_plot, mid_y_plot, az_ref)
+
+        # Midpoint inside region? (computed in the box-aligned frame)
+        mid_inside = (np.abs(mid_x_loc) <= a) & (np.abs(mid_y_loc) <= b)
+
+        # Segment intersects region? (from Liang–Barsky inside lengths)
+        intersects = inside > 0.0
+
+        # Long enough inside
+        long_enough = inside >= threshold
+
+        # Assign categories
+        n = len(self._uwi)
+        cat = np.full(n, "outside", dtype=object)
+        cat[mid_inside] = "midpoint"
+        cat[intersects] = "intersect"
+        cat[long_enough] = f">={int(threshold)}ft"
+        cat[ref_idx] = "self"
+
+        # Working DataFrame (use PLOT coords for label positions)
+        idx_arr = np.arange(n)
+        df = pd.DataFrame(
+            {
+                "idx": idx_arr,
+                "uwi": self._uwi,
+                "len_in_box_ft": inside,
+                "mid_x_plot": mid_x_plot,
+                "mid_y_plot": mid_y_plot,
+                "category": cat,
+            }
+        )
+
+        # ---------- Create axes & draw region ----------
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.figure
+
+        # Region polygon at origin in box-aligned frame
+        rect = np.array(
+            [[-a, -b], [a, -b], [a, b], [-a, b], [-a, -b]],
+            dtype=float,
+        )
+
+        if orientation == "cardinal":
+            # No rotation – same as cardinal box
+            rect_x, rect_y = rect[:, 0], rect[:, 1]
+        else:
+            az_ref = float(self._az[ref_idx])
+            rect_x, rect_y = self._iframe_to_world(rect[:, 0], rect[:, 1], az_ref)
+
+        region_label = (
+            f"Floating box ({int(2*a)}×{int(2*b)} ft)"
+            if orientation != "corridor"
+            else f"Corridor ({int(2*a)}×{int(2*b)} ft)"
+        )
+        ax.plot(rect_x, rect_y, lw=1.5, label=region_label)
+
+        # Draw reference lateral (in map frame)
+        ax.plot(
+            [x0_plot[ref_idx], x1_plot[ref_idx]],
+            [y0_plot[ref_idx], y1_plot[ref_idx]],
+            color="black",
+            lw=2.25,
+            label=f"{uwi_ref} (ref)",
+        )
+
+        # ---------- Draw neighbors by category (using map coords) ----------
+
+        def _cat_order(c: str) -> int:
+            if c.startswith(">="):
+                return 0
+            if c == "intersect":
+                return 1
+            if c == "midpoint":
+                return 2
+            return 3
+
+        df_sorted = df.sort_values(
+            "category",
+            key=lambda s: s.map(_cat_order),
+        )
+
+        labels_drawn = 0
+        for _, r in df_sorted.iterrows():
+            i = int(r["idx"])
+            if i == ref_idx:
+                continue
+            category = r["category"]
+            if category == "outside":
+                continue
+
+            x0p, y0p = x0_plot[i], y0_plot[i]
+            x1p, y1p = x1_plot[i], y1_plot[i]
+
+            if category.startswith(">="):
+                ax.plot([x0p, x1p], [y0p, y1p], lw=1.5)
+            elif category == "intersect":
+                ax.plot([x0p, x1p], [y0p, y1p], lw=1.2, linestyle="--")
+            elif category == "midpoint":
+                ax.plot([x0p, x1p], [y0p, y1p], lw=1.0, linestyle=":")
+            else:
+                continue
+
+            if annotate and labels_drawn < max_labels:
+                mx, my = r["mid_x_plot"], r["mid_y_plot"]
+                ax.text(
+                    mx,
+                    my,
+                    f"{r['uwi']}\n{int(round(r['len_in_box_ft']))} ft",
+                    fontsize=8,
+                    ha="center",
+                    va="center",
+                    alpha=0.9,
+                    bbox=dict(
+                        boxstyle="round,pad=0.2",
+                        fc="white",
+                        ec="0.4",
+                        alpha=0.8,
+                    ),
+                )
+                labels_drawn += 1
+
+        # ---------- Counts & axes ----------
+        n_ge = int(np.sum(df["category"] == f">={int(threshold)}ft"))
+        n_int = int(np.sum(df["category"] == "intersect"))
+        n_mid = int(np.sum(df["category"] == "midpoint"))
+
+        ax.set_xlabel("Easting (ft, local)")
+        ax.set_ylabel("Northing (ft, local)")
+        ax.set_title(
+            f"Floating-section view for {uwi_ref}  ({orientation})\n"
+            f"≥{int(threshold)}ft: {n_ge}, "
+            f"intersect: {n_int}, "
+            f"midpoint: {n_mid}"
+        )
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.2)
+        return fig
+
+    def plot_map_with_neighbors(
+        self,
+        uwi_ref: str,
+        *,
+        orientation: Orientation = "i_frame",
+        label_top_n: Optional[int] = None,
+        fontsize: int = 8,
+        figsize: Tuple[int, int] = (8, 7),
+        show_other_box: bool = True,
+    ) -> plt.Figure:
+        """
+        Map diagnostic for one reference well with neighbor labels.
+
+        - Draws all laterals.
+        - Draws the active floating region (box or corridor, per `orientation`).
+        - Optionally also draws the *cardinal* DSU-style box for comparison.
+        - Labels neighbors that pass the 660-ft rule (sorted by inside length).
+        - Returns the Matplotlib Figure (caller can save/close).
+
+        Parameters
+        ----------
+        uwi_ref : str
+            Reference well to center the floating section on.
+        orientation : {'cardinal','i_frame','corridor'}, default 'i_frame'
+            Which region alignment to use for counting and labeling.
+        label_top_n : int or None
+            If set, annotate only the top-N neighbors by inside length.
+            If None, annotate all neighbors that pass the threshold.
+        fontsize : int
+            Label font size.
+        figsize : (w,h)
+            Figure size in inches.
+        show_other_box : bool
+            If True, draws the *cardinal* box faintly for DSU context.
+        """
+        ref_idx = int(np.where(self._uwi == str(uwi_ref))[0][0])
+        cx, cy = self._mx[ref_idx], self._my[ref_idx]
+        az = float(self._az[ref_idx])
+
+        # Active region geometry for this orientation
+        a, b = self._get_half_sizes(ref_idx, orientation)
+
+        # Compute inside lengths for the requested orientation
+        inside = self._inside_lengths_for_ref(ref_idx, orientation=orientation)
+        if self.exclude_self:
+            inside[ref_idx] = 0.0
+        passes = inside >= self.min_inside_ft
+
+        # Sort by inside length (desc) and optionally cap to top-N
+        order = np.argsort(-inside)
+        order = [i for i in order if passes[i]]
+        if label_top_n is not None:
+            order = order[:int(label_top_n)]
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # plot all laterals
+        for i in range(len(self._uwi)):
+            ax.plot([self._x0[i], self._x1[i]], [self._y0[i], self._y1[i]], lw=1, alpha=0.9)
+
+        # helper: draw a rotated rectangle
+        def _draw_rot_rect(ax, cx, cy, a, b, az_deg, **kw):
+            rect = np.array([[-a, -b], [a, -b], [a, b], [-a, b], [-a, -b]], dtype=float)
+            rr_x, rr_y = self._iframe_to_world(rect[:, 0], rect[:, 1], az_deg)
+            ax.plot(rr_x + cx, rr_y + cy, **kw)
+
+        # draw active region
+        if orientation == "cardinal":
+            ax.plot(
+                [cx - a, cx + a, cx + a, cx - a, cx - a],
+                [cy - b, cy - b, cy + b, cy + b, cy - b],
+                lw=2,
+                color="black",
+                label="cardinal box",
+            )
+        elif orientation == "i_frame":
+            _draw_rot_rect(ax, cx, cy, a, b, az, lw=2, color="black", label="i-frame box")
+        else:  # corridor
+            _draw_rot_rect(ax, cx, cy, a, b, az, lw=2, color="black", label="corridor")
+
+        # Optional DSU-style cardinal box for context
+        if show_other_box:
+            a_c, b_c = self.box.half_width_ft, self.box.half_height_ft
+            ax.plot(
+                [cx - a_c, cx + a_c, cx + a_c, cx - a_c, cx - a_c],
+                [cy - b_c, cy - b_c, cy + b_c, cy + b_c, cy - b_c],
+                lw=1,
+                color="gray",
+                alpha=0.7,
+                label="cardinal DSU box",
+            )
+
+        # annotate neighbors
+        for i in order:
+            # label at the midpoint of the segment (approximate clipped midpoint)
+            xlab = 0.5 * (self._x0[i] + self._x1[i])
+            ylab = 0.5 * (self._y0[i] + self._y1[i])
+            ax.scatter([xlab], [ylab], s=15)
+            ax.text(
+                xlab,
+                ylab,
+                f"{self._uwi[i]}\n{inside[i]:.0f} ft",
+                fontsize=fontsize,
+                ha="center",
+                va="bottom",
+                bbox=dict(
+                    boxstyle="round,pad=0.2",
+                    fc="white",
+                    ec="0.4",
+                    alpha=0.8,
+                ),
+            )
+
+        # counts for caption
+        count_pass = int(np.sum(passes))
+        if self.exclude_self and passes[ref_idx]:
+            count_pass -= 1
+
+        ax.set_title(
+            f"{orientation} region for {uwi_ref}  |  "
+            f"neighbors ≥{int(self.min_inside_ft)} ft: {count_pass}"
+        )
+        ax.set_xlabel("Easting (ft)")
+        ax.set_ylabel("Northing (ft)")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.2)
+        return fig
+
+    def save_diagnostics_for(
+        self,
+        uwi_refs: Iterable[str],
+        out_dir: os.PathLike,
+        *,
+        orientations: Tuple[Orientation, ...] = ("cardinal", "i_frame"),
+        label_top_n: Optional[int] = 10,
+        include_polar: bool = True,
+        include_bin_chart: bool = True,
+        bin_edges_deg: Iterable[float] = (0, 45, 90, 135, 180),
+        export_neighbors_csv: bool = True,
+        dpi: int = 150,
+    ) -> dict:
+        """
+        Save a complete diagnostics pack to `out_dir`.
+
+        - For each `uwi_ref`: saves map PNG(s) with neighbor labels for each orientation.
+          Also writes a neighbors CSV (who was counted, inside length, threshold flag).
+        - Basin-wide: optionally saves polar azimuth histogram and WPS-by-azimuth-bin chart.
+        - Writes a README.md explaining artifacts and parameters used.
+
+        Returns a dict with lists of created file paths.
+
+        Parameters
+        ----------
+        uwi_refs : iterable of str
+            Reference wells to render.
+        out_dir : path-like
+            Destination folder. Created if missing.
+        orientations : tuple of Orientation
+            Which region alignments to render per ref (e.g. ('cardinal','i_frame','corridor')).
+        label_top_n : int or None
+            Annotate up to N neighbors per map (sorted by inside length). None → annotate all.
+        include_polar : bool
+            Save polar azimuth histogram for the dataset.
+        include_bin_chart : bool
+            Save WPS mean-by-azimuth-bin bar chart.
+        bin_edges_deg : iterable
+            Bin edges for the azimuth comparison chart.
+        export_neighbors_csv : bool
+            Save per-ref neighbors tables (one CSV per orientation).
+        dpi : int
+            Image save DPI.
+        """
+        out_paths = {"maps": [], "csvs": [], "polar": None, "bins": None, "readme": None}
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Global artifacts
+        if include_polar:
+            fig = self.plot_polar_azimuth_hist()
+            p = out_dir / "azimuth_polar.png"
+            fig.savefig(p, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            out_paths["polar"] = str(p)
+
+        if include_bin_chart:
+            fig = self.plot_wps_by_azimuth_bins(bin_edges_deg=bin_edges_deg)
+            p = out_dir / "wps_by_azimuth_bins.png"
+            fig.savefig(p, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            out_paths["bins"] = str(p)
+
+        # Per-reference artifacts
+        for u in uwi_refs:
+            for ori in orientations:
+                fig = self.plot_map_with_neighbors(
+                    u,
+                    orientation=ori,
+                    label_top_n=label_top_n,
+                    show_other_box=True,
+                )
+                p = out_dir / f"map_{u}_{ori}.png"
+                fig.savefig(p, dpi=dpi, bbox_inches="tight")
+                plt.close(fig)
+                out_paths["maps"].append(str(p))
+
+                if export_neighbors_csv:
+                    tbl = self.count_for_reference(u, orientation=ori, include_lengths=True)
+                    c = out_dir / f"neighbors_{u}_{ori}.csv"
+                    tbl.to_csv(c, index=False)
+                    out_paths["csvs"].append(str(c))
+
+        # README.md with a compact explanation
+        readme = out_dir / "README.md"
+        with open(readme, "w", encoding="utf-8") as f:
+            f.write(
+f"""# Floating Section Diagnostics
+
+**Box:** {int(self.box.half_width_ft*2)} ft × {int(self.box.half_height_ft*2)} ft  
+**Inside-length threshold:** {int(self.min_inside_ft)} ft  
+**Exclude self:** {self.exclude_self}
+**Corridor:** {self.corridor!r}
+
+## What’s included
+- Per-well maps (`map_<uwi>_<orientation>.png`) showing:
+  - all laterals,
+  - the active floating region (**black**) centered on the reference well
+    (cardinal box, i-frame box, or corridor),
+  - the cardinal DSU box (**gray**) for context,
+  - labels for neighbors with inside length ≥ threshold (`<uwi>`, `<inside_len_ft> ft`).
+- Neighbor tables (`neighbors_<uwi>_<orientation>.csv`) listing counted wells and inside lengths.
+- Basin-wide polar azimuth histogram (`azimuth_polar.png`) for **stratification**.
+- Mean WPS by azimuth bins chart (`wps_by_azimuth_bins.png`) for **normalization**
+  (cardinal vs i-frame).
+
+## Notes
+- *cardinal* keeps the box north-up, east-right.
+- *i-frame* aligns the box with the reference well’s azimuth (0°=N, 90°=E).
+- *corridor* builds a lateral-following corridor aligned to the reference well’s azimuth,
+  with length based on the well’s heel–toe distance and width set by `CorridorSpec`.
+- A neighbor is counted only if its lateral length **inside** the region is ≥ the threshold.
+"""
+            )
+        out_paths["readme"] = str(readme)
+
+        return out_paths
+    
+#%%

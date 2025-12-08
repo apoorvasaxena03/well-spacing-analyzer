@@ -56,6 +56,43 @@ def clean_column_names(df):
     ]
     return df
 
+def standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardizes DataFrame column names by:
+    - Removing leading/trailing spaces
+    - Treating leading 'ENV' as a single token (ENV* → env_*)
+    - Converting camelCase/PascalCase to snake_case
+    - Replacing spaces with underscores
+    - Converting to lowercase
+    - Removing duplicate underscores
+    """
+
+    def convert_to_snake_case(name: str) -> str:
+        # Remove leading/trailing spaces
+        name = name.strip()
+
+        # Special handling: treat leading 'ENV' as one word
+        # ENVOperator, ENV_Operator, ENVBasin → EnvOperator, Env_Operator, EnvBasin
+        name = re.sub(r"^ENV", "Env", name)
+
+        # Insert underscore before uppercase letters (camelCase / PascalCase -> snake_case)
+        name = re.sub(r"(?<!^)(?=[A-Z])", "_", name)
+
+        # Replace spaces with underscores
+        name = name.replace(" ", "_")
+
+        # Convert to lowercase
+        name = name.lower()
+
+        # Remove duplicate underscores
+        name = re.sub(r"_+", "_", name)
+
+        return name
+
+    df = df.copy()
+    df.columns = [convert_to_snake_case(col) for col in df.columns]
+    return df
+
 def read_csv_with_mapper(
     path: str | Path,
     *,
@@ -190,23 +227,61 @@ def read_excel_with_mapper(
 def compute_bg_rcat(
     df: pd.DataFrame,
     *,
+    col_map: Mapping[str, str] | None = None,
     prod_cutoff: Union[str, pd.Timestamp] = "2025-01-01",
     spud_cutoff: Union[str, pd.Timestamp] = "2023-01-01",
 ) -> pd.Series:
     """
     Compute BG_RCAT classification for a well list.
 
+    This function implements the BG_RCAT logic based on well status and
+    key dates (spud, completion, last production).
+
+    Column mapping
+    --------------
+    The function works with four *logical* columns:
+
+        - 'status'    -> well status (e.g. 'WellStatus_Env')
+        - 'last_prod' -> last production date
+        - 'spud'      -> spud date
+        - 'comp'      -> completion date
+
+    By default, it assumes the following actual column names in `df`:
+
+        status    : 'WellStatus_Env'
+        last_prod : 'LastProdDt'
+        spud      : 'SpudDt'
+        comp      : 'CompDt'
+
+    You can override these via the `col_map` parameter, e.g.:
+
+        col_map = {
+            "status": "Status",
+            "last_prod": "Last_Prod_Date",
+            "spud": "Spud_Date",
+            "comp": "Completion_Date",
+        }
+
     Parameters
     ----------
     df :
-        DataFrame containing at least:
-        - 'WellStatus_Env'
-        - 'LastProdDt'
-        - 'SpudDt'
-        - 'CompDt'
+        DataFrame containing at least the four required columns
+        (directly or via col_map).
 
-        Date columns may be strings or datetimes; they will be
-        coerced via `pd.to_datetime(..., errors="coerce")`.
+    col_map :
+        Optional mapping from logical names -> actual column names in `df`.
+
+        Valid keys in col_map:
+            - "status"
+            - "last_prod"
+            - "spud"
+            - "comp"
+
+        Any missing keys will fall back to the defaults:
+            status    -> 'WellStatus_Env'
+            last_prod -> 'LastProdDt'
+            spud      -> 'SpudDt'
+            comp      -> 'CompDt'
 
     prod_cutoff :
         Production recency cutoff. Wells with LastProdDt >= prod_cutoff
@@ -223,21 +298,49 @@ def compute_bg_rcat(
         Series of BG_RCAT codes:
         '1PDP', '1PDSI', '1WOP', '2DUC', '3PRMT',
         '9PA', '9XDUC', '9XPMT'.
+
+    Raises
+    ------
+    KeyError
+        If any of the required logical columns ("status", "last_prod",
+        "spud", "comp") is not found in the DataFrame after applying col_map.
     """
+    # Resolve column names (logical -> actual DataFrame columns)
+    defaults = {
+        "status": "WellStatus_Env",
+        "last_prod": "LastProdDt",
+        "spud": "SpudDt",
+        "comp": "CompDt",
+    }
+    if col_map:
+        defaults.update(col_map)
+
+    status_col = defaults["status"]
+    last_prod_col = defaults["last_prod"]
+    spud_col = defaults["spud"]
+    comp_col = defaults["comp"]
+
+    missing = [c for c in [status_col, last_prod_col, spud_col, comp_col] if c not in df.columns]
+    if missing:
+        raise KeyError(
+            f"compute_bg_rcat: required columns not found in DataFrame: {missing}. "
+            f"Resolved from logical names using col_map={col_map!r}."
+        )
+
     prod_cutoff_ts = pd.to_datetime(prod_cutoff)
     spud_cutoff_ts = pd.to_datetime(spud_cutoff)
 
     work = df.copy()
 
-    # Coerce dates
-    work["LastProdDt"] = pd.to_datetime(work["LastProdDt"], errors="coerce")
-    work["SpudDt"] = pd.to_datetime(work["SpudDt"], errors="coerce")
-    work["CompDt"] = pd.to_datetime(work["CompDt"], errors="coerce")
+    # Coerce dates on the resolved columns
+    work[last_prod_col] = pd.to_datetime(work[last_prod_col], errors="coerce")
+    work[spud_col] = pd.to_datetime(work[spud_col], errors="coerce")
+    work[comp_col] = pd.to_datetime(work[comp_col], errors="coerce")
 
-    status = work["WellStatus_Env"].fillna("")
-    last_prod = work["LastProdDt"]
-    spud = work["SpudDt"]
-    comp = work["CompDt"]
+    status = work[status_col].fillna("")
+    last_prod = work[last_prod_col]
+    spud = work[spud_col]
+    comp = work[comp_col]
 
     # Start with blank codes
     result = pd.Series("", index=work.index, dtype="object")
@@ -299,7 +402,7 @@ def compute_bg_rcat(
     result[m_duc_recent] = "2DUC"
     result[m_duc_old] = "9XDUC"
 
-    # 4) ABANDONED with no production (none in current file but safe to handle)
+    # 4) ABANDONED with no production (safety catch)
     m_abandoned_no_prod = no_last_prod & status.eq("ABANDONED") & (result == "")
     result[m_abandoned_no_prod] = "9PA"
 

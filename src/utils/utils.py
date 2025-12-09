@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from pathlib import Path
-from typing import List, Mapping, Any, Union
+from typing import List, Mapping, Any, Union, Optional, Sequence
 
 import re
 
@@ -564,3 +564,55 @@ def compute_bg_rcat(
     result[m_abandoned_no_prod] = "9PA"
 
     return result
+
+#%% Helper to compute producing-month numbers (SQL ROW_NUMBER() OVER (PARTITION BY uwi ORDER BY prod_date)).
+
+def add_producing_months(
+    df: pd.DataFrame,
+    uwi_col: str = "uwi",
+    date_col: str = "prod_date",
+    out_col: str = "producing_month_number",
+    sort_ascending: bool = True,
+    inplace: bool = False,
+    dropna_dates: bool = False,
+    secondary_sort: Optional[Sequence[str]] = None,
+) -> pd.DataFrame:
+    """
+    Return a DataFrame with a producing-month counter per UWI (like ROW_NUMBER partitioned by uwi ordered by date).
+
+    Parameters
+    - df: input DataFrame
+    - uwi_col: column name containing UWI identifiers
+    - date_col: column name with production date (will be converted to datetime if not already)
+    - out_col: name of the output column to create
+    - sort_ascending: sort order for dates (True -> oldest first)
+    - inplace: if True, modify input df; otherwise operate on a copy
+    - dropna_dates: if True, drop rows where date_col is NA before numbering
+    - secondary_sort: optional list/tuple of additional column names to include in sort keys after date_col
+
+    Returns
+    - DataFrame with out_col added (int, starting at 1 for each uwi)
+    """
+    if not inplace:
+        df = df.copy()
+
+    # ensure date column is datetime
+    if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    if dropna_dates:
+        df = df[df[date_col].notna()]
+
+    # build sort keys: uwi first, then date, then any secondary sorts
+    sort_keys = [uwi_col, date_col]
+    if secondary_sort:
+        sort_keys.extend(list(secondary_sort))
+
+    # determine ascending flags: uwi always ascending, date ascending per sort_ascending, secondary assumed ascending
+    ascending = [True, sort_ascending] + [True] * (len(sort_keys) - 2)
+
+    # sort and assign row number per uwi
+    df = df.sort_values(sort_keys, ascending=ascending)
+    df[out_col] = df.groupby(uwi_col).cumcount() + 1
+
+    return df

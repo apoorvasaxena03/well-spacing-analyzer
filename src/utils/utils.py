@@ -61,7 +61,7 @@ def standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     Standardizes DataFrame column names by:
     - Removing leading/trailing spaces
     - Treating leading 'ENV' as a single token (ENV* → env_*)
-    - Converting camelCase/PascalCase to snake_case
+    - Converting CamelCase/PascalCase (including acronyms) to snake_case
     - Replacing spaces with underscores
     - Converting to lowercase
     - Removing duplicate underscores
@@ -71,12 +71,17 @@ def standardize_column_names(df: pd.DataFrame) -> pd.DataFrame:
         # Remove leading/trailing spaces
         name = name.strip()
 
-        # Special handling: treat leading 'ENV' as one word
-        # ENVOperator, ENV_Operator, ENVBasin → EnvOperator, Env_Operator, EnvBasin
+        # 1) Special handling: treat leading 'ENV' as one word
+        #    ENVOperator, ENVBasin, ENV_Peer_Group → EnvOperator, EnvBasin, Env_Peer_Group
         name = re.sub(r"^ENV", "Env", name)
 
-        # Insert underscore before uppercase letters (camelCase / PascalCase -> snake_case)
-        name = re.sub(r"(?<!^)(?=[A-Z])", "_", name)
+        # 2) Split between ALLCAPS and CapitalizedWord:
+        #    GALPerFT -> GAL_PerFT, LBSPerGAL -> LBS_PerGAL
+        name = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', '_', name)
+
+        # 3) Split between lower/digit and Uppercase:
+        #    StateProvince -> State_Province, LeaseName -> Lease_Name
+        name = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', name)
 
         # Replace spaces with underscores
         name = name.replace(" ", "_")
@@ -304,6 +309,158 @@ def compute_bg_rcat(
     KeyError
         If any of the required logical columns ("status", "last_prod",
         "spud", "comp") is not found in the DataFrame after applying col_map.
+
+    BG_RCAT code meanings
+    ---------------------
+    The function returns a series of compact reserve/status classification
+    codes. They are derived from a well's status and key dates using the
+    `prod_cutoff` and `spud_cutoff` thresholds.
+
+    High-level structure
+    ^^^^^^^^^^^^^^^^^^^^
+    - Leading digit:
+      - ``1***`` – current PDP or PDP-adjacent (producing / shut-in / WOP).
+      - ``2***`` – near-term inventory (DUCs likely to be completed).
+      - ``3***`` – future locations (permits).
+      - ``9***`` – non-working buckets (dead permits, aged DUCs, P&A / abandoned).
+
+    - Suffix:
+      - ``PDP``  – proved developed producing (current).
+      - ``PDSI`` – PDP with stale or shut-in production.
+      - ``WOP``  – waiting on production (completed, no sales yet).
+      - ``DUC``  – drilled but uncompleted.
+      - ``PRMT`` – permitted location.
+      - ``PA``   – plugged / abandoned or long-term non-producing.
+      - ``XDUC`` – aged-out / failed DUC.
+      - ``XPMT`` – dead permit (cancelled / expired).
+
+    Code-by-code definitions
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+    ``1PDP`` – Current Producing PDP
+        Wells that are effectively *active PDP*.
+
+        Assigned when:
+
+        - ``LastProdDt`` is not null, and
+        - Either:
+          - ``WellStatus_Env`` is ``"PRODUCING"`` or ``"INACTIVE PRODUCER"`` with
+            ``LastProdDt >= prod_cutoff``, or
+          - ``WellStatus_Env`` is ``"TA"`` with ``LastProdDt >= prod_cutoff``.
+
+        Interpretation: these wells anchor the current PDP base and near-term
+        cash flow. The ``prod_cutoff`` threshold controls what is considered
+        "recent" production.
+
+    ``1PDSI`` – PDP with Stale Production / Shut-in PDP
+        Wells that *have* a production history and are classified as producing
+        or inactive, but whose last production is **older** than ``prod_cutoff``.
+
+        Assigned when:
+
+        - ``LastProdDt`` is not null,
+        - ``WellStatus_Env`` is ``"PRODUCING"`` or ``"INACTIVE PRODUCER"``, and
+        - ``LastProdDt < prod_cutoff``.
+
+        Interpretation: structurally PDP, but functionally shut-in or idle. This
+        bucket separates older non-flowing PDP from the active ``1PDP`` wells.
+
+    ``1WOP`` – Completed, Waiting on Production
+        Wells that are mechanically ready but not yet selling volumes.
+
+        Assigned when:
+
+        - ``LastProdDt`` is null (no recorded production),
+        - ``CompDt`` is not null (well is completed), and
+        - ``WellStatus_Env`` is ``"COMPLETED"`` or ``"PRODUCING"``.
+
+        Interpretation: very short-term future PDP; these wells are expected to
+        roll into ``1PDP`` once first sales hit the database. This is distinct
+        from DUC inventory which still requires completion capital.
+
+    ``2DUC`` – Fresh DUC Inventory
+        Active, near-term DUC inventory: wells that have been spud, may be
+        drilled or partially completed, but have not yet produced and are
+        "recent" enough to be considered viable completions.
+
+        Assigned when **all** of the following hold:
+
+        - ``LastProdDt`` is null,
+        - ``WellStatus_Env`` is one of:
+          ``"DUC"``, ``"DRILLED"``, ``"DRILLING"``, ``"SPUD DATE ONLY"``,
+          ``"COMPLETED"``, ``"PRODUCING"``,
+        - The well has not already been assigned another BG_RCAT code (e.g.
+          not captured by ``1WOP``, permits, etc.),
+        - ``SpudDt >= spud_cutoff``.
+
+        Interpretation: near-term growth inventory with capital already sunk
+        into drilling. ``spud_cutoff`` filters out very old, zombie DUCs.
+
+    ``3PRMT`` – Active Permits
+        Future locations that have a **valid** drilling permit but have not
+        yet been spud.
+
+        Assigned when:
+
+        - ``WellStatus_Env == "PERMITTED"``.
+
+        This is applied after cancelled/expired permits are classified as
+        ``9XPMT``.
+
+        Interpretation: undeveloped locations with regulatory approval but no
+        drilling commitment. Typically treated as longer-dated inventory than
+        ``2DUC``, but more concrete than conceptual locations.
+
+    ``9PA`` – Plugged / Abandoned / Long-Term Non-Producing
+        Wells that are effectively dead from an inventory standpoint: plugged,
+        abandoned, or long-term non-producing TA wells.
+
+        Assigned in several situations, for example:
+
+        - ``TA`` with production **older** than ``prod_cutoff``.
+        - ``P & A`` or ``ABANDONED`` with any production history.
+        - ``TA`` with no production, not already coded.
+        - ``P & A`` with no production but a *recent* spud (``SpudDt >= spud_cutoff``).
+        - ``ABANDONED`` with no production (safety catch).
+
+        Interpretation: wells you do not plan to re-activate and do not treat
+        as live inventory. Keeping them separate from ``9XDUC`` / ``9XPMT``
+        distinguishes truly abandoned wells from abandoned inventory.
+
+    ``9XDUC`` – Aged-Out / Failed DUCs
+        Washed-out DUCs and similar cases: wells that look like DUCs
+        (or early-life wells) on paper but are so old that they are no longer
+        considered viable completions.
+
+        Assigned when:
+
+        - ``LastProdDt`` is null, and
+        - Either:
+          - ``WellStatus_Env == "P & A"`` with ``SpudDt < spud_cutoff``, or
+          - ``WellStatus_Env`` is in
+            ``"DUC"``, ``"DRILLED"``, ``"DRILLING"``, ``"SPUD DATE ONLY"``,
+            ``"COMPLETED"``, ``"PRODUCING"`` with ``SpudDt < spud_cutoff``,
+            and not already assigned another code.
+
+        Interpretation: the main difference between ``2DUC`` and ``9XDUC`` is
+        the age of the spud date. ``9XDUC`` is used to write off stale DUC
+        inventory that has sat idle beyond a realistic completion window.
+
+    ``9XPMT`` – Dead Permits (Cancelled / Expired)
+        Dead permits: originally permitted locations that have either expired or
+        been cancelled and are no longer considered drillable under the current
+        permit.
+
+        Assigned when:
+
+        - ``WellStatus_Env`` is ``"PERMIT CANCELLED"`` or ``"PERMIT EXPIRED"``.
+
+        This classification is applied at the start, so these records are always
+        treated as dead permits rather than future inventory.
+
+        Interpretation: historical permit records that no longer tie directly
+        to drillable inventory. Separating them from ``3PRMT`` avoids over-
+        counting future locations when rolling up inventories.
     """
     # Resolve column names (logical -> actual DataFrame columns)
     defaults = {

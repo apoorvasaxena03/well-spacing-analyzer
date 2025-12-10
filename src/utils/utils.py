@@ -616,3 +616,89 @@ def add_producing_months(
     df[out_col] = df.groupby(uwi_col).cumcount() + 1
 
     return df
+
+#%%
+
+def calculate_cumulative_volumes_by_period(
+    df: pd.DataFrame,
+    uwi_col: str = "uwi",
+    prod_date_col: str = "prod_date",
+    lateral_length_col: str = "di_lateral_length",
+    oil_col: str = "monthly_oil",
+    gas_col: str = "monthly_gas",
+    water_col: str = "monthly_water",
+) -> pd.DataFrame:
+    """
+    For each UWI, calculate cumulative oil/gas/water volumes for the first
+    180 and 365 days of production (based on actual calendar days in each
+    production month), and normalize those volumes by lateral length.
+
+    Returns one row per UWI with:
+      - cum_oil_180d, cum_gas_180d, cum_water_180d
+      - cum_oil_365d, cum_gas_365d, cum_water_365d
+      - *_per_ft versions normalized by `di_lateral_length`.
+    """
+    df_work = df.copy()
+
+    # Ensure prod_date is datetime
+    df_work[prod_date_col] = pd.to_datetime(df_work[prod_date_col])
+
+    # Sort by UWI + prod_date
+    df_work = df_work.sort_values([uwi_col, prod_date_col])
+
+    # 1) Exact days in each production month for that prod_date
+    df_work["days_in_month"] = df_work[prod_date_col].dt.daysinmonth
+
+    # 2) Cumulative days on production by end of each month
+    df_work["cum_days"] = df_work.groupby(uwi_col)["days_in_month"].cumsum()
+
+    # 3) Masks for 180- and 365-day windows
+    mask_180 = df_work["cum_days"] <= 180
+    mask_365 = df_work["cum_days"] <= 365
+
+    # 4) Per-UWI cumulative volumes in each window
+    agg_180 = (
+        df_work.loc[mask_180]
+        .groupby(uwi_col)[[oil_col, gas_col, water_col]]
+        .sum()
+        .rename(
+            columns={
+                oil_col: "cum_oil_180d",
+                gas_col: "cum_gas_180d",
+                water_col: "cum_water_180d",
+            }
+        )
+    )
+
+    agg_365 = (
+        df_work.loc[mask_365]
+        .groupby(uwi_col)[[oil_col, gas_col, water_col]]
+        .sum()
+        .rename(
+            columns={
+                oil_col: "cum_oil_365d",
+                gas_col: "cum_gas_365d",
+                water_col: "cum_water_365d",
+            }
+        )
+    )
+
+    # 5) Lateral length per UWI (assumed constant within a well)
+    lateral = (
+        df_work.groupby(uwi_col)[lateral_length_col]
+        .first()
+        .rename("lateral_length_ft")
+        .to_frame()
+    )
+
+    # 6) Combine into a single per-UWI DataFrame
+    result = lateral.join(agg_180, how="left").join(agg_365, how="left")
+
+    # 7) Per-foot versions
+    LL = result["lateral_length_ft"]
+    for period in ("180d", "365d"):
+        for phase in ("oil", "gas", "water"):
+            col = f"cum_{phase}_{period}"
+            result[f"{col}_per_ft"] = result[col] / LL
+
+    return result.reset_index()

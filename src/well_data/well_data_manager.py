@@ -705,62 +705,90 @@ class GeoSurveyProcessor:
     
     def filter_after_heel_point(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-            Keep rows at/after the first high‑inclination point per UWI.
+        Keep rows at/after the first high-inclination point per UWI.
 
-            For each `uwi`, finds the first row where `inclination >= 80` (degrees),
-            then retains that row and all subsequent rows for that `uwi`.
+        For each `uwi`, this method identifies the **first** survey station where
+        `inclination >= 80` degrees (the "heel trigger") and then retains that row
+        and all *subsequent* rows for that `uwi`. Wells that never reach
+        `inclination >= 80` are dropped entirely.
 
-            Parameters
-            ----------
-            df : pandas.DataFrame
-                Directional survey data with at least:
-                - 'uwi'         : well identifier
-                - 'md'          : measured depth (used for sorting)
-                - 'inclination' : inclination in degrees
+        Implementation details
+        ----------------------
+        1. The input DataFrame is first sorted by ['uwi', 'md'] in ascending order
+           and its index is reset to a simple RangeIndex (0..N-1). This ensures
+           that index labels and row positions coincide.
 
-            Returns
-            -------
-            pandas.DataFrame
-                Filtered DataFrame, index reset, sorted by ['uwi', 'md'] ascending.
+        2. Among rows where `inclination >= 80`, the method finds, for each `uwi`,
+           the index (row position) of the *first* such row.
 
-            Notes
-            -----
-            - If a given `uwi` has no row with `inclination >= 80`, all its rows are dropped.
+        3. For every row, it then compares its position to the corresponding
+           start index for its `uwi`. Rows whose position is **greater than or
+           equal to** the heel start index are kept; rows before that point are
+           dropped.
 
-            Examples
-            --------
-            >>> df = pd.DataFrame({
-            ...     "uwi": ["A","A","A","B","B"],
-            ...     "md": [1000,1100,1200,900,1000],
-            ...     "inclination": [10, 82, 90, 79, 85],
-            ... })
-            >>> out = GeoSurveyProcessor().filter_after_heel_point(df)
-            >>> out.groupby("uwi").size().to_dict()  # rows retained per UWI
-            {'A': 2, 'B': 1}
-            """
-        # Ensure the data is sorted by MD in ascending order
-        df = df.sort_values(by=["uwi", "md"], ascending=True).copy()
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Directional survey data with at least the following columns:
+            - 'uwi'         : well identifier
+            - 'md'          : measured depth (used for sorting within each UWI)
+            - 'inclination' : inclination in degrees
 
-        # Numeric heel trigger (first row with inclination >= 80 deg)
+        Returns
+        -------
+        pandas.DataFrame
+            Filtered DataFrame containing only rows at/after the heel point for
+            each `uwi` that reaches `inclination >= 80`. The result is:
+              - sorted by ['uwi', 'md'] ascending, and
+              - index reset to a simple RangeIndex.
+
+        Notes
+        -----
+        - If a given `uwi` has **no** row with `inclination >= 80`, all of its
+          rows are dropped from the output.
+        - Because the index is explicitly reset before computing the heel
+          positions, the logic is robust to any original index (e.g., API/uwi
+          stored as the index).
+
+        Examples
+        --------
+        >>> df = pd.DataFrame({
+        ...     "uwi": ["A","A","A","B","B"],
+        ...     "md": [1000,1100,1200,900,1000],
+        ...     "inclination": [10, 82, 90, 79, 85],
+        ... })
+        >>> geo = GeoSurveyProcessor()
+        >>> out = geo.filter_after_heel_point(df)
+        >>> out
+          uwi    md  inclination
+        0   A  1100         82.0
+        1   A  1200         90.0
+        2   B  1000         85.0
+
+        >>> out.groupby("uwi").size().to_dict()
+        {'A': 2, 'B': 1}
+        """
+        # Sort and reset index so that labels == positions
+        df = df.sort_values(by=["uwi", "md"], ascending=True).reset_index(drop=True)
+
         mask = (df["inclination"] >= 80)
 
-        # Identify the first occurrence for each uwi
-        idx_start = df[mask].groupby('uwi', sort=False).head(1).index
+        # If no heel trigger at all, drop everything
+        if not mask.any():
+            self.logger.warning("No inclination >= 80 found for any UWI; returning empty DataFrame.")
+            return df.iloc[0:0].copy()
 
-        # Create a mapping of uwi to the starting index
+        idx_start = df[mask].groupby('uwi', sort=False).head(1).index
         start_idx_map = dict(zip(df.loc[idx_start, 'uwi'], idx_start))
 
-        # Create a boolean mask using NumPy to filter rows
         uwis = df['uwi'].values
         indices = np.arange(len(df))
 
-        # Get the minimum start index for each row's uwi
         start_indices = np.vectorize(start_idx_map.get, otypes=[float])(uwis)
-
-        # Mask rows where index is greater than or equal to the start index
         valid_rows = indices >= start_indices
 
-        return df[valid_rows].reset_index(drop=True)
+        out = df[valid_rows].reset_index(drop=True)
+        return out
     
     def get_heel_toe_midpoints_latlon(self, df: pd.DataFrame) -> pd.DataFrame:
         """

@@ -65,6 +65,7 @@ shapely
 six
 sklearn
 sobol-seq
+SQLAlchemy
 stack-data
 sympy
 tabulate

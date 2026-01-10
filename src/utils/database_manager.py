@@ -630,7 +630,7 @@ class SQLAlchemyDBClient:
         self.close()
 
 
-    def test_connection(self) -> None:
+    def test_connection(self) -> bool:
         """
         Validate connectivity using a lightweight ping query.
 
@@ -644,7 +644,10 @@ class SQLAlchemyDBClient:
         self.logger.info("Testing connection: %s", self.config.display_name())
         with self.engine.connect() as conn:
             conn.execute(text(sql))
-        self.logger.info("Connection OK")
+            self.logger.info("Connection OK")
+            return True
+        self.logger.error("Connection failed")
+        return False
 
     # ---------------- Retry helpers ----------------
     @staticmethod
@@ -1274,6 +1277,76 @@ Prefer environment variables or secret managers.
 #         print(df)
 #     finally:
 #         db.close()
+
+# =====================================================================
+# 11) Example with try / except / finally (no with statements)
+# =====================================================================
+
+# def example_databricks_try_except_finally_no_with() -> pd.DataFrame:
+#     """
+#     Run a Databricks SELECT using explicit try/except/finally cleanup.
+#     No `with` statements are used at all.
+#     """
+#     logging.basicConfig(level=logging.INFO)
+#     logger = logging.getLogger("db_examples")
+
+#     cfg = DatabricksConfig(
+#         server_hostname="adb-1234567890123456.7.azuredatabricks.net",
+#         http_path="/sql/1.0/warehouses/abcd1234efgh5678",
+#         token="dapi_xxxxxxxxxxxxxxxxx",
+#         catalog="main",      # optional
+#         schema="default",    # optional
+#     )
+
+#     db = SQLAlchemyDBClient(cfg, logger=logger, use_null_pool=True)
+
+#     conn: Optional[Connection] = None
+#     t0 = time.perf_counter()
+
+#     try:
+#         # 1) Create engine (idempotent)
+#         db.connect()
+
+#         # 2) Open a connection (NO context manager)
+#         conn = db.engine.connect()
+
+#         # 3) Execute query (bind params safely)
+#         sql_query = """
+#             SELECT
+#               current_user() AS who,
+#               current_catalog() AS catalog,
+#               current_schema() AS schema,
+#               current_timestamp() AS ts
+#         """
+#         df = pd.read_sql_query(sql=text(sql_query), con=conn)
+
+#         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+#         logger.info("Databricks query OK | rows=%s | elapsed_ms=%.2f", len(df), elapsed_ms)
+#         return df
+
+#     except (OperationalError, DBAPIError) as e:
+#         # Transient-ish connectivity / DBAPI failures commonly land here
+#         logger.exception("Databricks query failed (OperationalError/DBAPIError): %s", e)
+#         raise
+
+#     except Exception as e:
+#         # Anything else (SQL errors, auth errors, pandas errors, etc.)
+#         logger.exception("Databricks query failed (unexpected): %s", e)
+#         raise
+
+#     finally:
+#         # Always close the Connection first (if it was opened)
+#         if conn is not None:
+#             try:
+#                 conn.close()
+#             except Exception:
+#                 logger.exception("Failed to close SQLAlchemy Connection")
+
+#         # Then dispose the Engine / pool
+#         try:
+#             db.close()
+#         except Exception:
+#             logger.exception("Failed to dispose SQLAlchemy Engine")
 
 # =====================================================================
 # Usage with a Databricks DSN

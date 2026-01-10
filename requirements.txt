@@ -6,6 +6,8 @@ colorama
 comm
 contourpy
 cycler
+databricks-sqlalchemy
+databricks-sql-connector
 debugpy
 decorator
 dill

@@ -17,10 +17,6 @@ def _default_log_dir() -> Path:
     except Exception:
         return Path("logs")
 
-
-LOG_DIR = _default_log_dir()
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-
 # -------------------------
 # Run id support
 # -------------------------
@@ -71,6 +67,10 @@ def get_logger(
     - Injects run_id into every line (set via set_run_id())
     - Safe to call multiple times (won't duplicate handlers)
     """
+
+    LOG_DIR = _default_log_dir()
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+
     logger = logging.getLogger(name)
 
     # Convert string levels like "DEBUG" → logging.DEBUG

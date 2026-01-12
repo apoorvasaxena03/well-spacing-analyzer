@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterator, Mapping, Optional, Protocol, Union
 import time
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.engine import Engine, URL
 from sqlalchemy.pool import NullPool
 from sqlalchemy.exc import OperationalError, DBAPIError
@@ -659,6 +659,68 @@ class SQLAlchemyDBClient:
         time.sleep(delay)
 
     # ---------------- Query methods (simple returns) ----------------
+    def _prepare_statement(
+        self,
+        sql: str,
+        params: Optional[Mapping[str, Any]],
+    ):
+        """
+        Build a SQLAlchemy TextClause and auto-enable *expanding* bind params.
+
+        Why this exists
+        ---------------
+        Some backends (notably Databricks SQL / Spark SQL) do NOT accept a single
+        named parameter for an IN clause like:
+
+            WHERE col IN :ids
+
+        unless SQLAlchemy is told to expand the list into driver placeholders:
+
+            WHERE col IN (?, ?, ?, ...)
+
+        This helper scans `params` and automatically marks any list/tuple/set
+        parameter as `expanding=True`.
+
+        Notes / Gotchas
+        --------------
+        - Your SQL should use the pattern:
+            ... WHERE col IN :ids
+        (i.e., no parentheses required; SQLAlchemy will add them when expanding.)
+        - Empty lists are invalid for IN () on most engines; we raise a ValueError
+        early to make the failure obvious and friendly.
+        - We DO NOT log param values (they can be huge); only keys + lengths.
+
+        Parameters
+        ----------
+        sql:
+            SQL string using :param style placeholders.
+        params:
+            Bind parameters mapping.
+
+        Returns
+        -------
+        sqlalchemy.sql.elements.TextClause
+            A prepared TextClause with expanding bindparams applied when needed.
+        """
+        stmt = text(sql)
+
+        if not params:
+            return stmt
+
+        # Auto-enable "expanding" for list-like bind params
+        for key, val in params.items():
+            if isinstance(val, (list, tuple, set)):
+                if len(val) == 0:
+                    raise ValueError(
+                        f"Parameter '{key}' is an empty collection; "
+                        "cannot safely build an IN () clause. "
+                        "Provide at least 1 value or short-circuit the query."
+                    )
+                self.logger.debug("Auto-expanding bind param '%s' (len=%s)", key, len(val))
+                stmt = stmt.bindparams(bindparam(key, expanding=True))
+
+        return stmt
+
     def execute_query(
         self,
         sql_query: str,
@@ -667,6 +729,15 @@ class SQLAlchemyDBClient:
     ) -> pd.DataFrame:
         """
         Execute a SELECT query and return a DataFrame.
+
+        Enhancements
+        ------------
+        - Automatically enables SQLAlchemy "expanding" bind params for any
+        list/tuple/set values in `params`, allowing safe usage of:
+
+            WHERE some_col IN :values
+
+        with params={"values": [..]}.
 
         Parameters
         ----------
@@ -678,12 +749,552 @@ class SQLAlchemyDBClient:
         Returns
         -------
         pd.DataFrame
+            Query results.
         """
         self.connect()
-        self.logger.debug("execute_query | sql=%s | params=%s", sql_query, params)
+
+        # Avoid logging massive param payloads; log keys + list sizes only.
+        if params:
+            brief = {
+                k: (f"<{type(v).__name__} len={len(v)}>" if isinstance(v, (list, tuple, set)) else "<scalar>")
+                for k, v in params.items()
+            }
+        else:
+            brief = None
+
+        self.logger.debug("execute_query | sql=%s | params=%s", sql_query, brief)
+
+        stmt = self._prepare_statement(sql_query, params)
+
         with self.engine.connect() as conn:
-            return pd.read_sql_query(sql=text(sql_query), con=conn, params=params)
-        
+            return pd.read_sql_query(sql=stmt, con=conn, params=params)
+
+    @staticmethod
+    def _chunk_values(values: list[Any], chunk_size: int) -> Iterator[list[Any]]:
+        """
+        Yield successive chunks from a list.
+
+        Parameters
+        ----------
+        values:
+            List of values to chunk.
+        chunk_size:
+            Maximum number of items per chunk (must be >= 1).
+
+        Yields
+        ------
+        list[Any]
+            Next chunk of values.
+        """
+        if chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1 (got {chunk_size})")
+
+        for i in range(0, len(values), chunk_size):
+            yield values[i : i + chunk_size]
+
+    def execute_query_chunked(
+        self,
+        sql_query: str,
+        *,
+        params: Mapping[str, Any],
+        chunk_size: int = 2_000,
+        chunk_param_name: Optional[str] = None,
+        sort_by: Optional[list[str]] = None,
+        drop_duplicates: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Execute a SELECT query that contains a large list/tuple/set parameter (typically
+        used for an IN clause) by splitting it into multiple smaller queries and
+        concatenating the results.
+
+        This is particularly useful for Databricks SQL / Spark SQL backends, where:
+        - a single gigantic IN (...) list can exceed query/parameter limits, and
+        - very large parameter payloads can be slow or fail.
+
+        Requirements / Expected SQL pattern
+        -----------------------------------
+        Your SQL should be written like:
+
+            WHERE some_col IN :ids
+
+        and you pass:
+
+            params={"ids": [... lots of values ...]}
+
+        This method relies on `_prepare_statement()` to auto-enable SQLAlchemy
+        "expanding" bind params for list/tuple/set parameters.
+
+        Parameters
+        ----------
+        sql_query:
+            SQL SELECT statement using :param placeholders.
+        params:
+            Bind parameters mapping. Must include at least one list/tuple/set value.
+        chunk_size:
+            Max number of values per IN-list chunk.
+            Common ranges: 500–5,000. Default 2,000.
+        chunk_param_name:
+            The name of the parameter to chunk (e.g., "uwis_12").
+            If None:
+            - if exactly ONE list/tuple/set parameter exists, it is auto-selected
+            - otherwise a ValueError is raised (to avoid guessing wrong).
+        sort_by:
+            Optional list of column names to sort the final concatenated DataFrame.
+            Helpful because chunking does not guarantee global ordering across chunks.
+            Example: ["uwi12", "md"].
+        drop_duplicates:
+            If True, drop duplicate rows after concatenation.
+
+        Returns
+        -------
+        pd.DataFrame
+            Concatenated results across chunks.
+
+        Notes
+        -----
+        - If your query includes LIMIT, chunking may not behave how you expect
+        (LIMIT is applied per chunk, not globally). In those cases, prefer removing
+        LIMIT while chunking, or keep chunking only for cases without LIMIT.
+        """
+        self.connect()
+
+        if not params:
+            raise ValueError("execute_query_chunked requires a non-empty params mapping.")
+
+        # Identify list-like params (candidates for chunking)
+        list_like_keys = [k for k, v in params.items() if isinstance(v, (list, tuple, set))]
+        if not list_like_keys:
+            raise ValueError(
+                "execute_query_chunked requires at least one list/tuple/set parameter in `params`."
+            )
+
+        if chunk_param_name is None:
+            if len(list_like_keys) != 1:
+                raise ValueError(
+                    "Multiple list-like params found in `params` "
+                    f"({list_like_keys}). Provide chunk_param_name=... explicitly."
+                )
+            chunk_param_name = list_like_keys[0]
+
+        raw_values = params.get(chunk_param_name)
+        if not isinstance(raw_values, (list, tuple, set)):
+            raise ValueError(
+                f"chunk_param_name='{chunk_param_name}' must refer to a list/tuple/set param. "
+                f"Got type={type(raw_values).__name__}."
+            )
+
+        values_list = list(raw_values)
+        if len(values_list) == 0:
+            # Mirror _prepare_statement behavior
+            raise ValueError(
+                f"Parameter '{chunk_param_name}' is empty; cannot execute an IN () query."
+            )
+
+        # If it's already small, just run once (still uses expanding via _prepare_statement)
+        if len(values_list) <= chunk_size:
+            return self.execute_query(sql_query, params=params)
+
+        self.logger.info(
+            "execute_query_chunked | param='%s' | total_values=%s | chunk_size=%s | chunks=%s",
+            chunk_param_name,
+            len(values_list),
+            chunk_size,
+            (len(values_list) + chunk_size - 1) // chunk_size,
+        )
+
+        # Prepare the statement once (enables expanding bind param(s)).
+        # Important: we avoid logging full params payload; _prepare_statement logs only sizes.
+        stmt = self._prepare_statement(sql_query, params)
+
+        chunks: list[pd.DataFrame] = []
+
+        # Reuse a single connection for speed
+        with self.engine.connect() as conn:
+            for idx, chunk in enumerate(self._chunk_values(values_list, chunk_size), start=1):
+                chunk_params = dict(params)
+                chunk_params[chunk_param_name] = chunk
+
+                self.logger.debug(
+                    "execute_query_chunked | chunk %s | %s len=%s",
+                    idx,
+                    chunk_param_name,
+                    len(chunk),
+                )
+
+                df_part = pd.read_sql_query(sql=stmt, con=conn, params=chunk_params)
+                chunks.append(df_part)
+
+        if not chunks:
+            return pd.DataFrame()
+
+        out = pd.concat(chunks, ignore_index=True)
+
+        if drop_duplicates:
+            out = out.drop_duplicates(ignore_index=True)
+
+        if sort_by:
+            # sort_by columns must exist; let pandas raise a clear error if not
+            out = out.sort_values(by=sort_by, kind="mergesort").reset_index(drop=True)
+
+        return out
+
+    def execute_query_chunked_with_retry(
+        self,
+        sql_query: str,
+        *,
+        params: Mapping[str, Any],
+        chunk_size: int = 2_000,
+        chunk_param_name: Optional[str] = None,
+        sort_by: Optional[list[str]] = None,
+        drop_duplicates: bool = False,
+        max_retries: int = 3,
+        backoff_base_s: float = 0.5,
+        backoff_cap_s: float = 8.0,
+    ) -> pd.DataFrame:
+        """
+        Execute a SELECT query with a large list/tuple/set bind parameter by splitting
+        it into chunks and retrying *per chunk* on transient DB/network errors.
+
+        This is designed for backends like Databricks SQL / Spark SQL where a single
+        massive IN (...) list can exceed limits or time out, and where transient
+        errors can occur mid-stream.
+
+        Expected SQL pattern
+        --------------------
+            WHERE some_col IN :ids
+
+        Called like:
+            execute_query_chunked_with_retry(
+                sql_query,
+                params={"ids": [...many values...]},
+                chunk_param_name="ids"
+            )
+
+        How retries work
+        ---------------
+        For each chunk:
+        - attempt the query
+        - if OperationalError or DBAPIError occurs, sleep with exponential backoff
+            and retry up to `max_retries` times
+
+        Important note about LIMIT
+        --------------------------
+        If your SQL contains LIMIT, chunking means LIMIT is applied per chunk, not
+        globally. If you need a global limit, remove LIMIT and apply it after concat.
+
+        Parameters
+        ----------
+        sql_query:
+            SQL SELECT statement using :param placeholders.
+        params:
+            Bind parameters mapping. Must include at least one list/tuple/set value.
+        chunk_size:
+            Max number of values per IN-list chunk. Typical: 500–5,000.
+        chunk_param_name:
+            Name of the list-like parameter to chunk (e.g. "uwis_12").
+            If None:
+            - if exactly ONE list-like param exists, it is auto-selected
+            - otherwise ValueError is raised.
+        sort_by:
+            Optional list of columns to sort the final concatenated DataFrame by.
+        drop_duplicates:
+            If True, drop duplicate rows after concatenation.
+        max_retries:
+            Number of retry attempts per chunk (in addition to the first attempt).
+        backoff_base_s:
+            Base backoff seconds for exponential backoff.
+        backoff_cap_s:
+            Maximum backoff seconds.
+
+        Returns
+        -------
+        pd.DataFrame
+            Concatenated results across all chunks.
+
+        Raises
+        ------
+        OperationalError, DBAPIError
+            If a chunk fails after all retries are exhausted.
+        ValueError
+            If params are invalid or the chunk parameter is empty.
+        """
+        self.connect()
+
+        if not params:
+            raise ValueError("execute_query_chunked_with_retry requires a non-empty params mapping.")
+
+        # Identify list-like params (candidates for chunking)
+        list_like_keys = [k for k, v in params.items() if isinstance(v, (list, tuple, set))]
+        if not list_like_keys:
+            raise ValueError(
+                "execute_query_chunked_with_retry requires at least one list/tuple/set parameter in `params`."
+            )
+
+        if chunk_param_name is None:
+            if len(list_like_keys) != 1:
+                raise ValueError(
+                    "Multiple list-like params found in `params` "
+                    f"({list_like_keys}). Provide chunk_param_name=... explicitly."
+                )
+            chunk_param_name = list_like_keys[0]
+
+        raw_values = params.get(chunk_param_name)
+        if not isinstance(raw_values, (list, tuple, set)):
+            raise ValueError(
+                f"chunk_param_name='{chunk_param_name}' must refer to a list/tuple/set param. "
+                f"Got type={type(raw_values).__name__}."
+            )
+
+        values_list = list(raw_values)
+        if len(values_list) == 0:
+            raise ValueError(
+                f"Parameter '{chunk_param_name}' is empty; cannot execute an IN () query."
+            )
+
+        # If it's already small, just run once with standard retry
+        if len(values_list) <= chunk_size:
+            return self.execute_query_with_retry(
+                sql_query,
+                params=params,
+                max_retries=max_retries,
+            )
+
+        n_chunks = (len(values_list) + chunk_size - 1) // chunk_size
+        self.logger.info(
+            "execute_query_chunked_with_retry | param='%s' | total_values=%s | chunk_size=%s | chunks=%s | max_retries=%s",
+            chunk_param_name,
+            len(values_list),
+            chunk_size,
+            n_chunks,
+            max_retries,
+        )
+
+        # Prepare the statement once (enables expanding bind param(s)).
+        stmt = self._prepare_statement(sql_query, params)
+
+        chunks: list[pd.DataFrame] = []
+
+        for idx, chunk in enumerate(self._chunk_values(values_list, chunk_size), start=1):
+            chunk_params = dict(params)
+            chunk_params[chunk_param_name] = chunk
+
+            last_err: Optional[BaseException] = None
+
+            for attempt in range(max_retries + 1):
+                try:
+                    # Using a fresh connection per attempt is more robust if a connection
+                    # gets into a bad state due to a mid-query failure.
+                    with self.engine.connect() as conn:
+                        df_part = pd.read_sql_query(sql=stmt, con=conn, params=chunk_params)
+
+                    self.logger.debug(
+                        "execute_query_chunked_with_retry | chunk %s/%s OK | %s len=%s | rows=%s",
+                        idx,
+                        n_chunks,
+                        chunk_param_name,
+                        len(chunk),
+                        len(df_part),
+                    )
+                    chunks.append(df_part)
+                    break  # success for this chunk
+
+                except (OperationalError, DBAPIError) as e:
+                    last_err = e
+                    if attempt >= max_retries:
+                        self.logger.error(
+                            "execute_query_chunked_with_retry | chunk %s/%s FAILED after %s retries | %s len=%s | err=%s",
+                            idx,
+                            n_chunks,
+                            max_retries,
+                            chunk_param_name,
+                            len(chunk),
+                            e,
+                        )
+                        raise
+
+                    self.logger.warning(
+                        "execute_query_chunked_with_retry | chunk %s/%s transient error (attempt %s/%s). Retrying... %s",
+                        idx,
+                        n_chunks,
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                    )
+                    self._sleep_backoff(attempt, base=backoff_base_s, cap=backoff_cap_s)
+
+            if last_err is not None and len(chunks) < idx:
+                # Defensive: should never happen because we either appended or raised.
+                raise last_err
+
+        if not chunks:
+            return pd.DataFrame()
+
+        out = pd.concat(chunks, ignore_index=True)
+
+        if drop_duplicates:
+            out = out.drop_duplicates(ignore_index=True)
+
+        if sort_by:
+            out = out.sort_values(by=sort_by, kind="mergesort").reset_index(drop=True)
+
+        return out
+
+    def execute_query_auto(
+        self,
+        sql_query: str,
+        *,
+        params: Optional[Mapping[str, Any]] = None,
+        chunk_param_name: Optional[str] = None,
+        chunk_size: int = 2_000,
+        chunk_if_len_ge: int = 5_000,
+        use_retry: bool = True,
+        # retry params (used for chunked retry path)
+        max_retries: int = 3,
+        backoff_base_s: float = 0.5,
+        backoff_cap_s: float = 8.0,
+        # post-processing for chunked paths
+        sort_by: Optional[list[str]] = None,
+        drop_duplicates: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Execute a SELECT query and automatically choose the best execution strategy.
+
+        Strategy selection
+        ------------------
+        1) If `params` has NO list-like values (list/tuple/set):
+            - use execute_query_with_retry() if use_retry=True
+            - else execute_query()
+
+        2) If `params` has a list-like value (typical IN-clause use case):
+            - If the list length < chunk_if_len_ge:
+                - use execute_query_with_retry() if use_retry=True
+                - else execute_query()
+            (expanding bindparams are still auto-enabled by execute_query())
+
+            - If the list length >= chunk_if_len_ge:
+                - use execute_query_chunked_with_retry() if use_retry=True
+                - else execute_query_chunked()
+
+        Expected SQL pattern for IN-params
+        ---------------------------------
+            WHERE some_col IN :ids
+
+        and params:
+            {"ids": [.. values ..]}
+
+        Parameters
+        ----------
+        sql_query:
+            SQL SELECT statement using :param placeholders.
+        params:
+            Bind parameters mapping.
+        chunk_param_name:
+            The list-like param to treat as the chunked IN-list (e.g., "uwis_12").
+            If None:
+            - if exactly one list-like param exists, it is auto-selected
+            - otherwise raises ValueError (to avoid guessing wrong)
+        chunk_size:
+            Values per chunk when chunking is used.
+        chunk_if_len_ge:
+            If the list-like param length is >= this threshold, use chunking.
+            Typical: 2,000–20,000 depending on backend limits and performance.
+        use_retry:
+            If True, use retrying variants where available.
+        max_retries, backoff_base_s, backoff_cap_s:
+            Used for chunked retry path (execute_query_chunked_with_retry).
+            For the non-chunked retry path, execute_query_with_retry uses the class
+            default backoff logic.
+        sort_by:
+            When chunking, optionally sort the final concatenated DataFrame.
+            Recommended for deterministic output (chunking breaks global ordering).
+        drop_duplicates:
+            When chunking, optionally drop duplicates after concatenation.
+
+        Returns
+        -------
+        pd.DataFrame
+            Query result.
+        """
+        self.connect()
+
+        if not params:
+            # No params at all -> simplest path
+            if use_retry:
+                return self.execute_query_with_retry(sql_query, params=None, max_retries=max_retries)
+            return self.execute_query(sql_query, params=None)
+
+        # Find list-like params (candidates for IN-list expansion/chunking)
+        list_like_keys = [k for k, v in params.items() if isinstance(v, (list, tuple, set))]
+
+        if not list_like_keys:
+            # No list-like params -> normal path
+            if use_retry:
+                return self.execute_query_with_retry(sql_query, params=params, max_retries=max_retries)
+            return self.execute_query(sql_query, params=params)
+
+        # Decide which list-like param to use for chunking
+        if chunk_param_name is None:
+            if len(list_like_keys) != 1:
+                raise ValueError(
+                    "execute_query_auto found multiple list-like params in `params` "
+                    f"({list_like_keys}). Provide chunk_param_name=... explicitly."
+                )
+            chunk_param_name = list_like_keys[0]
+
+        raw_values = params.get(chunk_param_name)
+        if not isinstance(raw_values, (list, tuple, set)):
+            raise ValueError(
+                f"chunk_param_name='{chunk_param_name}' must refer to a list/tuple/set param. "
+                f"Got type={type(raw_values).__name__}."
+            )
+
+        values_list = list(raw_values)
+        n = len(values_list)
+        if n == 0:
+            raise ValueError(
+                f"Parameter '{chunk_param_name}' is empty; cannot execute an IN () query."
+            )
+
+        # Choose chunking based on threshold
+        if n >= chunk_if_len_ge:
+            self.logger.info(
+                "execute_query_auto | using CHUNKED path | param='%s' len=%s >= threshold=%s",
+                chunk_param_name,
+                n,
+                chunk_if_len_ge,
+            )
+            if use_retry:
+                return self.execute_query_chunked_with_retry(
+                    sql_query,
+                    params=params,
+                    chunk_size=chunk_size,
+                    chunk_param_name=chunk_param_name,
+                    sort_by=sort_by,
+                    drop_duplicates=drop_duplicates,
+                    max_retries=max_retries,
+                    backoff_base_s=backoff_base_s,
+                    backoff_cap_s=backoff_cap_s,
+                )
+            return self.execute_query_chunked(
+                sql_query,
+                params=params,
+                chunk_size=chunk_size,
+                chunk_param_name=chunk_param_name,
+                sort_by=sort_by,
+                drop_duplicates=drop_duplicates,
+            )
+
+        # Small enough -> normal path (still auto-expands IN-lists)
+        self.logger.info(
+            "execute_query_auto | using NORMAL path | param='%s' len=%s < threshold=%s",
+            chunk_param_name,
+            n,
+            chunk_if_len_ge,
+        )
+        if use_retry:
+            return self.execute_query_with_retry(sql_query, params=params, max_retries=max_retries)
+        return self.execute_query(sql_query, params=params)
+
     def iter_query(
         self,
         sql_query: str,
@@ -693,6 +1304,11 @@ class SQLAlchemyDBClient:
     ) -> Iterator[pd.DataFrame]:
         """
         Stream a large SELECT query as DataFrame chunks.
+
+        Enhancements
+        ------------
+        - Automatically enables SQLAlchemy "expanding" bind params for any
+        list/tuple/set values in `params`.
 
         Parameters
         ----------
@@ -710,9 +1326,12 @@ class SQLAlchemyDBClient:
         """
         self.connect()
         self.logger.debug("iter_query | chunksize=%s | sql=%s", chunksize, sql_query)
+
+        stmt = self._prepare_statement(sql_query, params)
+
         with self.engine.connect() as conn:
             yield from pd.read_sql_query(
-                sql=text(sql_query),
+                sql=stmt,
                 con=conn,
                 params=params,
                 chunksize=chunksize,
@@ -727,8 +1346,10 @@ class SQLAlchemyDBClient:
         """
         Execute INSERT/UPDATE/DELETE/DDL and return rowcount when available.
 
-        This method uses `engine.begin()` which opens a transaction and commits
-        automatically if no exception is raised.
+        Enhancements
+        ------------
+        - Automatically enables SQLAlchemy "expanding" bind params for list/tuple/set
+        parameters (useful for statements like DELETE ... WHERE id IN :ids).
 
         Parameters
         ----------
@@ -743,9 +1364,12 @@ class SQLAlchemyDBClient:
             rowcount when available (may be -1 for some DDL/backends).
         """
         self.connect()
-        self.logger.debug("execute_non_query | sql=%s | params=%s", sql_stmt, params)
+
+        stmt = self._prepare_statement(sql_stmt, params)
+
+        # Keep the existing transaction behavior.
         with self.engine.begin() as conn:
-            result = conn.execute(text(sql_stmt), params or {})
+            result = conn.execute(stmt, dict(params or {}))
             return int(getattr(result, "rowcount", -1))
 
     def write_dataframe(
@@ -810,27 +1434,37 @@ class SQLAlchemyDBClient:
         params: Optional[Mapping[str, Any]] = None,
     ) -> QueryResult:
         """
-        Execute INSERT/UPDATE/DELETE/DDL and return rowcount when available.
+        Execute a SELECT query and return a QueryResult containing:
+        - SQL string
+        - elapsed time (ms)
+        - row count
+        - DataFrame results
 
-        This method uses `engine.begin()` which opens a transaction and commits
-        automatically if no exception is raised.
+        Enhancements
+        ------------
+        - Automatically enables SQLAlchemy "expanding" bind params for any
+        list/tuple/set values in `params`.
 
         Parameters
         ----------
-        sql_stmt:
-            SQL statement (INSERT/UPDATE/DELETE/DDL).
+        sql_query:
+            SQL SELECT statement using :param style bind parameters.
         params:
             Bind parameters mapping.
 
         Returns
         -------
-        int
-            rowcount when available (may be -1 for some DDL/backends).
+        QueryResult
+            Includes elapsed_ms, rows, and df.
         """
         self.connect()
         t0 = time.perf_counter()
+
+        stmt = self._prepare_statement(sql_query, params)
+
         with self.engine.connect() as conn:
-            df = pd.read_sql_query(sql=text(sql_query), con=conn, params=params)
+            df = pd.read_sql_query(sql=stmt, con=conn, params=params)
+
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return QueryResult(sql=sql_query, elapsed_ms=elapsed_ms, rows=len(df), df=df)
 
@@ -843,6 +1477,18 @@ class SQLAlchemyDBClient:
         """
         Execute non-SELECT SQL and return QueryResult with timing + row count.
 
+        Enhancements
+        ------------
+        - Automatically enables SQLAlchemy "expanding" bind params for list/tuple/set
+        parameters.
+
+        Parameters
+        ----------
+        sql_stmt:
+            SQL statement (INSERT/UPDATE/DELETE/DDL).
+        params:
+            Bind parameters mapping.
+
         Returns
         -------
         QueryResult
@@ -850,9 +1496,13 @@ class SQLAlchemyDBClient:
         """
         self.connect()
         t0 = time.perf_counter()
+
+        stmt = self._prepare_statement(sql_stmt, params)
+
         with self.engine.begin() as conn:
-            result = conn.execute(text(sql_stmt), params or {})
+            result = conn.execute(stmt, dict(params or {}))
             rows = int(getattr(result, "rowcount", -1))
+
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         return QueryResult(sql=sql_stmt, elapsed_ms=elapsed_ms, rows=rows, df=None)
 

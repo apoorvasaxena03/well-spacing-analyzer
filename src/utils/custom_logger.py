@@ -40,6 +40,22 @@ class _RunIdFilter(logging.Filter):
         # Ensure formatter never breaks if run_id wasn't set
         setattr(record, "run_id", _RUN_ID)
         return True
+    
+
+class _ShortNameFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        # "spacing.geo_processing" -> "geo_processing"
+        setattr(record, "short_name", record.name.rsplit(".", 1)[-1])
+        return True
+
+
+def _ensure_short_name_filter(logger: logging.Logger) -> None:
+    if not any(isinstance(f, _ShortNameFilter) for f in logger.filters):
+        logger.addFilter(_ShortNameFilter())
+
+    for h in logger.handlers:
+        if not any(isinstance(f, _ShortNameFilter) for f in getattr(h, "filters", [])):
+            h.addFilter(_ShortNameFilter())
 
 
 def _ensure_run_id_filter(logger: logging.Logger) -> None:
@@ -59,6 +75,7 @@ def get_logger(
     level: Union[int, str] = logging.INFO,
     use_timestamp: bool = False,
     timestamp_fmt: str = "%Y%m%d_%H%M%S",
+    propagate: bool = False,
 ) -> logging.Logger:
     """
     Create and return a logger.
@@ -84,7 +101,7 @@ def get_logger(
         level = logging._nameToLevel[level_str]
 
     logger.setLevel(level)
-    logger.propagate = False  # avoid duplicates via root handlers
+    logger.propagate = propagate # Whether to pass logs to ancestor loggers
 
     file_fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | run=%(run_id)s | %(message)s")
     console_fmt = logging.Formatter("%(asctime)s | %(levelname)s | run=%(run_id)s | %(message)s")
@@ -117,6 +134,7 @@ def get_logger(
                 h.setFormatter(console_fmt)
 
     _ensure_run_id_filter(logger)
+    _ensure_short_name_filter(logger)
     return logger
 
 #%%

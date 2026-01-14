@@ -6,6 +6,8 @@ colorama
 comm
 contourpy
 cycler
+databricks-sqlalchemy
+databricks-sql-connector
 debugpy
 decorator
 dill
@@ -65,6 +67,7 @@ shapely
 six
 sklearn
 sobol-seq
+SQLAlchemy
 stack-data
 sympy
 tabulate

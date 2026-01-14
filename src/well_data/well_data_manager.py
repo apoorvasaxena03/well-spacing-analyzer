@@ -1,433 +1,657 @@
 # %%
-# Importing pandas package for data manipulation and analysis
+from __future__ import annotations
+
 import pandas as pd
-pd.set_option('display.max_columns', None) # Set the maximum number of columns to display to None
+pd.set_option('display.max_columns', None)
 
-import numpy as np # Importing numpy package for numerical operations
+import numpy as np
 
-from typing import Dict, Union, Optional # Importing specific types from typing module
+from typing import Dict, Union, Optional, Any, Mapping, Set
 
-import time # Importing Time Module
+import time
+import pyproj
 
-import pyproj # Importing pyproj package
+import logging
 
-from src.utils import CustomLogger # Importing CustomLogger class from custom
+import os
+from pathlib import Path
 
-import os # Importing os module for operating system dependent functionality
+import matplotlib.pyplot as plt
 
-# Importing necessary modules for plotting and data manipulation
-import matplotlib.pyplot as plt # Importing matplotlib.pyplot for plotting
-
+from src.utils.database_manager import SQLAlchemyDBClient, DatabricksConfig
+from src.utils import read_csv_with_mapper, read_excel_with_mapper
 # %%
 class WellDataLoader:
     """
-    Load well header and directional survey data from files (CSV/Excel) or a database.
+    Load well header and directional survey data from:
+      1) file (CSV/Excel) using *source → canonical* column mapping, or
+      2) database via an injected db client, or
+      3) an in-memory DataFrame.
 
-    This utility centralizes I/O and column normalization so downstream code can rely on a
-    stable schema. For file-based inputs, you provide a `column_map` that maps *canonical*
-    column names (what your code expects) to the *actual* column names present in the file.
-    The loader will select only those columns and rename them to your canonical names.
+    This class enforces a *single mapping convention* to minimize confusion:
+    -----------------------------------------------------------------------
+        column_map = { "Column Name In Source File": "canonical_name", ... }
 
-    Parameters
-    ----------
-    db : Optional[object], default=None
-        A database client-like object that exposes:
-        - `connect() -> None`
-        - `execute_query(sql: str) -> pandas.DataFrame`
-        - `close_connection() -> None`
-    log_dir : str, default="./logs"
-        Directory to write logs created by `CustomLogger`.
+    Why this matters
+    ----------------
+    - Your downstream pipeline becomes stable and predictable because it always
+      sees canonical column names.
+    - The mapping direction matches pd.DataFrame.rename and your helpers:
+      `read_csv_with_mapper()` / `read_excel_with_mapper()`.
+
+    Validation behavior
+    -------------------
+    After data is loaded (from file/DB/DataFrame), this class checks required
+    canonical columns for that dataset. If required columns are missing, it raises
+    a ValueError that lists:
+      - full required canonical set
+      - which columns are missing
+      - a preview of columns that are present
 
     Examples
     --------
-    Basic setup:
+    (A) Header from CSV:
 
-    >>> loader = WellDataLoader(db=my_db_client, log_dir="./logs")
-
-    Reading a header file with custom column names:
-
-    >>> column_map = {
-    ...     "uwi": "API14",
-    ...     "well_name": "WellName",
-    ...     "operator": "CurrentOperator"
+    >>> loader = WellDataLoader(db=None)
+    >>> header_map = {
+    ...     "API14": "uwi",
+    ...     "LeaseName": "lease_name",
+    ...     "WellName": "well_name",
+    ...     "WellNumber": "well_num",
+    ...     "Operator": "operator",
+    ...     "RSV_CAT": "rsv_cat",
+    ...     "Bench": "bench",
+    ...     "FirstProdDate": "first_prod_date",
+    ...     "CompletionStartDate": "comp_date",
+    ...     "HoleDirection": "hole_direction",
+    ...     "SurfaceLatitude": "surface_lat",
+    ...     "SurfaceLongitude": "surface_lon",
     ... }
-    >>> header = loader.get_header_data(
-    ...     source="headers.xlsx",
-    ...     column_map=column_map,
-    ...     dtype={"API14": "string", "WellName": "string", "CurrentOperator": "string"}
+    >>> df_header = loader.get_header_data(
+    ...     source="header.csv",
+    ...     column_map=header_map,
+    ...     dtype_map={"uwi": "string"},
     ... )
-    >>> list(header.columns)
-    ['uwi', 'well_name', 'operator']
 
-    Pulling from the database (no file path provided):
+    (B) Directional from Excel (sheet "Survey"):
 
-    >>> header = loader.get_header_data(basin="MB", start_year=2019)
+    >>> dir_map = {
+    ...     "UWI": "uwi",
+    ...     "MD": "md",
+    ...     "TVD": "tvd",
+    ...     "Incl": "inclination",
+    ...     "Azim": "azimuth",
+    ...     "Lat": "latitude",
+    ...     "Lon": "longitude",
+    ...     "X_Offset": "deviation_E/W",
+    ...     "EW_Dir": "E/W",
+    ...     "Y_Offset": "deviation_N/S",
+    ...     "NS_Dir": "N/S",
+    ...     "PointType": "point_type_name",
+    ... }
+    >>> df_dir = loader.get_directional_data(
+    ...     source="dir.xlsx",
+    ...     column_map=dir_map,
+    ...     sheet_name="Survey",
+    ... )
+
+    (C) Header from DB:
+
+    >>> loader = WellDataLoader(db=my_db_client)
+    >>> df_header = loader.get_header_data(source=None, basin="MB", start_year=2019)
     """
+
+    # ----------------------------
+    # Canonical required columns
+    # ----------------------------
+    HEADER_REQUIRED_COLS: Set[str] = {
+        "uwi",
+        "lease_name",
+        "well_name",
+        "operator",
+        "bench",
+        "first_prod_date",
+        "hole_direction",
+        "well_status",
+        "surface_lat",
+        "surface_lon",
+    }
+
+    DIRECTIONAL_REQUIRED_COLS: Dict[str, Set[str]] = {
+        "IHS": {
+            "uwi",
+            "md",
+            "tvd",
+            "inclination",
+            "azimuth",
+            "latitude",
+            "longitude",
+            "deviation_E/W",  # E_W in Enverus DS
+            "E/W",
+            "deviation_N/S",  # N_S in Enverus DS
+            "N/S",
+        },
+        "enverus": {
+            "uwi12",
+            "md",
+            "tvd",
+            "inclination",
+            "azimuth",
+            "latitude",
+            "longitude",
+            "deviation_E/W",  # E_W in Enverus DS
+            "deviation_N/S",  # N_S in Enverus DS
+        },
+    }
 
     def __init__(
         self,
-        db: Optional[object] = None,
-        log_dir: str = "./logs"
-    ):
+        db_cfg: Optional[DatabricksConfig] = None,
+        directional_source: str = "IHS", # "IHS" or "enverus"
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
         """
-        Initialize the loader with an optional database client and logging directory.
-
         Parameters
         ----------
-        db : Optional[object], default=None
-            Database client-like object with `connect()`, `execute_query()`, `close_connection()`.
-        log_dir : str, default="./logs"
-            Directory for the `CustomLogger` to write logs.
-
-        Examples
-        --------
-        >>> loader = WellDataLoader(db=my_db_client, log_dir="./logs")
+        db_cfg:
+            Optional Databricks configuration for database client.
+        db:
+            Optional database client providing:
+              - connect()
+              - execute_query(sql: str) -> pd.DataFrame
+              - close_connection()
+        logger:
+            Optional logger instance. Defaults to a class-named logger.
         """
-        self.db = db
-        self.logger = CustomLogger("well_data_loader", "WellDataLoaderLogger", log_dir).get_logger()
-        self.header_df = pd.DataFrame()
+        if db_cfg:
+            self.db = SQLAlchemyDBClient(config=db_cfg, use_null_pool=True, logger=logger)
+        else:
+            self.db = None
+        
+        parent_logger = logger or logging.getLogger("well_data_loader")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.well_data_loader")
+        self.logger.propagate = True
+        
+        self.header_df: pd.DataFrame = pd.DataFrame()
+        self.directional_source = directional_source
 
-    def load_data_from_file(
-        self,
-        file_path: str,
-        required_columns: Dict[str, str],
-        dtype: Optional[Dict[str, type]] = None
-    ) -> pd.DataFrame:
-        """
-        Load a CSV/Excel file, select required columns, and rename them to canonical names.
-
-        This is a low-level helper used by `get_header_data()` and `get_directional_data()`.
-        Provide `required_columns` as a mapping from your *canonical* names to the *actual*
-        column names found in the file. Only those columns are read and then renamed.
-
-        Parameters
-        ----------
-        file_path : str
-            Path to a `.csv`, `.xlsx`, or `.xls` file.
-        required_columns : Dict[str, str]
-            Mapping of `{canonical_name: file_column_name}`. The values (file column names)
-            must exist in the file.
-        dtype : Optional[Dict[str, type]], default=None
-            Pandas dtype mapping passed directly to `pd.read_csv` / `pd.read_excel`.
-            **Important:** keys here must be the *file* column names (i.e., the values of
-            `required_columns`), because dtypes are applied before renaming.
-
-        Returns
-        -------
-        pandas.DataFrame
-            DataFrame containing only the requested columns, renamed to canonical names.
-
-        Raises
-        ------
-        ValueError
-            If the file type is unsupported or any required column is missing.
-        Exception
-            Any other error encountered during file read is logged and re-raised.
-
-        Examples
-        --------
-        Reading CSV:
-
-        >>> colmap = {"uwi": "API14", "well_name": "WellName"}
-        >>> df = loader.load_data_from_file(
-        ...     "wells.csv",
-        ...     required_columns=colmap,
-        ...     dtype={"API14": str, "WellName": str}
-        ... )
-        >>> list(df.columns)
-        ['uwi', 'well_name']
-
-        Reading Excel:
-
-        >>> df = loader.load_data_from_file(
-        ...     "wells.xlsx",
-        ...     required_columns=colmap
-        ... )
-        """
-        try:
-            usecols = list(required_columns.values())
-            if file_path.endswith(('.xlsx', '.xls')):
-                df = pd.read_excel(file_path, dtype=dtype, usecols=usecols)
-            elif file_path.endswith('.csv'):
-                df = pd.read_csv(file_path, dtype=dtype, usecols=usecols)
-            else:
-                raise ValueError("Unsupported file type. Use CSV or Excel.")
-
-            missing = [val for val in required_columns.values() if val not in df.columns]
-            if missing:
-                raise ValueError(f"Missing required columns in file: {missing}")
-
-            return df.rename(columns={v: k for k, v in required_columns.items()})
-
-        except Exception as e:
-            self.logger.error(f"Failed to load data from file {file_path}: {e}")
-            raise
-
+    # ------------------------------------------------------------------
+    # Public methods
+    # ------------------------------------------------------------------
     def get_header_data(
         self,
         source: Optional[Union[str, pd.DataFrame]] = None,
         column_map: Optional[Dict[str, str]] = None,
-        basin: str = "MB",
-        start_year: int = 2019,
-        dtype: Optional[Dict[str, type]] = None
+        dtype_map: Optional[Mapping[str, str | type]] = None,
+        header_query: Optional[str] = None,
+        header_params: Optional[Mapping[str, Any]] = None,
+        **read_kwargs: Any,
     ) -> pd.DataFrame:
         """
-        Return header data either from a DataFrame, a file path, or the database.
-
-        Behavior is determined by `source`:
-        - If `source` is a `pandas.DataFrame`, it is returned as-is (and cached to `self.header_df`).
-        - If `source` is a file path, `column_map` is REQUIRED and used to read & rename columns.
-        - If `source` is `None`, data are queried from `self.db` via `_query_header_from_db()`.
+        Load header data from a DataFrame, file path, or DB query.
 
         Parameters
         ----------
-        source : Optional[Union[str, pandas.DataFrame]], default=None
-            - `DataFrame`: use this directly.
-            - `str`: path to CSV/Excel file.
-            - `None`: query the database.
-        column_map : Optional[Dict[str, str]], default=None
-            Required when `source` is a file path. Mapping of `{canonical_name: file_column_name}`.
-        basin : str, default="MB"
-            Basin code used in the database query when `source is None`.
-        start_year : int, default=2019
-            Minimum first production year for the database query when `source is None`.
-        dtype : Optional[Dict[str, type]], default=None
-            Dtype mapping for file-based reads (keys must be *file* column names).
+        source:
+            - pd.DataFrame: use as-is (then validate)
+            - str: file path (CSV/Excel)
+            - None: load from DB using basin/start_year (requires self.db)
+        column_map:
+            REQUIRED when `source` is a file path. Must be **source → canonical**.
+            Example:
+                {"API14": "uwi", "LeaseName": "lease_name", ...}
+        basin, start_year:
+            Used only when source is None (DB query).
+        dtype_map:
+            Dtypes to apply *after renaming* (on canonical names).
+            Example: {"uwi": "string", "surface_lat": "float64"}
+        **read_kwargs:
+            Extra args forwarded to pandas readers via your helper functions.
+            Examples: parse_dates=..., sheet_name=..., skiprows=..., engine=...
 
         Returns
         -------
-        pandas.DataFrame
-            Header data with canonical column names. Also stored in `self.header_df`.
+        pd.DataFrame
+            Header data with canonical column names.
 
         Raises
         ------
         ValueError
-            If `column_map` is missing for file-based input or `source` is invalid.
-        Exception
-            Any database errors are logged and re-raised.
-
-        Examples
-        --------
-        Using a provided DataFrame:
-
-        >>> header_df = pd.DataFrame({"uwi": ["123"], "well_name": ["A-1"]})
-        >>> out = loader.get_header_data(source=header_df)
-        >>> out is header_df
-        True
-
-        From a file:
-
-        >>> colmap = {"uwi": "API14", "well_name": "WellName", "operator": "CurrentOperator"}
-        >>> out = loader.get_header_data(
-        ...     source="headers.xlsx",
-        ...     column_map=colmap,
-        ...     dtype={"API14": "string", "WellName": "string", "CurrentOperator": "string"}
-        ... )
-
-        From the database:
-
-        >>> out = loader.get_header_data(source=None, basin="MB", start_year=2020)
+            If required canonical columns are missing or inputs are invalid.
         """
         if isinstance(source, pd.DataFrame):
             self.logger.info("Using provided header DataFrame.")
-            df = source
+            df = source.copy()
+
         elif isinstance(source, str) and os.path.exists(source):
-            if not column_map:
-                raise ValueError("Column map must be provided when reading from file.")
+            self._require_column_map_for_file(dataset="header", column_map=column_map)
             self.logger.info(f"Loading header data from file: {source}")
-            df = self.load_data_from_file(source, column_map, dtype=dtype)
+            df = self.load_data_from_file(
+                file_path=source,
+                dataset="header",
+                column_map=column_map,  # type: ignore[arg-type]
+                dtype_map=dtype_map,
+                **read_kwargs,
+            )
+
         elif source is None:
+            if self.db is None:
+                raise ValueError("source=None requires a db client (self.db is None).")
             self.logger.info("Loading header data from SQL.")
-            df = self._query_header_from_db(basin, start_year)
+            df = self._query_header_from_db(header_query=header_query, params=header_params)
+
         else:
-            raise ValueError("Invalid input: provide either a file path, DataFrame, or SQL query.")
+            raise ValueError("Invalid `source`. Provide a DataFrame, an existing file path, or None for DB.")
+
+        self._validate_required_columns(
+            df=df,
+            required_cols=self.HEADER_REQUIRED_COLS,
+            dataset_name="header",
+            source_hint=str(source) if isinstance(source, str) else "dataframe/db",
+        )
 
         self.header_df = df
         return df
 
     def get_directional_data(
         self,
-        source: Optional[str] = None,
+        source: Optional[Union[str, pd.DataFrame]] = None,
         column_map: Optional[Dict[str, str]] = None,
-        dtype: Optional[Dict[str, type]] = None
+        dtype_map: Optional[Mapping[str, str | type]] = None,
+        directional_source: Optional[str] = None,
+        directional_query: Optional[str] = None,
+        directional_params: Optional[Mapping[str, Any]] = None,
+        **read_kwargs: Any,
     ) -> pd.DataFrame:
         """
-        Return directional survey data either from a file path or the database.
+        ...
+        directional_source:
+            Optional override for this call ("IHS" or "enverus"). If None, uses self.directional_source.
+        """
+        if isinstance(source, pd.DataFrame):
+            self.logger.info("Using provided directional DataFrame.")
+            df = source.copy()
 
-        Parameters
-        ----------
-        source : Optional[str], default=None
-            - `str`: path to CSV/Excel file.
-            - `None`: query the database via `_query_directional_from_db()`.
-        column_map : Optional[Dict[str, str]], default=None
-            Required when `source` is a file path. Mapping of `{canonical_name: file_column_name}`.
-        dtype : Optional[Dict[str, type]], default=None
-            Dtype mapping for file-based reads (keys must be *file* column names).
+        elif isinstance(source, str) and os.path.exists(source):
+            self._require_column_map_for_file(dataset="directional", column_map=column_map)
+            self.logger.info(f"Loading directional data from file: {source}")
+            df = self.load_data_from_file(
+                file_path=source,
+                dataset="directional",
+                column_map=column_map,  # type: ignore[arg-type]
+                dtype_map=dtype_map,
+                directional_source=directional_source,  # <-- ADD
+                **read_kwargs,
+            )
 
-        Returns
-        -------
-        pandas.DataFrame
-            Directional survey data with canonical column names (if file-based).
+        elif source is None:
+            if self.db is None:
+                raise ValueError("source=None requires a db client (self.db is None).")
+            self.logger.info("Loading directional data from SQL.")
+            df = self._query_directional_from_db(directional_query=directional_query, params=directional_params)
+
+        else:
+            raise ValueError("Invalid `source`. Provide a DataFrame, an existing file path, or None for DB.")
+
+        # IMPORTANT: validate against the selected schema (Set[str]), not the dict
+        req = self._required_cols_for_dataset("directional", directional_source=directional_source)  # <-- ADD
+
+        self._validate_required_columns(
+            df=df,
+            required_cols=req,  # <-- CHANGED
+            dataset_name=f"directional ({(directional_source or self.directional_source)})",
+            source_hint=str(source) if isinstance(source, str) else "dataframe/db",
+        )
+
+        return df
+
+    def load_data_from_file(
+        self,
+        file_path: str | Path,
+        *,
+        dataset: str,
+        column_map: Mapping[str, str],
+        dtype_map: Optional[Mapping[str, str | type]] = None,
+        directional_source: Optional[str] = None,  # <-- ADD
+        **read_kwargs: Any,
+    ) -> pd.DataFrame:
+        """
+        ...
+        directional_source:
+            Only used when dataset == "directional" to select the right required set.
+        """
+        path = Path(file_path)
+
+        required_cols = self._required_cols_for_dataset(dataset, directional_source=directional_source)  # <-- CHANGED
+        self._assert_source_to_canonical_map(column_map=column_map, required_cols=required_cols, dataset=dataset)
+
+        if "usecols" not in read_kwargs:
+            read_kwargs["usecols"] = list(column_map.keys())
+
+        try:
+            if path.suffix.lower() == ".csv":
+                df = read_csv_with_mapper(path, col_map=column_map, dtype_map=dtype_map, **read_kwargs)
+            elif path.suffix.lower() in {".xlsx", ".xls"}:
+                df = read_excel_with_mapper(path, col_map=column_map, dtype_map=dtype_map, **read_kwargs)
+            else:
+                raise ValueError(f"Unsupported file type: {path.suffix}. Use CSV or Excel.")
+            return df
+        except Exception as e:
+            self.logger.error(f"Failed to load {dataset} data from file {path}: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+    def _require_column_map_for_file(
+        self,
+        *,
+        dataset: str,
+        column_map: Optional[Mapping[str, str]],
+    ) -> None:
+        """
+        Ensure column_map is provided for file reads.
+
+        Raises
+        ------
+        ValueError if column_map is missing.
+        """
+        if not column_map:
+            raise ValueError(
+                f"column_map must be provided when reading {dataset} data from a file, "
+                "and it must be in source → canonical direction."
+            )
+
+    def _assert_source_to_canonical_map(
+        self,
+        *,
+        column_map: Mapping[str, str],
+        required_cols: Set[str],
+        dataset: str,
+    ) -> None:
+        """
+        Enforce that `column_map` is in source → canonical direction.
+
+        Allows identity pairs (e.g., "uwi" -> "uwi") because the source file may already
+        use canonical names for some columns.
+        """
+        keys = set(column_map.keys())
+        vals = set(column_map.values())
+
+        # Identity pairs are allowed (source column already canonical)
+        identity_keys = {k for k, v in column_map.items() if k == v}
+
+        # Only treat canonical names in keys as suspicious if they are NOT identity pairs
+        suspicious = sorted((keys - identity_keys) & required_cols)
+        if suspicious:
+            raise ValueError(
+                f"{dataset.title()} column_map appears to be in the WRONG direction.\n"
+                f"Detected canonical columns in mapping keys: {suspicious}\n\n"
+                "Expected: source → canonical mapping, e.g.\n"
+                "    {'API14': 'uwi', 'LeaseName': 'lease_name', ...}\n\n"
+                "If you currently have canonical → source, invert it like:\n"
+                "    new_map = {src: canon for canon, src in old_map.items()}\n"
+            )
+
+        # Soft sanity check: do we map to at least one required canonical?
+        if len(vals & required_cols) == 0:
+            self.logger.warning(
+                f"{dataset.title()} column_map does not map to any required canonical columns. "
+                "Validation may fail later if required columns are missing."
+            )
+
+    def _validate_required_columns(
+        self,
+        *,
+        df: pd.DataFrame,
+        required_cols: Set[str],
+        dataset_name: str,
+        source_hint: str,
+    ) -> None:
+        """
+        Validate the DataFrame contains all required canonical columns.
 
         Raises
         ------
         ValueError
-            If `column_map` is missing for file-based input or `source` is invalid.
-        Exception
-            Any database errors are logged and re-raised.
-
-        Examples
-        --------
-        From a file:
-
-        >>> colmap = {
-        ...     "uwi": "API14",
-        ...     "md_ft": "MD_FT",
-        ...     "tvd_ft": "TVD_FT",
-        ...     "x": "UTM_X",
-        ...     "y": "UTM_Y"
-        ... }
-        >>> dir_df = loader.get_directional_data(
-        ...     source="directional.csv",
-        ...     column_map=colmap,
-        ...     dtype={"API14": "string", "MD_FT": float, "TVD_FT": float}
-        ... )
-
-        From the database:
-
-        >>> dir_df = loader.get_directional_data(source=None)
+            Includes:
+              - required set
+              - missing set
+              - preview of present columns
+            plus a note that missing columns can occur due to:
+              (a) missing columns in the source file, or
+              (b) incorrect/incomplete column_map for file reads
         """
-        if source and os.path.exists(source):
-            if not column_map:
-                raise ValueError("Column map must be provided when reading from file.")
-            self.logger.info(f"Loading directional data from file: {source}")
-            return self.load_data_from_file(source, column_map, dtype=dtype)
-        elif source is None:
-            self.logger.info("Loading directional data from SQL.")
-            return self._query_directional_from_db()
-        else:
-            raise ValueError("Provide either a file path or SQL query for directional data.")
+        present = set(df.columns)
+        missing = sorted(required_cols - present)
+        if not missing:
+            return
 
-    def _query_header_from_db(self, basin: str, start_year: int) -> pd.DataFrame:
+        required_sorted = sorted(required_cols)
+        present_preview = ", ".join(list(map(str, list(df.columns)[:40])))
+        if len(df.columns) > 40:
+            present_preview += ", ..."
+
+        msg = (
+            f"{dataset_name.title()} data is missing required canonical columns.\n"
+            f"Source: {source_hint}\n\n"
+            f"Required ({len(required_sorted)}): {required_sorted}\n"
+            f"Missing  ({len(missing)}): {missing}\n\n"
+            f"Present columns (preview): {present_preview}\n\n"
+            "Note: For file-based loads, this typically means either:\n"
+            "  (1) the source file does not contain those fields, or\n"
+            "  (2) your column_map does not map the source columns to these canonical names.\n"
+        )
+        raise ValueError(msg)
+
+    def _required_cols_for_dataset(
+        self,
+        dataset: str,
+        directional_source: Optional[str] = None,  # <-- ADD
+    ) -> Set[str]:
         """
-        Query header records from the configured database client.
+        Return the canonical required column set for a dataset.
 
-        The SQL selects a standardized set of columns and filters by basin, horizontal
-        hole direction, allowed reserve categories, and minimum first production year.
+        For directional data, selects from DIRECTIONAL_REQUIRED_COLS based on
+        directional_source (case-insensitive).
+        """
+        key = dataset.strip().lower()
+
+        if key == "header":
+            return self.HEADER_REQUIRED_COLS
+
+        if key == "directional":
+            src = (directional_source or self.directional_source or "IHS").strip().lower()
+            # allow case-insensitive keys even if dict uses mixed case
+            lookup = {k.strip().lower(): k for k in self.DIRECTIONAL_REQUIRED_COLS.keys()}
+            if src not in lookup:
+                raise ValueError(
+                    f"Unknown directional_source='{directional_source}'. "
+                    f"Valid options: {sorted(self.DIRECTIONAL_REQUIRED_COLS.keys())}"
+                )
+            return self.DIRECTIONAL_REQUIRED_COLS[lookup[src]]
+
+        raise ValueError(f"Unknown dataset='{dataset}'. Expected 'header' or 'directional'.")
+
+    # ------------------------------------------------------------------
+    # DB methods (kept close to your original)
+    # ------------------------------------------------------------------
+    def _query_header_from_db(
+        self,
+        header_query: str,
+        params: Optional[Mapping[str, Any]] = None,
+    ) -> pd.DataFrame:
+        """
+        Query header data from the database client `self.db`.
+
+        This method now prefers `execute_query_auto()` (from your updated
+        database_manager.SQLAlchemyDBClient) because it supports:
+        - auto-expanding list parameters (IN :param)
+        - optional chunking + retry logic (if large lists are present)
+
+        Backward compatibility
+        ----------------------
+        If the injected db client does NOT have `execute_query_auto`, this falls back
+        to `execute_query`.
 
         Parameters
         ----------
-        basin : str
-            Basin code to filter on (e.g., "MB").
-        start_year : int
-            Minimum first production year (inclusive).
+        header_query:
+            SQL SELECT statement (should already alias columns to canonical names).
+        params:
+            Optional bind parameters dict.
 
         Returns
         -------
-        pandas.DataFrame
-            Query result as a DataFrame. Expected columns include:
-            ['uwi', 'lease_name', 'well_name', 'well_num', 'operator', 'rsv_cat',
-             'bench', 'first_prod_date', 'comp_date', 'hole_direction',
-             'surface_lat', 'surface_lon'].
+        pd.DataFrame
+            Header DataFrame.
 
         Raises
         ------
+        ValueError
+            If self.db is not configured.
         Exception
-            Any connection or query error is logged and re-raised.
+            If the query fails.
+        """
+        if self.db is None:
+            raise ValueError("Database client is not configured (self.db is None).")
 
-        Examples
-        --------
-        >>> df = loader._query_header_from_db(basin="MB", start_year=2020)
-        >>> set(["uwi", "well_name"]).issubset(df.columns)
-        True
-        """
-        query = f"""
-        SELECT
-            api14 AS uwi, 
-            leaseName AS lease_name,
-            wellName AS well_name,
-            wellNumber AS well_num,
-            currentOperator AS operator,
-            customString2 AS rsv_cat,
-            customString0 AS bench,
-            DATE(firstProdDate) AS first_prod_date,
-            DATE(completionStartDate) AS comp_date,
-            holeDirection AS hole_direction,
-            surfaceLatitude AS surface_lat,
-            surfaceLongitude AS surface_lon
-        FROM Combocurve.export.wells
-        WHERE basin = '{basin}'
-          AND customString2 in ("01PDP", "02PDNP", "02PA") 
-          AND holeDirection = 'H' 
-          AND YEAR(DATE(firstProdDate)) >= {start_year}
-        """
         try:
-            self.db.connect()
-            df = self.db.execute_query(query)
-            return df
+            if self.db.test_connection():
+                # Prefer new auto method if available
+                if hasattr(self.db, "execute_query_auto") and callable(getattr(self.db, "execute_query_auto")):
+                    return self.db.execute_query_auto(  # type: ignore[attr-defined]
+                        header_query,
+                        params=params,
+                        # header queries usually don't need chunking; defaults are fine
+                        use_retry=True,
+                    )
+
+                # Backward-compatible fallback
+                return self.db.execute_query(header_query, params=params)
+
         except Exception as e:
-            self.logger.error(f"Error retrieving header data from databricks: {e}")
+            self.logger.error(f"An error occurred while executing header query: {e}")
             raise
+
         finally:
-            self.db.close_connection()
+            if self.db is not None:
+                try:
+                    self.db.close()
+                except Exception:
+                    self.logger.exception("Failed to dispose SQLAlchemy Engine")
 
-    def _query_directional_from_db(self) -> pd.DataFrame:
+    def _query_directional_from_db(
+        self,
+        directional_query: str,
+        params: Optional[Mapping[str, Any]] = None,
+        chunk_size: int = 256,
+        chunk_if_len_ge: int = 1000,
+    ) -> pd.DataFrame:
         """
-        Query directional survey records from the configured database client.
+        Query directional survey data from the database client `self.db`.
 
-        This private helper encapsulates your environment-specific SQL. Implement the
-        SQL to return a DataFrame that includes, at minimum, keys needed downstream
-        (e.g., `uwi`, `md_ft`, `tvd_ft`, and optionally spatial columns like `x`, `y`,
-        `lat`, `lon`, or any columns required by your spacing/trajectory pipeline).
+        This method now prefers `execute_query_auto()` because directional pulls
+        commonly use large IN-lists (e.g., uwis_12), which can:
+        - exceed parameter limits
+        - produce very large SQL payloads
+        - intermittently fail mid-stream
+
+        `execute_query_auto()` will:
+        - auto-expand list params (IN :param)
+        - auto-switch to chunking when the list is large (threshold-based)
+        - optionally retry (especially useful for Databricks SQL Warehouse)
+
+        IMPORTANT about LIMIT
+        ---------------------
+        If your SQL contains LIMIT and chunking is used, LIMIT applies *per chunk*,
+        not globally. If you need a global limit, remove LIMIT from SQL and apply
+        it after concatenation (or implement a global limit in the db layer).
+
+        Backward compatibility
+        ----------------------
+        If the injected db client does NOT have `execute_query_auto`, this falls back
+        to `execute_query`.
+
+        Parameters
+        ----------
+        directional_query:
+            SQL SELECT statement (should already alias columns).
+        params:
+            Optional bind parameters dict. Often includes a large list for IN-clause.
 
         Returns
         -------
-        pandas.DataFrame
-            Directional survey data.
+        pd.DataFrame
+            Directional survey DataFrame.
 
         Raises
         ------
+        ValueError
+            If self.db is not configured.
         Exception
-            Any connection or query error is logged and re-raised.
-
-        Examples
-        --------
-        >>> dir_df = loader._query_directional_from_db()
-        >>> isinstance(dir_df, pd.DataFrame)
-        True
+            If the query fails.
         """
-        if self.header_df.empty or 'uwi' not in self.header_df.columns:
-            raise ValueError("Header data must be loaded before querying directional data, and must contain a 'uwi' column.")
+        if self.db is None:
+            raise ValueError("Database client is not configured (self.db is None).")
 
-        uwis = ", ".join(f"'{id}'" for id in self.header_df['uwi'].unique())
-        query = f"""
-        SELECT
-            uwi, 
-            station_md_uscust AS md, 
-            station_tvd_uscust AS tvd,
-            inclination, 
-            azimuth, 
-            latitude, 
-            longitude, 
-            x_offset_uscust AS `deviation_E/W`,
-            ew_direction as `E/W`,
-            y_offset_uscust AS `deviation_N/S`,
-            ns_direction  as `N/S`,
-            point_type as point_type_name
-        FROM ihs_sp.well.well_directional_survey_station
-        WHERE uwi IN ({uwis})
-        ORDER BY uwi, md;
-        """
         try:
-            self.db.connect()
-            df = self.db.execute_query(query)
-            return df
-        except Exception as e:
-            self.logger.error(f"Error retrieving directional data from databricks: {e}")
-            raise
-        finally:
-            self.db.close_connection()
+            if self.db.test_connection():
+                # Prefer new auto method if available
+                if hasattr(self.db, "execute_query_auto") and callable(getattr(self.db, "execute_query_auto")):
+                    # Try to auto-detect the IN-list param if there is exactly one list-like param
+                    chunk_param_name: Optional[str] = None
+                    if params:
+                        list_like = [k for k, v in params.items() if isinstance(v, (list, tuple, set))]
+                        if len(list_like) == 1:
+                            chunk_param_name = list_like[0]
 
+                    # Log a friendly warning if LIMIT exists and we might chunk
+                    if params and chunk_param_name and " limit " in directional_query.lower():
+                        self.logger.warning(
+                            "Directional query contains LIMIT. If chunking is used, LIMIT applies per chunk (not globally)."
+                        )
+
+                    df = self.db.execute_query_auto(  # type: ignore[attr-defined]
+                        directional_query,
+                        params=params,
+                        chunk_param_name=chunk_param_name,  # e.g., "uwis_12"
+                        chunk_size=chunk_size,
+                        chunk_if_len_ge=chunk_if_len_ge,
+                        use_retry=True,
+                        max_retries=3,
+                        backoff_base_s=0.5,
+                        backoff_cap_s=8.0,
+                        # Don't force sort_by here (could error if aliases differ); we sort safely below.
+                        sort_by=None,
+                        drop_duplicates=False,
+                    )
+
+                    # Safe post-sort to restore global ordering when chunking was used
+                    # (only sort if the expected columns exist)
+                    if {"uwi12", "md"}.issubset(df.columns):
+                        df = df.sort_values(["uwi12", "md"], kind="mergesort").reset_index(drop=True)
+                    elif {"uwi", "md"}.issubset(df.columns):
+                        df = df.sort_values(["uwi", "md"], kind="mergesort").reset_index(drop=True)
+
+                    return df
+
+                # Backward-compatible fallback
+                return self.db.execute_query(directional_query, params=params)
+
+        except Exception as e:
+            self.logger.error(f"An error occurred while executing directional query: {e}")
+            raise
+
+        finally:
+            if self.db is not None:
+                try:
+                    self.db.close()
+                except Exception:
+                    self.logger.exception("Failed to dispose SQLAlchemy Engine")
 
 # %%
 class GeoSurveyProcessor:
@@ -455,21 +679,25 @@ class GeoSurveyProcessor:
     --------
     >>> geo = GeoSurveyProcessor(log_dir="./logs")
     """
-    def __init__(self, log_dir: str = "./logs",):
+    def __init__(self, logger: Optional[logging.Logger] = None,):
         """
         Initialize the processor and its logger.
 
         Parameters
         ----------
-        log_dir : str, default="./logs"
-            Directory for logging via `CustomLogger`.
+        logger : logging.Logger, optional
+            Logger instance to use for logging. If not provided, a default logger is created.
 
         Examples
         --------
         >>> geo = GeoSurveyProcessor()
         """
-        self.logger = CustomLogger("geo_processor", "GeoLogger", log_dir).get_logger()  # Custom logger
-        self.logger.info("GeoSurveyProcessor initialized.")
+        parent_logger = logger or logging.getLogger("geo_survey_processor")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.geo_survey_processor")
+        self.logger.propagate = True
 
     def determine_utm_zone(self, longitude: float) -> int:
         """

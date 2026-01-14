@@ -564,7 +564,14 @@ class SQLAlchemyDBClient:
         engine_kwargs: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.config = config
-        self.logger = logger or logging.getLogger(self.__class__.__name__)
+        
+        parent_logger = logger or logging.getLogger("database_client")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.database_client")
+        self.logger.propagate = True
+        
         self.echo = echo
         self.pool_pre_ping = pool_pre_ping
         self.use_null_pool = use_null_pool
@@ -628,7 +635,6 @@ class SQLAlchemyDBClient:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-
 
     def test_connection(self) -> bool:
         """

@@ -235,6 +235,7 @@ def compute_bg_rcat(
     col_map: Mapping[str, str] | None = None,
     prod_cutoff: Union[str, pd.Timestamp] = "2025-01-01",
     spud_cutoff: Union[str, pd.Timestamp] = "2023-01-01",
+    utc: bool = False,
 ) -> pd.Series:
     """
     Compute BG_RCAT classification for a well list.
@@ -484,8 +485,12 @@ def compute_bg_rcat(
             f"Resolved from logical names using col_map={col_map!r}."
         )
 
-    prod_cutoff_ts = pd.to_datetime(prod_cutoff)
-    spud_cutoff_ts = pd.to_datetime(spud_cutoff)
+    if utc:
+        prod_cutoff_ts = pd.to_datetime(prod_cutoff, utc=True)
+        spud_cutoff_ts = pd.to_datetime(spud_cutoff, utc=True)
+    else:
+        prod_cutoff_ts = pd.to_datetime(prod_cutoff)
+        spud_cutoff_ts = pd.to_datetime(spud_cutoff)
 
     work = df.copy()
 

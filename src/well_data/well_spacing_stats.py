@@ -12,18 +12,21 @@ import numpy as np
 
 import math
 
-from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable
+from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable, Set
 
 from tqdm import tqdm 
 
 from joblib import Parallel, delayed 
 
 from matplotlib import pyplot as plt 
+from matplotlib.patches import Circle
 
 from pyproj import Geod 
 
 from dataclasses import dataclass 
 from enum import Enum, auto
+
+from scipy.spatial import ConvexHull
 
 #%% # ==================== Well Spacing Calculator ====================
 
@@ -4261,4 +4264,1147 @@ f"""# Floating Section Diagnostics
 
         return out_paths
     
-#%%
+#%% # ======================= Average Spacing Calculator ======================= #
+"""
+Average Spacing Calculator.
+
+Extracted from DirectionalBenchNeighbors to provide a standalone class for
+computing per-well average spacing metrics using chain, dense, or i2nbr modes.
+"""
+class AvgSpacingCalculator:
+    """
+    Summarizes per-well spacing by building neighborhoods S(i) and computing
+    spacing metrics via chain, dense, or i2nbr modes.
+
+    For each well_i, the neighborhood S(i) consists of well_i itself plus all
+    eligible neighbor wells (survivors after filtering). The spacing metric
+    is then computed within this neighborhood.
+
+    ----------
+    Neighborhood modes
+    ----------
+    - "i2nbr": Mean of eligible i→k survivor distances (simple radial average)
+    - "chain": Chain adjacency inside S(i): A→B→C→D (no repeats), ordered by
+               chain_sort_mode ("x" or "pca")
+    - "dense": Mean of all unique undirected member-member pairs inside S(i)
+
+    ----------
+    Usage
+    ----------
+    >>> summarizer = AvgSpacingCalculator()
+    >>> result_df = summarizer.summarize(
+    ...     spacing_df,
+    ...     cutoff_ft=1320.0,
+    ...     neighborhood_mode="chain",
+    ...     trajectories=trajectories,
+    ... )
+    
+    # Optional: plot diagnostics for a specific well
+    >>> summarizer.plot_neighborhood(
+    ...     well_i="30025410040100",
+    ...     trajectories=trajectories,
+    ...     mode="both",
+    ...     show=True,
+    ... )
+
+    ----------
+    Parameters (at init)
+    ----------
+    overrides_df : pandas.DataFrame, optional
+        Default per-well override rules. Can be overridden at call time.
+
+    ----------
+    Output columns
+    ----------
+    - well_i: well identifier
+    - group_size: number of members in S(i) including well_i
+    - neighbors_in_group: group_size - 1
+    - survivor_rows_i_to_k: number of eligible i→k pairs
+    - avg_hz_spacing_ft: the computed horizontal spacing metric
+    - avg_vt_spacing_ft: the computed vertical spacing metric
+    - neighborhood_mode_used: which mode was applied
+
+    Plus mode-specific diagnostics (chain edges, dense pairs, percentiles, etc.)
+    """
+
+    AxisMode = Literal["any", "EW", "NS"]
+    NeighborhoodMode = Literal["i2nbr", "chain", "dense"]
+    ChainSortMode = Literal["x", "pca"]
+    EdgePick = Literal["min", "mean", "forward"]
+    PlotMode = Literal["chain", "dense", "both"]
+
+    def __init__(self, *, overrides_df: Optional[pd.DataFrame] = None) -> None:
+        """
+        Parameters
+        ----------
+        overrides_df : pandas.DataFrame, optional
+            Default per-well override rules. Can be overridden at call time.
+        """
+        self._overrides_df_default = overrides_df
+        
+        # Intermediate results stored for optional debug plotting
+        self._members: Optional[pd.DataFrame] = None
+        self._survivors: Optional[pd.DataFrame] = None
+        self._edges_chain: Optional[pd.DataFrame] = None
+        self._pairs_dense: Optional[pd.DataFrame] = None
+        self._ordered_members: Optional[pd.DataFrame] = None
+        self._output: Optional[pd.DataFrame] = None
+        self._cutoff_ft: Optional[float] = None
+        self._ov_cut: Optional[pd.Series] = None
+        self._all_wells: Optional[pd.Series] = None
+
+    def _resolve_overrides(
+        self, overrides_df: Optional[pd.DataFrame]
+    ) -> Optional[pd.DataFrame]:
+        """Return call-time overrides if provided, else fall back to init default."""
+        return overrides_df if overrides_df is not None else self._overrides_df_default
+
+    def _clear_intermediates(self) -> None:
+        """Clear stored intermediate results from previous run."""
+        self._members = None
+        self._survivors = None
+        self._edges_chain = None
+        self._pairs_dense = None
+        self._ordered_members = None
+        self._output = None
+        self._cutoff_ft = None
+        self._ov_cut = None
+        self._all_wells = None
+
+    def summarize(
+        self,
+        spacing_df: pd.DataFrame,
+        *,
+        cutoff_ft: float,
+        vertical_cutoff_ft: Optional[float] = None,
+        overlap_pct_k_min: Optional[float] = None,
+        overrides_df: Optional[pd.DataFrame] = None,
+        proj_coverage_min: Optional[float] = None,
+        axis_mode: AxisMode = "any",
+        neighborhood_mode: NeighborhoodMode = "chain",
+        chain_sort_mode: ChainSortMode = "pca",
+        trajectories: Optional[pd.DataFrame] = None,
+        edge_pick: EdgePick = "min",
+        include_unweighted: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Summarize per-well spacing from a pairwise spacing table by building a
+        neighborhood S(i) for each well_i and computing a neighborhood spacing metric.
+
+        Parameters
+        ----------
+        spacing_df : pandas.DataFrame
+            Pairwise spacing table with required columns:
+              - 'well_i', 'well_k': str/int (well identifiers)
+              - 'horizontal_dist': float (feet)
+              - 'vertical_dist': float (feet)
+              - 'pair_alignment': str ('parallel_like' or other)
+              - 'direction_to_k_from_i_axis': {'E','W','N','S'}
+              - 'LL_i': float (lateral length of well_i)
+
+        cutoff_ft : float
+            Global horizontal cutoff (ft).
+
+        vertical_cutoff_ft : float, optional
+            Global vertical cutoff (ft). If None, no vertical rule applied globally.
+
+        overlap_pct_k_min : float, optional
+            Global overlap/adjacency minimum. If None, no overlap rule applied globally.
+
+        overrides_df : pandas.DataFrame, optional
+            Per-well rule overrides. Columns: 'well_i' (or 'uwi'), plus optional
+            'cutoff_ft', 'vertical_cutoff_ft', 'overlap_pct_k_min'.
+
+        proj_coverage_min : float, optional
+            Coverage quality gate for oblique/perpendicular pairs only.
+
+        axis_mode : {'any', 'EW', 'NS'}, default 'any'
+            Direction eligibility filter for survivors.
+
+        neighborhood_mode : {'i2nbr', 'chain', 'dense'}, default 'chain'
+            How to compute the neighborhood spacing metric.
+
+        chain_sort_mode : {'x', 'pca'}, default 'pca'
+            For chain mode, how to order members along the chain.
+
+        trajectories : pandas.DataFrame, optional
+            Required for chain mode. Must have columns ['uwi', 'x', 'y'].
+
+        edge_pick : {'min', 'mean', 'forward'}, default 'min'
+            For chain mode, how to resolve directional edge distances.
+
+        include_unweighted : bool, default False
+            If True, include hz_mean_i2nbr_ft and vt_mean_i2nbr_ft columns.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per well_i with spacing metrics and diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If required columns are missing or inputs are inconsistent.
+
+        Notes
+        -----
+        After calling this method, you can use `plot_neighborhood()` to generate
+        diagnostic plots for specific wells.
+
+        If proj_coverage_min is provided but spacing_df does not contain
+        proj_coverage_i_pct, this method will derive a proxy from overlap_pct_i
+        or overlap_len_common_ft / LL_i if available.
+        """
+        # Clear any previous run's intermediates
+        self._clear_intermediates()
+        
+        overrides_df = self._resolve_overrides(overrides_df)
+
+        spacing = spacing_df.copy()
+        spacing["well_i"] = spacing["well_i"].astype(str)
+        spacing["well_k"] = spacing["well_k"].astype(str)
+
+        # Validate required columns
+        req_base = {
+            "well_i",
+            "well_k",
+            "horizontal_dist",
+            "vertical_dist",
+            "pair_alignment",
+            "direction_to_k_from_i_axis",
+            "LL_i",
+        }
+        missing = req_base - set(spacing.columns)
+        if missing:
+            raise ValueError(
+                f"summarize: spacing_df missing required columns: {sorted(missing)}"
+            )
+
+        all_wells = (
+            spacing["well_i"].drop_duplicates().reset_index(drop=True).astype(str)
+        )
+        self._all_wells = all_wells
+        self._cutoff_ft = cutoff_ft
+
+        # ---------------- Overrides (per well_i) ----------------
+        ov_cut = ov_vcut = ov_omin = None
+        if overrides_df is not None and not overrides_df.empty:
+            ov = overrides_df.copy()
+            if "well_i" not in ov.columns and "uwi" in ov.columns:
+                ov = ov.rename(columns={"uwi": "well_i"})
+            if "well_i" in ov.columns:
+                ov["well_i"] = ov["well_i"].astype(str)
+                ov = ov.set_index("well_i")
+                ov_cut = ov["cutoff_ft"] if "cutoff_ft" in ov.columns else None
+                ov_vcut = (
+                    ov["vertical_cutoff_ft"]
+                    if "vertical_cutoff_ft" in ov.columns
+                    else None
+                )
+                ov_omin = (
+                    ov["overlap_pct_k_min"]
+                    if "overlap_pct_k_min" in ov.columns
+                    else None
+                )
+
+        self._ov_cut = ov_cut
+
+        # Effective horizontal cutoff per row
+        if ov_cut is not None:
+            eff_hcut = (
+                spacing["well_i"].map(ov_cut).astype(float).fillna(float(cutoff_ft))
+            )
+        else:
+            eff_hcut = pd.Series(float(cutoff_ft), index=spacing.index)
+
+        # Effective vertical cutoff per row (NaN = no rule)
+        if (vertical_cutoff_ft is not None) or (ov_vcut is not None):
+            eff_vcut = (
+                spacing["well_i"].map(ov_vcut).astype(float)
+                if ov_vcut is not None
+                else pd.Series(np.nan, index=spacing.index)
+            )
+            if vertical_cutoff_ft is not None:
+                eff_vcut = eff_vcut.fillna(float(vertical_cutoff_ft))
+        else:
+            eff_vcut = pd.Series(np.nan, index=spacing.index)
+
+        # Effective overlap/adjacency min per row (NaN = no rule)
+        if (overlap_pct_k_min is not None) or (ov_omin is not None):
+            eff_omin = (
+                spacing["well_i"].map(ov_omin).astype(float)
+                if ov_omin is not None
+                else pd.Series(np.nan, index=spacing.index)
+            )
+            if overlap_pct_k_min is not None:
+                eff_omin = eff_omin.fillna(float(overlap_pct_k_min))
+        else:
+            eff_omin = pd.Series(np.nan, index=spacing.index)
+
+        # ---------------- Adaptive adjacency percentage ----------------
+        contact_interior = (
+            spacing["contact_pct_i_interior"].astype(float)
+            if "contact_pct_i_interior" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+        contact_any = (
+            spacing["contact_pct_i"].astype(float)
+            if "contact_pct_i" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+        adj_oblique_perp = contact_interior.fillna(contact_any)
+
+        overlap_pct_k = (
+            spacing["overlap_pct_k"].astype(float)
+            if "overlap_pct_k" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+
+        spacing["adj_pct"] = np.where(
+            spacing["pair_alignment"].eq("parallel_like"),
+            overlap_pct_k,
+            adj_oblique_perp,
+        ).astype(float)
+
+        # ---------------- Eligibility mask (survivors) ----------------
+        mask = spacing["horizontal_dist"].astype(float) <= eff_hcut
+
+        if eff_vcut.notna().any():
+            has_vrule = eff_vcut.notna()
+            mask &= (~has_vrule) | (spacing["vertical_dist"].astype(float) <= eff_vcut)
+
+        if eff_omin.notna().any():
+            has_orule = eff_omin.notna()
+            mask &= (~has_orule) | (spacing["adj_pct"] >= eff_omin)
+
+        # --- proj_coverage_i_pct fallback ---
+        if proj_coverage_min is not None:
+            if "proj_coverage_i_pct" not in spacing.columns:
+                # Prefer overlap_pct_i if present
+                if "overlap_pct_i" in spacing.columns:
+                    spacing["proj_coverage_i_pct"] = spacing["overlap_pct_i"].astype(
+                        float
+                    )
+                # Else approximate from overlap length / LL_i if possible
+                elif ("overlap_len_common_ft" in spacing.columns) and (
+                    "LL_i" in spacing.columns
+                ):
+                    denom = spacing["LL_i"].astype(float).replace(0.0, np.nan)
+                    spacing["proj_coverage_i_pct"] = (
+                        spacing["overlap_len_common_ft"].astype(float) / denom
+                    ).replace([np.inf, -np.inf], np.nan)
+                else:
+                    # No info to compute; keep as NaN (non-parallel rows will fail)
+                    spacing["proj_coverage_i_pct"] = np.nan
+
+            ok_cov = np.where(
+                spacing["pair_alignment"].eq("parallel_like"),
+                True,
+                spacing["proj_coverage_i_pct"].astype(float) >= float(proj_coverage_min),
+            )
+            mask &= ok_cov
+
+        if axis_mode == "EW":
+            mask &= spacing["direction_to_k_from_i_axis"].isin({"E", "W"})
+        elif axis_mode == "NS":
+            mask &= spacing["direction_to_k_from_i_axis"].isin({"N", "S"})
+
+        survivors = spacing.loc[mask].copy()
+        self._survivors = survivors
+
+        # ---------------- Baseline i->eligible k summaries ----------------
+        g_i = survivors.groupby("well_i", sort=False)
+        survivor_rows = (
+            g_i.size().rename("survivor_rows_i_to_k").rename_axis("group_i")
+        )
+
+        hz_mean_i2nbr = (
+            g_i["horizontal_dist"].mean().rename("hz_mean_i2nbr_ft").rename_axis("group_i")
+        )
+        vt_mean_i2nbr = (
+            g_i["vertical_dist"].mean().rename("vt_mean_i2nbr_ft").rename_axis("group_i")
+        )
+
+        # ---------------- Build membership table for S(i) ----------------
+        members_self = pd.DataFrame(
+            {"group_i": all_wells.values, "member": all_wells.values}
+        )
+        members_nbrs = survivors[["well_i", "well_k"]].rename(
+            columns={"well_i": "group_i", "well_k": "member"}
+        )
+        members = pd.concat([members_self, members_nbrs], ignore_index=True).drop_duplicates()
+        self._members = members
+
+        group_size = (
+            members.groupby("group_i", sort=False)["member"]
+            .nunique()
+            .rename("group_size")
+            .rename_axis("group_i")
+        )
+        neighbors_in_group = (
+            (group_size - 1).clip(lower=0).rename("neighbors_in_group").rename_axis("group_i")
+        )
+
+        want_chain = neighborhood_mode == "chain"
+        want_dense = neighborhood_mode == "dense"
+
+        # -----------------------------
+        # CHAIN MODE (A->B->C->D)
+        # -----------------------------
+        chain_axis = None
+        chain_edges_used = chain_edges_missing = None
+        hz_mean_chain = vt_mean_chain = None
+        chain_p50 = chain_p25 = chain_p75 = chain_min = chain_max = None
+
+        if want_chain:
+            if trajectories is None:
+                raise ValueError(
+                    "summarize: chain mode requires `trajectories` "
+                    "with columns ['uwi','x','y']."
+                )
+
+            need_cols = {"uwi", "x", "y"}
+            miss_t = need_cols - set(trajectories.columns)
+            if miss_t:
+                raise ValueError(
+                    f"summarize: trajectories missing columns: {sorted(miss_t)}"
+                )
+
+            traj = trajectories.copy()
+            traj["uwi"] = traj["uwi"].astype(str)
+
+            centroids = (
+                traj.groupby("uwi", sort=False)[["x", "y"]]
+                .median()
+                .rename(columns={"x": "x_mid", "y": "y_mid"})
+            )
+
+            mem_xy = members.merge(
+                centroids.reset_index().rename(columns={"uwi": "member"}),
+                on="member",
+                how="left",
+            )
+
+            if mem_xy[["x_mid", "y_mid"]].isna().any(axis=1).any():
+                bad = (
+                    mem_xy.loc[
+                        mem_xy[["x_mid", "y_mid"]].isna().any(axis=1), "member"
+                    ]
+                    .drop_duplicates()
+                    .head(10)
+                    .tolist()
+                )
+                raise ValueError(
+                    "summarize: trajectories missing x/y for some neighborhood members. "
+                    f"Examples: {bad}"
+                )
+
+            mem_xy["chain_sort_mode"] = chain_sort_mode
+
+            def _order_members_one_group(g: pd.DataFrame) -> pd.DataFrame:
+                xy = g[["x_mid", "y_mid"]].to_numpy(dtype=float)
+
+                if g.shape[0] <= 1:
+                    g = g.copy()
+                    g["chain_axis_dx"] = 1.0
+                    g["chain_axis_dy"] = 0.0
+                    g["_score"] = 0.0
+                    return g
+
+                if chain_sort_mode == "x":
+                    axis = np.array([1.0, 0.0], dtype=float)
+                    score = xy[:, 0].copy()
+                else:
+                    C = xy - xy.mean(axis=0, keepdims=True)
+                    if np.allclose(C, 0.0):
+                        axis = np.array([1.0, 0.0], dtype=float)
+                        score = C @ axis
+                    else:
+                        _, _, Vt = np.linalg.svd(C, full_matrices=False)
+                        axis = Vt[0]
+
+                        # Deterministic axis sign
+                        if abs(axis[0]) >= abs(axis[1]):
+                            if axis[0] < 0:
+                                axis = -axis
+                        else:
+                            if axis[1] < 0:
+                                axis = -axis
+
+                        score = (xy - xy.mean(axis=0, keepdims=True)) @ axis
+
+                g = g.copy()
+                g["chain_axis_dx"] = float(axis[0])
+                g["chain_axis_dy"] = float(axis[1])
+                g["_score"] = score
+                return g.sort_values(["_score", "member"], ascending=[True, True]).drop(
+                    columns=["_score"]
+                )
+
+            ordered_members = (
+                mem_xy.groupby("group_i", sort=False, group_keys=False)
+                .apply(_order_members_one_group)
+                .reset_index(drop=True)
+            )
+            self._ordered_members = ordered_members
+
+            chain_edges = ordered_members[["group_i", "member"]].copy()
+            chain_edges["next_member"] = ordered_members.groupby("group_i", sort=False)[
+                "member"
+            ].shift(-1)
+            chain_edges = chain_edges.dropna(subset=["next_member"]).rename(
+                columns={"member": "u", "next_member": "v"}
+            )
+            chain_edges["u"] = chain_edges["u"].astype(str)
+            chain_edges["v"] = chain_edges["v"].astype(str)
+
+            chain_axis = (
+                ordered_members.groupby("group_i", sort=False)
+                .agg(
+                    chain_sort_mode=("chain_sort_mode", "first"),
+                    chain_axis_dx=("chain_axis_dx", "first"),
+                    chain_axis_dy=("chain_axis_dy", "first"),
+                )
+                .rename_axis("group_i")
+            )
+
+            lookup = spacing[
+                ["well_i", "well_k", "horizontal_dist", "vertical_dist"]
+            ].copy()
+            lookup["well_i"] = lookup["well_i"].astype(str)
+            lookup["well_k"] = lookup["well_k"].astype(str)
+
+            uv = lookup.rename(
+                columns={
+                    "well_i": "u",
+                    "well_k": "v",
+                    "horizontal_dist": "hz_uv",
+                    "vertical_dist": "vt_uv",
+                }
+            )
+            vu = lookup.rename(
+                columns={
+                    "well_i": "v",
+                    "well_k": "u",
+                    "horizontal_dist": "hz_vu",
+                    "vertical_dist": "vt_vu",
+                }
+            )
+
+            edges_chain = chain_edges.merge(uv, on=["u", "v"], how="left").merge(
+                vu, on=["u", "v"], how="left"
+            )
+
+            hz_uv = edges_chain["hz_uv"].astype(float)
+            hz_vu = edges_chain["hz_vu"].astype(float)
+            vt_uv = edges_chain["vt_uv"].astype(float)
+            vt_vu = edges_chain["vt_vu"].astype(float)
+
+            if edge_pick == "forward":
+                edges_chain["hz_edge_ft"] = hz_uv
+                edges_chain["vt_edge_ft"] = vt_uv
+            elif edge_pick == "mean":
+                edges_chain["hz_edge_ft"] = np.where(
+                    hz_uv.notna() & hz_vu.notna(),
+                    0.5 * (hz_uv + hz_vu),
+                    hz_uv.fillna(hz_vu),
+                )
+                edges_chain["vt_edge_ft"] = np.where(
+                    vt_uv.notna() & vt_vu.notna(),
+                    0.5 * (vt_uv + vt_vu),
+                    vt_uv.fillna(vt_vu),
+                )
+            else:  # "min"
+                edges_chain["hz_edge_ft"] = np.where(
+                    hz_uv.notna() & hz_vu.notna(),
+                    np.minimum(hz_uv, hz_vu),
+                    hz_uv.fillna(hz_vu),
+                )
+                edges_chain["vt_edge_ft"] = np.where(
+                    vt_uv.notna() & vt_vu.notna(),
+                    np.minimum(vt_uv, vt_vu),
+                    vt_uv.fillna(vt_vu),
+                )
+
+            self._edges_chain = edges_chain
+
+            ge_chain = edges_chain.groupby("group_i", sort=False)
+
+            chain_edges_used = (
+                ge_chain["hz_edge_ft"]
+                .count()
+                .rename("chain_edges_used")
+                .rename_axis("group_i")
+            )
+            hz_mean_chain = (
+                ge_chain["hz_edge_ft"]
+                .mean()
+                .rename("hz_mean_chain_ft")
+                .rename_axis("group_i")
+            )
+            vt_mean_chain = (
+                ge_chain["vt_edge_ft"]
+                .mean()
+                .rename("vt_mean_chain_ft")
+                .rename_axis("group_i")
+            )
+
+            chain_p50 = (
+                ge_chain["hz_edge_ft"]
+                .median()
+                .rename("p50_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_p25 = (
+                ge_chain["hz_edge_ft"]
+                .quantile(0.25)
+                .rename("p25_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_p75 = (
+                ge_chain["hz_edge_ft"]
+                .quantile(0.75)
+                .rename("p75_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_min = (
+                ge_chain["hz_edge_ft"]
+                .min()
+                .rename("min_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_max = (
+                ge_chain["hz_edge_ft"]
+                .max()
+                .rename("max_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+
+            chain_edges_missing = (
+                ((group_size - 1) - chain_edges_used)
+                .rename("chain_edges_missing")
+                .rename_axis("group_i")
+            )
+
+        # -----------------------------
+        # DENSE MODE (all member-member pairs)
+        # -----------------------------
+        cand_cnt = expected_dir_pairs = candidate_pair_density = None
+        pairs_used_dense = hz_mean_dense = vt_mean_dense = None
+        dense_p50 = dense_p25 = dense_p75 = dense_min = dense_max = None
+
+        if want_dense:
+            base_cols = [
+                "well_i",
+                "well_k",
+                "horizontal_dist",
+                "vertical_dist",
+                "direction_to_k_from_i_axis",
+            ]
+            spacing_base = spacing.loc[
+                :, [c for c in base_cols if c in spacing.columns]
+            ].copy()
+
+            cand = spacing_base.merge(
+                members.rename(columns={"member": "well_i"})[["group_i", "well_i"]],
+                on="well_i",
+                how="inner",
+            )
+            cand = cand.merge(
+                members.rename(columns={"member": "well_k"})[["group_i", "well_k"]],
+                on=["group_i", "well_k"],
+                how="inner",
+            )
+
+            cand = cand.loc[cand["well_i"] != cand["well_k"]].copy()
+
+            if axis_mode == "EW":
+                cand = cand.loc[cand["direction_to_k_from_i_axis"].isin(["E", "W"])]
+            elif axis_mode == "NS":
+                cand = cand.loc[cand["direction_to_k_from_i_axis"].isin(["N", "S"])]
+
+            cand_cnt = (
+                cand.groupby("group_i", sort=False)
+                .size()
+                .rename("member_member_rows_found")
+                .rename_axis("group_i")
+            )
+            expected_dir_pairs = (
+                (group_size * (group_size - 1))
+                .rename("expected_directed_pairs")
+                .rename_axis("group_i")
+            )
+            candidate_pair_density = (
+                (cand_cnt / expected_dir_pairs.replace(0, np.nan))
+                .rename("candidate_pair_density")
+                .rename_axis("group_i")
+            )
+
+            cand2 = cand.rename(
+                columns={
+                    "well_i": "src",
+                    "well_k": "dst",
+                    "direction_to_k_from_i_axis": "direction",
+                }
+            )
+
+            uu = np.minimum(cand2["src"].astype(str), cand2["dst"].astype(str))
+            vv = np.maximum(cand2["src"].astype(str), cand2["dst"].astype(str))
+
+            pairs_dense = cand2.assign(pair_u=uu, pair_v=vv).drop_duplicates(
+                subset=["group_i", "pair_u", "pair_v"], keep="first"
+            )
+            self._pairs_dense = pairs_dense
+
+            gp = pairs_dense.groupby("group_i", sort=False)
+            pairs_used_dense = (
+                gp.size().rename("pairs_used_dense").rename_axis("group_i")
+            )
+            hz_mean_dense = (
+                gp["horizontal_dist"]
+                .mean()
+                .rename("hz_mean_dense_ft")
+                .rename_axis("group_i")
+            )
+            vt_mean_dense = (
+                gp["vertical_dist"]
+                .mean()
+                .rename("vt_mean_dense_ft")
+                .rename_axis("group_i")
+            )
+
+            dense_p50 = (
+                gp["horizontal_dist"]
+                .median()
+                .rename("p50_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_p25 = (
+                gp["horizontal_dist"]
+                .quantile(0.25)
+                .rename("p25_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_p75 = (
+                gp["horizontal_dist"]
+                .quantile(0.75)
+                .rename("p75_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_min = (
+                gp["horizontal_dist"]
+                .min()
+                .rename("min_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_max = (
+                gp["horizontal_dist"]
+                .max()
+                .rename("max_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+
+        # ---------------- Merge into output (one row per well_i) ----------------
+        out = pd.DataFrame({"group_i": all_wells.astype(str)})
+
+        merges = [group_size, neighbors_in_group, survivor_rows]
+
+        if include_unweighted:
+            merges += [hz_mean_i2nbr, vt_mean_i2nbr]
+
+        if want_chain:
+            merges += [
+                chain_axis,
+                chain_edges_used,
+                chain_edges_missing,
+                hz_mean_chain,
+                vt_mean_chain,
+                chain_p50,
+                chain_p25,
+                chain_p75,
+                chain_min,
+                chain_max,
+            ]
+
+        if want_dense:
+            merges += [
+                cand_cnt,
+                expected_dir_pairs,
+                candidate_pair_density,
+                pairs_used_dense,
+                hz_mean_dense,
+                vt_mean_dense,
+                dense_p50,
+                dense_p25,
+                dense_p75,
+                dense_min,
+                dense_max,
+            ]
+
+        for s in merges:
+            if s is None:
+                continue
+            if getattr(s, "index", None) is not None and s.index.name != "group_i":
+                s = s.rename_axis("group_i")
+            out = out.merge(s.reset_index(), on="group_i", how="left")
+
+        out = out.rename(columns={"group_i": "well_i"})
+
+        out["group_size"] = out["group_size"].fillna(1).astype(int)
+        out["neighbors_in_group"] = out["neighbors_in_group"].fillna(0).astype(int)
+        out["survivor_rows_i_to_k"] = out["survivor_rows_i_to_k"].fillna(0).astype(int)
+
+        if want_chain:
+            out["chain_edges_used"] = out["chain_edges_used"].fillna(0).astype(int)
+            out["chain_edges_missing"] = out["chain_edges_missing"].fillna(
+                out["neighbors_in_group"]
+            ).astype(int)
+
+        if want_dense:
+            out["member_member_rows_found"] = out["member_member_rows_found"].fillna(0).astype(int)
+            out["pairs_used_dense"] = out["pairs_used_dense"].fillna(0).astype(int)
+
+        if neighborhood_mode == "i2nbr":
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_i2nbr_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_i2nbr_ft")
+            out["neighborhood_mode_used"] = "i2nbr"
+        elif neighborhood_mode == "chain":
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_chain_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_chain_ft")
+            out["neighborhood_mode_used"] = "chain"
+        else:
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_dense_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_dense_ft")
+            out["neighborhood_mode_used"] = "dense"
+
+        self._output = out
+        return out
+
+    # =========================================================================
+    # Debug / Diagnostic Plotting (separate from summarize)
+    # =========================================================================
+
+    def plot_neighborhood(
+        self,
+        well_i: str,
+        trajectories: pd.DataFrame,
+        *,
+        mode: PlotMode = "both",
+        show: bool = True,
+        save_path: Optional[str] = None,
+        max_members: int = 30,
+        figsize: Tuple[float, float] = (12.5, 8),
+        dpi: int = 160,
+    ) -> None:
+        """
+        Generate a diagnostic plot for a specific well's neighborhood.
+
+        Must be called after `summarize()` has been run.
+
+        Parameters
+        ----------
+        well_i : str
+            The well identifier to plot the neighborhood for.
+
+        trajectories : pandas.DataFrame
+            Well trajectories with columns ['uwi', 'x', 'y'] (and optionally 'md').
+
+        mode : {'chain', 'dense', 'both'}, default 'both'
+            What to overlay on the plot:
+            - 'chain': Show chain edges (A→B→C→D) with distance annotations
+            - 'dense': Show all member-member pairs as light lines
+            - 'both': Show both overlays
+
+        show : bool, default True
+            If True, display the plot interactively (plt.show()).
+
+        save_path : str, optional
+            If provided, save the plot to this file path.
+
+        max_members : int, default 30
+            Maximum number of neighborhood members to include in the plot.
+
+        figsize : tuple, default (12.5, 8)
+            Figure size in inches (width, height).
+
+        dpi : int, default 160
+            Resolution for saved figure.
+
+        Raises
+        ------
+        RuntimeError
+            If called before `summarize()` has been run.
+
+        ValueError
+            If trajectories is missing required columns or well_i data.
+
+        Examples
+        --------
+        >>> summarizer = NeighborhoodSpacingSummarizer()
+        >>> result = summarizer.summarize(spacing_df, cutoff_ft=1320, ...)
+        >>> summarizer.plot_neighborhood(
+        ...     well_i="30025410040100",
+        ...     trajectories=trajectories,
+        ...     mode="chain",
+        ...     show=True,
+        ...     save_path="./debug/well_30025410040100.png"
+        ... )
+        """
+        # Check that summarize() has been called
+        if self._members is None or self._output is None:
+            raise RuntimeError(
+                "plot_neighborhood() must be called after summarize(). "
+                "No intermediate data found."
+            )
+
+        # Validate trajectories
+        if trajectories is None:
+            raise ValueError("trajectories DataFrame is required for plotting.")
+
+        need_cols = {"uwi", "x", "y"}
+        miss_t = need_cols - set(trajectories.columns)
+        if miss_t:
+            raise ValueError(f"trajectories missing columns: {sorted(miss_t)}")
+
+
+        # Helper functions
+        def _traj_lookup(uwi: str) -> Optional[pd.DataFrame]:
+            df = trajectories.loc[trajectories["uwi"].astype(str) == str(uwi)].copy()
+            return None if df.empty else df
+
+        def _midpoint_xy(df_traj: pd.DataFrame) -> Tuple[float, float]:
+            d = df_traj.sort_values("md") if "md" in df_traj.columns else df_traj
+            x0, y0 = float(d["x"].iloc[0]), float(d["y"].iloc[0])
+            x1, y1 = float(d["x"].iloc[-1]), float(d["y"].iloc[-1])
+            return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+        g = str(well_i)
+
+        # Get neighborhood members
+        mem = (
+            self._members.loc[self._members["group_i"].astype(str) == g, "member"]
+            .astype(str)
+            .drop_duplicates()
+            .tolist()
+        )
+        if not mem:
+            print(f"No neighborhood members found for well_i={g}")
+            return
+        if len(mem) > int(max_members):
+            mem = mem[: int(max_members)]
+
+        # Get survivors
+        surv_k: List[str] = []
+        if self._survivors is not None:
+            surv_k = (
+                self._survivors.loc[self._survivors["well_i"].astype(str) == g, "well_k"]
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+            surv_k = [x for x in surv_k if x in set(mem)]
+
+        # Load trajectories + midpoints
+        mids: Dict[str, Tuple[float, float]] = {}
+        trajs: Dict[str, pd.DataFrame] = {}
+        for u in mem:
+            dfu = _traj_lookup(u)
+            if dfu is None:
+                continue
+            dfu = dfu.sort_values("md") if "md" in dfu.columns else dfu
+            trajs[u] = dfu
+            mids[u] = _midpoint_xy(dfu)
+
+        if g not in trajs:
+            print(f"No trajectory data found for well_i={g}")
+            return
+
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111)
+
+        # Plot each well trajectory
+        line_by_uwi: Dict[str, any] = {}
+        for u, dfu in trajs.items():
+            x = dfu["x"].to_numpy(float)
+            y = dfu["y"].to_numpy(float)
+            lw = 2.7 if u == g else (2.0 if u in surv_k else 1.2)
+            (ln,) = ax.plot(x, y, linewidth=lw)
+            line_by_uwi[u] = ln
+
+        # Midpoints
+        for u, (mx, my) in mids.items():
+            ax.scatter([mx], [my], s=35)
+
+        # Convex hull
+        pts = np.array(list(mids.values()), dtype=float)
+        if pts.shape[0] >= 3:
+            try:
+
+                hull = ConvexHull(pts)
+                poly = pts[hull.vertices]
+                poly = np.vstack([poly, poly[0]])
+                ax.plot(poly[:, 0], poly[:, 1], linestyle="--", linewidth=1.5)
+            except Exception:
+                pass
+
+        # Cutoff circle around well_i midpoint
+        if g in mids and self._cutoff_ft is not None:
+            mx, my = mids[g]
+            hcut_i = float(self._cutoff_ft)
+            if self._ov_cut is not None and g in self._ov_cut.index:
+                v = self._ov_cut.loc[g]
+                if pd.notna(v):
+                    hcut_i = float(v)
+            ax.add_patch(
+                Circle((mx, my), radius=hcut_i, fill=False, linestyle=":", linewidth=1.5)
+            )
+
+        # Chain edges overlay
+        if mode in ("chain", "both") and self._edges_chain is not None:
+            e = self._edges_chain.loc[self._edges_chain["group_i"].astype(str) == g].copy()
+            for _, r in e.iterrows():
+                u = str(r["u"])
+                v = str(r["v"])
+                hz = r.get("hz_edge_ft", np.nan)
+                if (u in mids) and (v in mids):
+                    x1, y1 = mids[u]
+                    x2, y2 = mids[v]
+                    ax.plot([x1, x2], [y1, y2], linewidth=2.2, linestyle="--")
+                    xm, ym = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                    if pd.notna(hz):
+                        ax.text(xm, ym, f"{float(hz):.0f} ft", fontsize=8)
+
+        # Dense pairs overlay
+        if mode in ("dense", "both") and self._pairs_dense is not None:
+            p = self._pairs_dense.loc[self._pairs_dense["group_i"].astype(str) == g].copy()
+            if len(p) > 160:
+                p = p.nsmallest(160, "horizontal_dist")
+            for _, r in p.iterrows():
+                u = str(r["pair_u"])
+                v = str(r["pair_v"])
+                if (u in mids) and (v in mids):
+                    x1, y1 = mids[u]
+                    x2, y2 = mids[v]
+                    ax.plot([x1, x2], [y1, y2], linewidth=0.9, alpha=0.22)
+
+        # Title from output
+        if self._output is not None:
+            row = self._output.loc[self._output["well_i"].astype(str) == g]
+            if not row.empty:
+                r0 = row.iloc[0].to_dict()
+                title = (
+                    f"Neighborhood S(i) diagnostics for well_i={g}\n"
+                    f"group_size={r0.get('group_size')}, survivors(i->k)={r0.get('survivor_rows_i_to_k')}"
+                )
+                if "member_member_rows_found" in r0 and pd.notna(r0.get("member_member_rows_found")):
+                    title += (
+                        f", member_member_rows_found={int(r0.get('member_member_rows_found'))}, "
+                        f"candidate_pair_density={r0.get('candidate_pair_density'):.2f}"
+                        if pd.notna(r0.get('candidate_pair_density')) else ""
+                    )
+                ax.set_title(title)
+
+        ax.set_xlabel("UTM Easting (ft)")
+        ax.set_ylabel("UTM Northing (ft)")
+        ax.axis("equal")
+
+        # Side legend
+        legend_order = [g] + [u for u in mem if u != g and u in line_by_uwi]
+        handles = [line_by_uwi[u] for u in legend_order if u in line_by_uwi]
+
+        labels = []
+        surv_k_set: Set[str] = set(surv_k)
+        for u in legend_order:
+            if u not in line_by_uwi:
+                continue
+            tag = "i" if u == g else ("k*" if u in surv_k_set else "k")
+            labels.append(f"{tag}: {u}")
+
+        fig.subplots_adjust(right=0.72)
+        ax.legend(
+            handles,
+            labels,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=True,
+            fontsize=8,
+            title="Legend (color → well)",
+            title_fontsize=9,
+        )
+
+        if save_path is not None:
+            save_dir = os.path.dirname(save_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+        if show:
+            plt.show()
+        
+        plt.close(fig)
+
+    def plot_multiple_neighborhoods(
+        self,
+        well_ids: List[str],
+        trajectories: pd.DataFrame,
+        *,
+        save_dir: str,
+        mode: PlotMode = "both",
+        max_members: int = 30,
+        figsize: Tuple[float, float] = (12.5, 8),
+        dpi: int = 160,
+    ) -> None:
+        """
+        Generate diagnostic plots for multiple wells, saving each to a file.
+
+        Convenience method that calls `plot_neighborhood()` for each well.
+
+        Parameters
+        ----------
+        well_ids : list of str
+            List of well identifiers to plot.
+
+        trajectories : pandas.DataFrame
+            Well trajectories with columns ['uwi', 'x', 'y'].
+
+        save_dir : str
+            Directory to save plot files (created if doesn't exist).
+
+        mode : {'chain', 'dense', 'both'}, default 'both'
+            What to overlay on the plots.
+
+        max_members : int, default 30
+            Maximum number of neighborhood members per plot.
+
+        figsize : tuple, default (12.5, 8)
+            Figure size in inches.
+
+        dpi : int, default 160
+            Resolution for saved figures.
+
+        Examples
+        --------
+        >>> summarizer.plot_multiple_neighborhoods(
+        ...     well_ids=["well_001", "well_002", "well_003"],
+        ...     trajectories=trajectories,
+        ...     save_dir="./debug_plots/",
+        ...     mode="chain"
+        ... )
+        """
+        os.makedirs(save_dir, exist_ok=True)
+
+        for well_id in well_ids:
+            save_path = os.path.join(save_dir, f"neighborhood_{well_id}.png")
+            try:
+                self.plot_neighborhood(
+                    well_i=well_id,
+                    trajectories=trajectories,
+                    mode=mode,
+                    show=False,
+                    save_path=save_path,
+                    max_members=max_members,
+                    figsize=figsize,
+                    dpi=dpi,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to plot well_i={well_id}: {e}")

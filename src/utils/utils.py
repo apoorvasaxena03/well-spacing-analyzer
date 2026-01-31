@@ -227,6 +227,135 @@ def read_excel_with_mapper(
 
     return df
 
+def drop_duplicates_keep_max_last_prod(
+    header_df,
+    uwi_col: str = "uwi",
+    last_prod_col: str = "last_prod_date",
+) -> "pd.DataFrame":
+    """
+    For duplicated UWIs in the header dataframe, keep exactly one row per UWI:
+      - If at least one row has a non-null last_prod_date, keep one row with the maximum last_prod_date.
+      - If all rows for a UWI have null last_prod_date, keep the first occurrence for that UWI.
+
+    The function is implemented using groupby/transform and vectorized filtering so it is efficient
+    for large dataframes.
+
+    Parameters
+    ----------
+    header_df : pd.DataFrame
+        Header dataframe containing UWI and last production date columns.
+    uwi_col : str, default "uwi"
+        Column name for UWI.
+    last_prod_col : str, default "last_prod_date"
+        Column name for the last production date (datetime-like). Non-datetime values will be coerced.
+
+    Returns
+    -------
+    pd.DataFrame
+        A new dataframe with duplicates by UWI removed, keeping one row per UWI per rules above.
+        Original dataframe index is preserved (rows returned in ascending index order).
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> df = pd.DataFrame({
+    ...     "uwi": ["A","A","B","B","C"],
+    ...     "last_prod_date": [pd.Timestamp("2021-01-01"), pd.Timestamp("2022-01-01"), pd.NaT, pd.Timestamp("2019-06-01"), pd.NaT],
+    ...     "value": [1,2,3,4,5]
+    ... })
+    >>> drop_duplicates_keep_max_last_prod(df)
+         uwi last_prod_date  value
+    1    A    2022-01-01       2
+    3    B    2019-06-01       4
+    4    C           NaT       5
+
+    Notes
+    -----
+    - Ties on last_prod_date (multiple rows with same max date) keep the first occurrence by original index.
+    - The function coerces last_prod_col to datetime (errors -> NaT) to ensure robust comparisons.
+    """
+    if uwi_col not in header_df.columns:
+        raise KeyError(f"UWI column '{uwi_col}' not found in dataframe")
+    if last_prod_col not in header_df.columns:
+        raise KeyError(f"last production column '{last_prod_col}' not found in dataframe")
+
+    # Work on a view; preserve original index for ordering
+    df = header_df
+
+    # Ensure datetime-like (coerce invalid values to NaT)
+    last_prod = pd.to_datetime(df[last_prod_col], errors="coerce")
+
+    # group-wise maximum (Timestamp or NaT)
+    group_max = last_prod.groupby(df[uwi_col]).transform("max")
+
+    # Rows that equal the group max (covers groups with at least one non-null value)
+    mask_is_max = last_prod == group_max
+    max_candidates = df[mask_is_max].drop_duplicates(subset=uwi_col, keep="first")
+
+    # Groups where the group's max is NaT (all rows in that group have NaT)
+    groups_all_na_mask = group_max.isna()
+    first_of_all_na = df[groups_all_na_mask].drop_duplicates(subset=uwi_col, keep="first")
+
+    # Combine indices to keep and return rows in original index order
+    keep_idx = pd.Index(list(max_candidates.index) + list(first_of_all_na.index)).sort_values()
+    return df.loc[keep_idx].copy()
+
+def add_bench_columns_to_spacing(
+    df_spacing: pd.DataFrame,
+    df_header: pd.DataFrame,
+    reorder_columns_func,
+) -> pd.DataFrame:
+    """
+    Adds 'bench_i' and 'bench_k' columns to the spacing DataFrame by mapping well IDs to their benches,
+    and reorders columns for better readability.
+
+    Parameters
+    ----------
+    df_spacing : pd.DataFrame
+        DataFrame containing well spacing results with columns 'well_i' and 'well_k'.
+    df_header : pd.DataFrame
+        DataFrame containing well header information with columns 'uwi' and 'bench'.
+    reorder_columns_func : callable
+        Function to reorder columns in a DataFrame. Should accept arguments:
+        - df: DataFrame to reorder
+        - columns_to_move: list of columns to move
+        - reference_column: column after which to insert the moved columns
+
+    Returns
+    -------
+    pd.DataFrame
+        The input spacing DataFrame with 'bench_i' and 'bench_k' columns added and columns reordered.
+
+    Examples
+    --------
+    >>> df_header = pd.DataFrame({'uwi': ['A', 'B'], 'bench': ['Bench1', 'Bench2']})
+    >>> df_spacing = pd.DataFrame({'well_i': ['A', 'B'], 'well_k': ['B', 'A'], '3D_dist': [100, 200]})
+    >>> def reorder_columns(df, columns_to_move, reference_column):
+    ...     cols = list(df.columns)
+    ...     for col in columns_to_move:
+    ...         cols.remove(col)
+    ...     ref_idx = cols.index(reference_column) + 1
+    ...     for col in reversed(columns_to_move):
+    ...         cols.insert(ref_idx, col)
+    ...     return df[cols]
+    >>> result = add_bench_columns_to_spacing(df_spacing, df_header, reorder_columns)
+    >>> result[['well_i', 'bench_i', 'well_k', 'bench_k']]
+      well_i  bench_i well_k  bench_k
+    0      A  Bench1      B   Bench2
+    1      B  Bench2      A   Bench1
+    """
+    bench_map = df_header.set_index("uwi")["bench"]
+    df_spacing = df_spacing.copy()
+    df_spacing["bench_i"] = df_spacing["well_i"].map(bench_map)
+    df_spacing["bench_k"] = df_spacing["well_k"].map(bench_map)
+    df_spacing = reorder_columns_func(df=df_spacing, columns_to_move=['bench_i', 'bench_k'], reference_column='well_k')
+    df_spacing = reorder_columns_func(
+        df=df_spacing,
+        columns_to_move=['direction_to_k_from_i_axis', 'overlap_pct_i', 'overlap_pct_k', 'overlap_len_common_ft', 'LL_i', 'LL_k'],
+        reference_column='3D_dist'
+    )
+    return df_spacing
+
 #%% BG_RCAT Computation
 
 def compute_bg_rcat(

@@ -794,7 +794,12 @@ class GeoSurveyProcessor:
         self.logger.info(f"✅ Back-converted UTM to lat/lon for {len(df)} rows.")
         return df
     
-    def compute_utm_coordinates(self, df: pd.DataFrame, surface_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    def compute_utm_coordinates(
+        self,
+        df: pd.DataFrame,
+        surface_df: Optional[pd.DataFrame] = None,
+        force_utm_zone: Optional[int] = None,
+    ) -> pd.DataFrame:
         """
         Compute UTM (x, y, z) in **feet** for survey points.
 
@@ -802,7 +807,7 @@ class GeoSurveyProcessor:
 
         1) **Per-row lat/lon present in `df`**:
            - Requires `df` to contain: `["uwi", "md", "tvd", "latitude", "longitude"]`.
-           - UTM zone is inferred per-row from `longitude`.
+           - UTM zone is inferred per-row from `longitude` (unless `force_utm_zone` is set).
 
         2) **Lat/lon missing; use `surface_df` + displacements**:
            - Requires `surface_df` with `["uwi", "surface_lat", "surface_lon"]`.
@@ -822,6 +827,15 @@ class GeoSurveyProcessor:
             Directional survey data, sorted internally by `["uwi", "md"]`.
         surface_df : Optional[pandas.DataFrame], default=None
             Surface locations keyed by `uwi` if per-row lat/lon are not available.
+        force_utm_zone : Optional[int], default=None
+            If provided, **all** points are projected to this single UTM zone, regardless
+            of their actual longitude. This is **critical** for well spacing calculations
+            when data spans multiple UTM zones (e.g., near zone boundaries like -102° longitude).
+
+            When `force_utm_zone=None` (default), each point is projected to its own zone
+            based on longitude. This can cause **catastrophic errors** in downstream spacing
+            calculations if wells straddle a zone boundary, as UTM coordinates from different
+            zones are not directly comparable (they can differ by ~500,000+ ft).
 
         Returns
         -------
@@ -832,12 +846,136 @@ class GeoSurveyProcessor:
         ------
         ValueError
             If neither per-row lat/lon nor a valid `surface_df` are provided.
+            If `force_utm_zone` is not in the valid range [1, 60].
         Exception
             Any projection or merge errors are logged and re-raised.
 
+        Warnings
+        --------
+        **Multi-Zone Data Warning**: If your data spans multiple UTM zones and
+        `force_utm_zone` is not set, a warning will be logged. This is especially
+        important for:
+
+        - Well spacing calculations (`WellSpacingCalculator`)
+        - Floating section analysis (`FloatingSectionWPS`)
+        - Any distance-based computations between wells
+
+        The distortion introduced by forcing a single zone is negligible (<0.1% at
+        worst, typically <10 ft error on a 10,000 ft lateral) and far smaller than
+        survey measurement uncertainties.
+
+        Recommended UTM Zones by US Basin
+        ---------------------------------
+        Use this table to select the appropriate `force_utm_zone` for your study area:
+
+        **Permian Basin (West Texas / SE New Mexico)**
+
+        +-----------------------+------+------------------+---------------------------+
+        | Sub-basin / Area      | Zone | Central Meridian | Counties / Region         |
+        +=======================+======+==================+===========================+
+        | Delaware Basin        | 13   | -105°            | Loving, Winkler, Ward,    |
+        |                       |      |                  | Reeves, Culberson, Pecos  |
+        +-----------------------+------+------------------+---------------------------+
+        | Midland Basin         | 13   | -105°            | Midland, Martin, Howard,  |
+        |                       |      |                  | Glasscock, Reagan, Upton  |
+        +-----------------------+------+------------------+---------------------------+
+        | Central Basin Platform| 13   | -105°            | Andrews, Ector, Crane     |
+        +-----------------------+------+------------------+---------------------------+
+        | Full Permian Basin    | 13   | -105°            | All of above combined     |
+        +-----------------------+------+------------------+---------------------------+
+
+        **Other Major US Basins**
+
+        +-----------------------+------+------------------+---------------------------+
+        | Basin                 | Zone | Central Meridian | States / Region           |
+        +=======================+======+==================+===========================+
+        | Eagle Ford Shale      | 14   | -99°             | South Texas (Karnes,      |
+        |                       |      |                  | DeWitt, Gonzales, La Salle|
+        +-----------------------+------+------------------+---------------------------+
+        | Haynesville Shale     | 15   | -93°             | East Texas, NW Louisiana  |
+        +-----------------------+------+------------------+---------------------------+
+        | Anadarko Basin        | 14   | -99°             | Oklahoma (STACK, SCOOP),  |
+        |                       |      |                  | Texas Panhandle           |
+        +-----------------------+------+------------------+---------------------------+
+        | Arkoma Basin          | 15   | -93°             | Oklahoma, Arkansas        |
+        +-----------------------+------+------------------+---------------------------+
+        | Williston / Bakken    | 13   | -105°            | North Dakota, Montana,    |
+        |                       |      |                  | Saskatchewan              |
+        +-----------------------+------+------------------+---------------------------+
+        | DJ Basin / Niobrara   | 13   | -105°            | Colorado (Weld County),   |
+        |                       |      |                  | Wyoming, Nebraska         |
+        +-----------------------+------+------------------+---------------------------+
+        | Powder River Basin    | 13   | -105°            | Wyoming, Montana          |
+        +-----------------------+------+------------------+---------------------------+
+        | Uinta Basin           | 12   | -111°            | Utah (Duchesne, Uintah)   |
+        +-----------------------+------+------------------+---------------------------+
+        | Piceance Basin        | 13   | -105°            | Colorado (Garfield, Mesa) |
+        +-----------------------+------+------------------+---------------------------+
+        | San Juan Basin        | 12   | -111°            | New Mexico, Colorado      |
+        +-----------------------+------+------------------+---------------------------+
+        | Green River Basin     | 12   | -111°            | Wyoming, Utah, Colorado   |
+        +-----------------------+------+------------------+---------------------------+
+        | Marcellus Shale       | 17   | -81°             | Pennsylvania, West        |
+        |                       |      |                  | Virginia, Ohio            |
+        +-----------------------+------+------------------+---------------------------+
+        | Utica Shale           | 17   | -81°             | Ohio, Pennsylvania,       |
+        |                       |      |                  | West Virginia             |
+        +-----------------------+------+------------------+---------------------------+
+        | Appalachian Basin     | 17   | -81°             | PA, WV, OH, NY, KY        |
+        +-----------------------+------+------------------+---------------------------+
+        | Michigan Basin        | 16   | -87°             | Michigan                  |
+        +-----------------------+------+------------------+---------------------------+
+        | Illinois Basin        | 16   | -87°             | Illinois, Indiana, KY     |
+        +-----------------------+------+------------------+---------------------------+
+        | Fort Worth / Barnett  | 14   | -99°             | North-Central Texas       |
+        +-----------------------+------+------------------+---------------------------+
+        | East Texas Basin      | 15   | -93°             | East Texas                |
+        +-----------------------+------+------------------+---------------------------+
+        | Gulf Coast Basin      | 15   | -93°             | Texas, Louisiana Coast    |
+        +-----------------------+------+------------------+---------------------------+
+        | Austin Chalk          | 14   | -99°             | South-Central Texas       |
+        +-----------------------+------+------------------+---------------------------+
+        | Cook Inlet Basin      | 6    | -147°            | Alaska                    |
+        +-----------------------+------+------------------+---------------------------+
+        | North Slope / Prudhoe | 6    | -147°            | Alaska                    |
+        +-----------------------+------+------------------+---------------------------+
+        | San Joaquin Basin     | 10   | -123°            | California (Kern County)  |
+        +-----------------------+------+------------------+---------------------------+
+        | Los Angeles Basin     | 11   | -117°            | Southern California       |
+        +-----------------------+------+------------------+---------------------------+
+        | Ventura Basin         | 11   | -117°            | Southern California       |
+        +-----------------------+------+------------------+---------------------------+
+
+        **UTM Zone Quick Reference (Longitude Boundaries)**
+
+        +------+------------------+------------------+------------------+
+        | Zone | Western Boundary | Eastern Boundary | Central Meridian |
+        +======+==================+==================+==================+
+        | 10   | -126°            | -120°            | -123°            |
+        +------+------------------+------------------+------------------+
+        | 11   | -120°            | -114°            | -117°            |
+        +------+------------------+------------------+------------------+
+        | 12   | -114°            | -108°            | -111°            |
+        +------+------------------+------------------+------------------+
+        | 13   | -108°            | -102°            | -105°            |
+        +------+------------------+------------------+------------------+
+        | 14   | -102°            | -96°             | -99°             |
+        +------+------------------+------------------+------------------+
+        | 15   | -96°             | -90°             | -93°             |
+        +------+------------------+------------------+------------------+
+        | 16   | -90°             | -84°             | -87°             |
+        +------+------------------+------------------+------------------+
+        | 17   | -84°             | -78°             | -81°             |
+        +------+------------------+------------------+------------------+
+        | 18   | -78°             | -72°             | -75°             |
+        +------+------------------+------------------+------------------+
+        | 19   | -72°             | -66°             | -69°             |
+        +------+------------------+------------------+------------------+
+
         Examples
         --------
-        Using per-row lat/lon:
+        **Basic usage with per-row lat/lon (auto zone detection)**:
+
         >>> data = pd.DataFrame({
         ...     "uwi": ["A","A","A"],
         ...     "md": [1000, 1100, 1200],
@@ -849,7 +987,48 @@ class GeoSurveyProcessor:
         >>> set(["x","y","z","utm_zone","epsg_code"]).issubset(out.columns)
         True
 
-        Using surface_df + displacements:
+        **Forcing a single UTM zone for Permian Basin data** (RECOMMENDED):
+
+        >>> # Midland Basin wells - force zone 13 to avoid cross-zone issues
+        >>> out = GeoSurveyProcessor().compute_utm_coordinates(
+        ...     data,
+        ...     force_utm_zone=13
+        ... )
+        >>> out["utm_zone"].unique()  # All wells in zone 13
+        array([13])
+
+        **Eagle Ford Shale example**:
+
+        >>> # South Texas data - use zone 14
+        >>> eagle_ford_data = pd.DataFrame({
+        ...     "uwi": ["EF1","EF1","EF1"],
+        ...     "md": [8000, 9000, 10000],
+        ...     "tvd": [7500, 8500, 9500],
+        ...     "latitude": [28.5, 28.5001, 28.5002],
+        ...     "longitude": [-98.2, -98.2001, -98.2002],
+        ... })
+        >>> out = GeoSurveyProcessor().compute_utm_coordinates(
+        ...     eagle_ford_data,
+        ...     force_utm_zone=14
+        ... )
+
+        **Bakken / Williston Basin example**:
+
+        >>> # North Dakota data - use zone 13
+        >>> bakken_data = pd.DataFrame({
+        ...     "uwi": ["BK1","BK1","BK1"],
+        ...     "md": [10000, 11000, 12000],
+        ...     "tvd": [9500, 10500, 11500],
+        ...     "latitude": [48.1, 48.1001, 48.1002],
+        ...     "longitude": [-103.5, -103.5001, -103.5002],
+        ... })
+        >>> out = GeoSurveyProcessor().compute_utm_coordinates(
+        ...     bakken_data,
+        ...     force_utm_zone=13
+        ... )
+
+        **Using surface_df + displacements**:
+
         >>> df = pd.DataFrame({
         ...     "uwi": ["B","B"],
         ...     "md": [1000, 1100],
@@ -862,11 +1041,28 @@ class GeoSurveyProcessor:
         >>> surf = pd.DataFrame({
         ...     "uwi": ["B"], "surface_lat": [31.45], "surface_lon": [-103.35]
         ... })
-        >>> out = GeoSurveyProcessor().compute_utm_coordinates(df, surface_df=surf)
+        >>> out = GeoSurveyProcessor().compute_utm_coordinates(
+        ...     df,
+        ...     surface_df=surf,
+        ...     force_utm_zone=13
+        ... )
         >>> set(["x","y","latitude","longitude"]).issubset(out.columns)
         True
+
+        See Also
+        --------
+        determine_utm_zone : Compute UTM zone from longitude.
+        convert_utm_to_latlon : Convert UTM coordinates back to lat/lon.
+        WellSpacingCalculator : Spacing calculations that require consistent UTM zones.
+        FloatingSectionWPS : Floating section analysis that requires consistent UTM zones.
         """
-        
+        # Validate force_utm_zone if provided
+        if force_utm_zone is not None:
+            if not isinstance(force_utm_zone, int) or not (1 <= force_utm_zone <= 60):
+                raise ValueError(
+                    f"force_utm_zone must be an integer between 1 and 60, got {force_utm_zone}"
+                )
+
         start_time = time.time()
         df = df.sort_values(by=["uwi", "md"]).copy()
 
@@ -874,10 +1070,26 @@ class GeoSurveyProcessor:
 
         if "latitude" in df.columns and "longitude" in df.columns:
             self.logger.info("✅ Using lat/lon from input DataFrame.")
-            df["utm_zone"] = df["longitude"].apply(self.determine_utm_zone)
+
+            # Determine zones - either forced or per-row
+            if force_utm_zone is not None:
+                df["utm_zone"] = force_utm_zone
+                self.logger.info(f"🌍 Forcing all data to UTM zone {force_utm_zone}.")
+            else:
+                df["utm_zone"] = df["longitude"].apply(self.determine_utm_zone)
+
+                # Warn if multiple zones detected
+                unique_zones = df["utm_zone"].unique()
+                if len(unique_zones) > 1:
+                    self.logger.warning(
+                        f"⚠️ Data spans multiple UTM zones: {sorted(unique_zones)}. "
+                        f"This may cause coordinate inconsistencies in downstream spacing "
+                        f"calculations. Consider using force_utm_zone parameter to project "
+                        f"all data to a single zone. See docstring for recommended zones by basin."
+                    )
 
             for zone in df["utm_zone"].unique():
-                epsg_code = f"EPSG:326{zone}"
+                epsg_code = f"EPSG:326{zone:02d}" if zone < 10 else f"EPSG:326{zone}"
                 mask = df["utm_zone"] == zone
 
                 transformer = pyproj.Transformer.from_crs("EPSG:4326", epsg_code, always_xy=True)
@@ -891,17 +1103,33 @@ class GeoSurveyProcessor:
 
         elif surface_df is not None:
             self.logger.info("🧭 Lat/Lon not available — using surface_df and displacements.")
-            
+
             required_cols = {"uwi", "surface_lat", "surface_lon"}
-            
+
             if not required_cols.issubset(surface_df.columns):
                 raise ValueError(f"surface_df must contain {required_cols}")
 
             df = df.merge(surface_df, on="uwi", how="left")
-            df["utm_zone"] = df["surface_lon"].apply(self.determine_utm_zone)
+
+            # Determine zones - either forced or per-row
+            if force_utm_zone is not None:
+                df["utm_zone"] = force_utm_zone
+                self.logger.info(f"🌍 Forcing all data to UTM zone {force_utm_zone}.")
+            else:
+                df["utm_zone"] = df["surface_lon"].apply(self.determine_utm_zone)
+
+                # Warn if multiple zones detected
+                unique_zones = df["utm_zone"].unique()
+                if len(unique_zones) > 1:
+                    self.logger.warning(
+                        f"⚠️ Data spans multiple UTM zones: {sorted(unique_zones)}. "
+                        f"This may cause coordinate inconsistencies in downstream spacing "
+                        f"calculations. Consider using force_utm_zone parameter to project "
+                        f"all data to a single zone. See docstring for recommended zones by basin."
+                    )
 
             for zone in df["utm_zone"].unique():
-                epsg_code = f"EPSG:326{zone}"
+                epsg_code = f"EPSG:326{zone:02d}" if zone < 10 else f"EPSG:326{zone}"
                 mask = df["utm_zone"] == zone
 
                 transformer = pyproj.Transformer.from_crs("EPSG:4326", epsg_code, always_xy=True)

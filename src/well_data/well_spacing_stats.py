@@ -903,9 +903,22 @@ class WellSpacingCalculator:
         Vectorized nearest point from many points P (n,2) to a polyline X (m,2).
         Returns (d, j, t) where:
         d: (n,) distances,
-        j: (n,) segment indices (X[j] -> X[j+1]),
-        t: (n,) segment parameters in [0,1].
+        j: (n,) segment indices (X[j] -> X[j+1]) or -1 if no segments,
+        t: (n,) segment parameters in [0,1] or NaN if undefined.
         """
+        m = X.shape[0]
+        n = P.shape[0]
+        # Degenerate: no segments
+        if m == 0:
+            return np.full(n, np.nan), np.full(n, -1, dtype=int), np.full(n, np.nan)
+        # Degenerate: single-point "polyline" — nearest to that point
+        if m == 1:
+            diff = P - X[0]
+            d = np.sqrt((diff ** 2).sum(axis=1))
+            j = np.zeros(n, dtype=int)
+            t_sel = np.zeros(n, dtype=float)
+            return d, j, t_sel
+
         A = X[:-1]                  # (m-1,2)
         B = X[1:]                   # (m-1,2)
         AB = B - A                  # (m-1,2)
@@ -1437,8 +1450,14 @@ class WellSpacingCalculator:
             lon_k = df_k["longitude"].to_numpy(float)
             lat_i_s = self._interp_attr_by_arclength(Xi_utm, lat_i, s_targets)
             lon_i_s = self._interp_attr_by_arclength(Xi_utm, lon_i, s_targets)
-            lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
-            lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
+            # Guard: if well k has only 1 survey point, we cannot interpolate along segments
+            if lat_k.size > 1:
+                lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
+                lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
+            else:
+                # Single point: use that point for all samples
+                lat_k_s = np.full_like(lat_i_s, lat_k[0])
+                lon_k_s = np.full_like(lon_i_s, lon_k[0])
             dir_mode_axis, dir_conf_axis, dir_dist_axis = self._axis_constrained_direction_from_pairs(
                 lat_i_s, lon_i_s, lat_k_s, lon_k_s, want_axis=dir_axis,
                 deadband=0.15, tie_tol=0.05
@@ -1453,12 +1472,12 @@ class WellSpacingCalculator:
         min_d = float(d.min()) if d.size else np.nan
 
         mean_windowed = np.nan
-        if use_windowed_mean and d.size:
-            idx_min = int(np.argmin(d))
+        if use_windowed_mean and d.size and np.isfinite(d).any():
+            idx_min = int(np.nanargmin(d))
             s0 = s_targets[idx_min]
             mask = (s_targets >= s0 - window_ft) & (s_targets <= s0 + window_ft)
             if mask.any():
-                mean_windowed = float(d[mask].mean())
+                mean_windowed = float(np.nanmean(d[mask]))
 
         dist3d = float(np.hypot(mean_d, vertical))
 
@@ -1488,9 +1507,14 @@ class WellSpacingCalculator:
         )
 
         if want_artifacts:
-            # nearest targets Q on k
-            A = Xk_utm[:-1]; B = Xk_utm[1:]; AB = B - A
-            Q = A[j_arr] + t_arr[:, None]*(AB[j_arr])
+            # nearest targets Q on k (robust to degenerate k polylines)
+            if Xk_utm.shape[0] >= 2:
+                A = Xk_utm[:-1]; B = Xk_utm[1:]; AB = B - A
+                Q = A[j_arr] + t_arr[:, None]*(AB[j_arr])
+            elif Xk_utm.shape[0] == 1:
+                Q = np.repeat(Xk_utm[0][None, :], len(Pi), axis=0)
+            else:
+                Q = np.empty((0, 2))
 
             artifacts.s_targets = s_targets
             artifacts.Pi = Pi
@@ -3231,7 +3255,6 @@ class DirectionalBenchNeighbors:
         if missing_h:
             raise ValueError(f"header_df missing required columns: {sorted(missing_h)}")
 
-
 #%% # ==================== Floating Section WPS ====================
 
 Orientation = Literal["cardinal", "i_frame", "corridor"]
@@ -4264,6 +4287,8 @@ f"""# Floating Section Diagnostics
 
         return out_paths
     
+
+
 #%% # ======================= Average Spacing Calculator ======================= #
 """
 Average Spacing Calculator.

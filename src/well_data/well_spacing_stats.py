@@ -12,28 +12,108 @@ import numpy as np
 
 import math
 
-from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable
+from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, Iterable, Set
 
 from tqdm import tqdm 
 
 from joblib import Parallel, delayed 
 
 from matplotlib import pyplot as plt 
+from matplotlib.patches import Circle
 
 from pyproj import Geod 
 
 from dataclasses import dataclass 
 from enum import Enum, auto
 
+from scipy.spatial import ConvexHull
+
 #%% # ==================== Well Spacing Calculator ====================
 
 class AlignmentType(Enum):
+    """
+    Classification of well pair alignment based on the angle between their lateral axes.
+
+    Values
+    ------
+    PARALLEL_LIKE : Wells are roughly parallel (angle <= theta_parallel_deg, typically 25°)
+    OBLIQUE : Wells are at an intermediate angle (between parallel and perpendicular thresholds)
+    PERPENDICULAR : Wells are roughly perpendicular (angle >= theta_perp_deg, typically 65°)
+    MISALIGNED : Wells that don't fit other categories (used when reject_misaligned=True)
+    """
     PARALLEL_LIKE = auto()
     OBLIQUE = auto()
     PERPENDICULAR = auto()
     MISALIGNED = auto()
+
+
 @dataclass
 class SpacingResult:
+    """
+    Container for well-pair spacing metrics computed by WellSpacingCalculator.
+
+    This dataclass holds all computed metrics for a single (well_i, well_k) pair,
+    including spacing distances, overlap metrics, alignment classification, and
+    directional information.
+
+    Attributes
+    ----------
+    well_i, well_k : Any
+        Unique identifiers for the well pair.
+    horizontal_dist : float
+        Mean horizontal spacing (ft). For parallel-like pairs: crossline mean |Δy(x)|.
+        For oblique/perp: mean nearest-projection distance.
+    horizontal_dist_median : float
+        Median horizontal spacing (ft).
+    vertical_dist : float
+        Absolute vertical separation between well midpoints (ft).
+    dist3d : float
+        3D distance: sqrt(horizontal_dist² + vertical_dist²) (ft).
+    overlap_len_common_ft : float
+        Length of lateral overlap in i-frame (ft). NaN for oblique/perp pairs.
+    LL_i, LL_k : float
+        Lateral lengths of well_i and well_k respectively (ft).
+    overlap_pct_i, overlap_pct_k : float
+        Overlap length as percentage of each well's lateral (0-1). NaN for oblique/perp.
+    n_samples : int
+        Number of sample points used in spacing calculation.
+    dy_p5 : float
+        5th percentile of crossline distances (ft). Used as quality filter.
+    angle_deg : float
+        Angle between well lateral axes (degrees, 0-90).
+    pair_alignment : str
+        Classification: 'parallel_like', 'oblique', 'perpendicular', or 'misaligned'.
+    min_distance_ft : float
+        Minimum nearest-projection distance (ft). For oblique/perp only; NaN for parallel.
+    mean_windowed_ft : float
+        Mean distance in ±window_ft around closest approach (ft). For oblique/perp only.
+    reject_reason : str
+        If pair was rejected, reason string (e.g., 'no_overlap_x', 'coarse_far'). Empty if valid.
+    direction_axis : str
+        The axis used for direction classification ('EW' or 'NS').
+    direction_to_k_from_i_axis : str
+        Cardinal direction from i to k constrained to direction_axis ('E','W','N', or 'S').
+    direction_axis_confidence : float
+        Confidence score for direction classification (0-1).
+    direction_axis_distribution : str
+        Distribution of directional votes (e.g., 'E:0.83,W:0.17').
+    drill_direction_i, drill_direction_k : str
+        Drill direction classification for each well ('EW' or 'NS').
+    axis_forced : bool
+        Whether direction was forced to axis (always True in current implementation).
+    contact_threshold_ft : float
+        Distance threshold T used for contact metrics (ft). For oblique/perp only.
+    contact_len_i_ft : float
+        Length of well_i within T ft of well_k (ft). For oblique/perp only.
+    contact_pct_i : float
+        contact_len_i_ft as percentage of LL_i (0-1). For oblique/perp only.
+    contact_len_i_interior_ft : float
+        Contact length excluding endpoints (interior only). For oblique/perp only.
+    contact_pct_i_interior : float
+        Interior contact as percentage of LL_i (0-1). For oblique/perp only.
+    proj_coverage_i_pct : float
+        Percentage of well_i samples with valid interior projection onto well_k (0-1).
+    """
     # core identifiers
     well_i: Any
     well_k: Any
@@ -82,6 +162,50 @@ class SpacingResult:
     proj_coverage_i_pct: float = float("nan")
 @dataclass
 class PairArtifacts:
+    """
+    Container for intermediate computation artifacts used in debug visualizations.
+
+    This dataclass stores arrays and metadata generated during spacing calculations
+    that are useful for diagnostic plots (e.g., debug_pair_spacing). Most fields
+    are None unless want_artifacts=True is passed to the computation method.
+
+    Attributes (Common)
+    -------------------
+    Xi_utm, Xk_utm : np.ndarray or None
+        Full-resolution UTM coordinates for well_i and well_k. Shape: (N, 2).
+    Xi_if, Xk_if : np.ndarray or None
+        Coordinates projected into well_i's local frame. Shape: (N, 2).
+    dir_axis : str or None
+        Direction axis used ('EW' or 'NS').
+    has_latlon : bool
+        Whether lat/lon coordinates were available for geodetic calculations.
+
+    Attributes (Parallel-like pairs)
+    --------------------------------
+    overlap_band : Tuple[float, float] or None
+        (x_lo, x_hi) bounds of the overlap region in i-frame coordinates.
+    Xi_clip, Xk_clip : np.ndarray or None
+        Clipped polylines within the overlap band. Shape: (M, 2).
+    xgrid : np.ndarray or None
+        X-coordinates of sample stations in overlap region.
+    yi, yk : np.ndarray or None
+        Interpolated y-coordinates at each x-station for wells i and k.
+    Xi_utml, Xk_utml : np.ndarray or None
+        UTM coordinates of sample points for quiver/arrow plots. Shape: (N, 2).
+    theta_rose : np.ndarray or None
+        Azimuth angles (radians) for polar rose plot of i→k directions.
+
+    Attributes (Oblique/Perpendicular pairs)
+    ----------------------------------------
+    s_targets : np.ndarray or None
+        Arclength sample positions along well_i (ft).
+    Pi : np.ndarray or None
+        Sample points on well_i in UTM coordinates. Shape: (N, 2).
+    Q : np.ndarray or None
+        Nearest points on well_k for each sample in Pi. Shape: (N, 2).
+    d_series : np.ndarray or None
+        Distance from each Pi sample to its nearest point Q on well_k (ft).
+    """
     # Always useful
     Xi_utm: Optional[np.ndarray] = None
     Xk_utm: Optional[np.ndarray] = None
@@ -118,6 +242,36 @@ class WellSpacingCalculator:
     _DIR4_LABELS: ClassVar[np.ndarray] = np.array(["N", "E", "S", "W"], dtype=object)
 
     def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame]):
+        """
+        Initialize WellSpacingCalculator with well trajectory data.
+
+        Parameters
+        ----------
+        trajectories : Union[Dict[str, pd.DataFrame], pd.DataFrame]
+            Well trajectory data in one of two formats:
+
+            1. DataFrame (long format): Must contain columns:
+               - 'uwi' : str, unique well identifier
+               - 'md' : float, measured depth (ft)
+               - 'x', 'y' : float, UTM coordinates (ft)
+               - 'tvd' : float, true vertical depth (ft)
+               - 'latitude', 'longitude' : float, optional for geodetic direction
+               - 'azimuth' : float, optional for drill direction classification
+
+            2. Dict[str, pd.DataFrame]: Mapping of uwi -> trajectory DataFrame,
+               where each DataFrame has the columns above (except 'uwi').
+
+        Raises
+        ------
+        ValueError
+            If trajectories is a DataFrame without 'uwi' column, or invalid type.
+
+        Notes
+        -----
+        The calculator stores trajectories in both formats internally:
+        - self.trajectories : Dict[str, pd.DataFrame] for fast per-well lookups
+        - self._trajectory_df : pd.DataFrame for vectorized operations
+        """
         if isinstance(trajectories, pd.DataFrame):
             if "uwi" not in trajectories.columns:
                 raise ValueError("Trajectory DataFrame must contain 'uwi' column.")
@@ -392,7 +546,33 @@ class WellSpacingCalculator:
         return combined_df
 
     def _filter_close_pairs(self, lat: np.ndarray, lon: np.ndarray, max_distance_miles: float = 20.0) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prefilter well pairs by approximate geographic distance to reduce computation.
 
+        Uses a fast planar approximation (lat/lon degree-to-miles conversion) to identify
+        pairs within max_distance_miles. This is much faster than computing exact geodetic
+        distances for all N² pairs.
+
+        Parameters
+        ----------
+        lat : np.ndarray
+            Latitude coordinates for all wells (degrees). Shape: (N,).
+        lon : np.ndarray
+            Longitude coordinates for all wells (degrees). Shape: (N,).
+        max_distance_miles : float, default 20.0
+            Maximum distance threshold (miles). Pairs farther apart are excluded.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (i_idx, k_idx) arrays of well index pairs that pass the distance filter.
+            Self-pairs (i == k) are excluded.
+
+        Notes
+        -----
+        Uses 69 miles/degree for latitude and cos(lat)-adjusted for longitude.
+        This is approximate but sufficient for filtering at 20-mile scale.
+        """
         lat1, lat2 = np.meshgrid(lat, lat, indexing="ij")
         lon1, lon2 = np.meshgrid(lon, lon, indexing="ij")
 
@@ -542,6 +722,23 @@ class WellSpacingCalculator:
         return midpoint_df.set_index("uwi")
     
     def _compute_drill_directions(self) -> pd.Series:
+        """
+        Classify each well's drill direction as 'EW' (East-West) or 'NS' (North-South).
+
+        Uses the median azimuth of each well's trajectory to determine the primary
+        drilling direction. Wells drilled predominantly east-west (azimuth 45-135° or
+        225-315°) are classified as 'EW'; others are classified as 'NS'.
+
+        Returns
+        -------
+        pd.Series
+            Series indexed by 'uwi' with values 'EW' or 'NS'.
+
+        Notes
+        -----
+        The drill direction is used to determine the axis for spacing direction
+        classification: NS-drilled wells use E/W direction labels, and vice versa.
+        """
         median_azimuth = self._trajectory_df.groupby("uwi")["azimuth"].median()
         is_ew = ((median_azimuth >= 45) & (median_azimuth <= 135)) | ((median_azimuth >= 225) & (median_azimuth <= 315))
         return pd.Series(np.where(is_ew, "EW", "NS"), index=median_azimuth.index, name="drill_direction")
@@ -900,9 +1097,22 @@ class WellSpacingCalculator:
         Vectorized nearest point from many points P (n,2) to a polyline X (m,2).
         Returns (d, j, t) where:
         d: (n,) distances,
-        j: (n,) segment indices (X[j] -> X[j+1]),
-        t: (n,) segment parameters in [0,1].
+        j: (n,) segment indices (X[j] -> X[j+1]) or -1 if no segments,
+        t: (n,) segment parameters in [0,1] or NaN if undefined.
         """
+        m = X.shape[0]
+        n = P.shape[0]
+        # Degenerate: no segments
+        if m == 0:
+            return np.full(n, np.nan), np.full(n, -1, dtype=int), np.full(n, np.nan)
+        # Degenerate: single-point "polyline" — nearest to that point
+        if m == 1:
+            diff = P - X[0]
+            d = np.sqrt((diff ** 2).sum(axis=1))
+            j = np.zeros(n, dtype=int)
+            t_sel = np.zeros(n, dtype=float)
+            return d, j, t_sel
+
         A = X[:-1]                  # (m-1,2)
         B = X[1:]                   # (m-1,2)
         AB = B - A                  # (m-1,2)
@@ -1139,6 +1349,31 @@ class WellSpacingCalculator:
         theta_parallel_deg: float,
         theta_perp_deg: float
     ) -> Tuple[AlignmentType, float]:
+        """
+        Classify the alignment between two wells based on their lateral axis directions.
+
+        Parameters
+        ----------
+        ex_i : np.ndarray
+            Unit vector along well_i's lateral axis. Shape: (2,).
+        ex_k : np.ndarray
+            Unit vector along well_k's lateral axis. Shape: (2,).
+        theta_parallel_deg : float
+            Maximum angle (degrees) to be classified as PARALLEL_LIKE.
+        theta_perp_deg : float
+            Minimum angle (degrees) to be classified as PERPENDICULAR.
+
+        Returns
+        -------
+        Tuple[AlignmentType, float]
+            (alignment_type, angle_deg) where angle_deg is the actual angle between axes.
+
+        Notes
+        -----
+        Uses absolute dot product to be direction-agnostic (heel-to-toe vs toe-to-heel).
+        Angle ranges: [0, theta_parallel] → PARALLEL_LIKE, [theta_perp, 90] → PERPENDICULAR,
+        otherwise → OBLIQUE.
+        """
         # use absolute dot (direction-agnostic)
         dot_abs = float(np.abs(float(np.dot(ex_i, ex_k))))
         angle_deg = float(np.degrees(np.arccos(np.clip(dot_abs, -1.0, 1.0))))
@@ -1173,9 +1408,54 @@ class WellSpacingCalculator:
         want_artifacts: bool = True,
     ) -> Tuple[SpacingResult, Optional[PairArtifacts]]:
         """
-        Single source of truth for a pair's spacing + direction metrics.
-        Reuses the class helpers you already have. If want_artifacts=True,
-        returns all arrays the debug plots need; otherwise returns None for artifacts.
+        Compute all spacing and direction metrics for a single well pair.
+
+        This is the unified computation engine that handles both parallel-like pairs
+        (crossline spacing over overlap) and oblique/perpendicular pairs (nearest-projection
+        distance series). It produces consistent results for both the batch processor
+        and the debug_pair_spacing visualizer.
+
+        Parameters
+        ----------
+        uwi_i, uwi_k : Any
+            Unique identifiers for the well pair.
+        step_ft : int
+            Sampling step size along laterals (ft).
+        n_samples : int or None
+            If specified, overrides step_ft to use exactly this many samples.
+        max_crossline_ft : float or None
+            Maximum crossline distance threshold for filtering.
+        crossline_percentile : float
+            Percentile (0-100) for crossline distance guardrail (e.g., 5.0 for p5).
+        ds_crossline_step_ft : int
+            Downsampling step for coarse-resolution prefiltering.
+        use_pca_axis : bool
+            If True, use PCA to define the i-frame axis; else use heel-to-toe vector.
+        theta_parallel_deg : float
+            Maximum angle for PARALLEL_LIKE classification (degrees).
+        theta_perp_deg : float
+            Minimum angle for PERPENDICULAR classification (degrees).
+        reject_misaligned : bool
+            If True, reject oblique/perpendicular pairs (return NaN metrics).
+        use_windowed_mean : bool
+            If True, compute mean distance in ±window_ft around closest approach.
+        window_ft : float
+            Half-width of window for windowed mean (ft).
+        contact_threshold_ft : float
+            Distance threshold T for contact length metrics (ft).
+        coverage_epsilon : float
+            Fraction of segment ends to exclude for "interior" projection (0-0.5).
+        drill_direction_i, drill_direction_k : str or None
+            Pre-computed drill directions ('EW' or 'NS'). If None, computed from azimuth.
+        tvd_i, tvd_k : float or None
+            Pre-computed TVD values. If None, computed as midpoint TVD from trajectory.
+        want_artifacts : bool, default True
+            If True, populate PairArtifacts for debug visualization.
+
+        Returns
+        -------
+        Tuple[SpacingResult, Optional[PairArtifacts]]
+            (result, artifacts) where artifacts is None if want_artifacts=False.
         """
         # Cache build if needed
         if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
@@ -1434,8 +1714,14 @@ class WellSpacingCalculator:
             lon_k = df_k["longitude"].to_numpy(float)
             lat_i_s = self._interp_attr_by_arclength(Xi_utm, lat_i, s_targets)
             lon_i_s = self._interp_attr_by_arclength(Xi_utm, lon_i, s_targets)
-            lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
-            lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
+            # Guard: if well k has only 1 survey point, we cannot interpolate along segments
+            if lat_k.size > 1:
+                lat_k_s = lat_k[j_arr] + t_arr*(lat_k[j_arr+1] - lat_k[j_arr])
+                lon_k_s = lon_k[j_arr] + t_arr*(lon_k[j_arr+1] - lon_k[j_arr])
+            else:
+                # Single point: use that point for all samples
+                lat_k_s = np.full_like(lat_i_s, lat_k[0])
+                lon_k_s = np.full_like(lon_i_s, lon_k[0])
             dir_mode_axis, dir_conf_axis, dir_dist_axis = self._axis_constrained_direction_from_pairs(
                 lat_i_s, lon_i_s, lat_k_s, lon_k_s, want_axis=dir_axis,
                 deadband=0.15, tie_tol=0.05
@@ -1450,12 +1736,12 @@ class WellSpacingCalculator:
         min_d = float(d.min()) if d.size else np.nan
 
         mean_windowed = np.nan
-        if use_windowed_mean and d.size:
-            idx_min = int(np.argmin(d))
+        if use_windowed_mean and d.size and np.isfinite(d).any():
+            idx_min = int(np.nanargmin(d))
             s0 = s_targets[idx_min]
             mask = (s_targets >= s0 - window_ft) & (s_targets <= s0 + window_ft)
             if mask.any():
-                mean_windowed = float(d[mask].mean())
+                mean_windowed = float(np.nanmean(d[mask]))
 
         dist3d = float(np.hypot(mean_d, vertical))
 
@@ -1485,9 +1771,14 @@ class WellSpacingCalculator:
         )
 
         if want_artifacts:
-            # nearest targets Q on k
-            A = Xk_utm[:-1]; B = Xk_utm[1:]; AB = B - A
-            Q = A[j_arr] + t_arr[:, None]*(AB[j_arr])
+            # nearest targets Q on k (robust to degenerate k polylines)
+            if Xk_utm.shape[0] >= 2:
+                A = Xk_utm[:-1]; B = Xk_utm[1:]; AB = B - A
+                Q = A[j_arr] + t_arr[:, None]*(AB[j_arr])
+            elif Xk_utm.shape[0] == 1:
+                Q = np.repeat(Xk_utm[0][None, :], len(Pi), axis=0)
+            else:
+                Q = np.empty((0, 2))
 
             artifacts.s_targets = s_targets
             artifacts.Pi = Pi
@@ -1715,13 +2006,66 @@ class WellSpacingCalculator:
         coverage_epsilon: float,
     ) -> pd.DataFrame:
         """
-        Angle-aware routing:
-        - parallel-like (Δθ ≤ theta_parallel_deg): crossline |Δy(x)| over i-frame overlap (existing flow)
-        - oblique (theta_parallel_deg < Δθ < theta_perp_deg): nearest-projection mean/median
-        - perpendicular (Δθ ≥ theta_perp_deg): closest-approach min (+ optional ±window mean)
-        Axis-constrained direction is always reported:
-        NS reference -> E/W
-        EW reference -> N/S
+        Process a batch of well pairs with angle-aware routing to appropriate spacing methods.
+
+        This method is the main batch processor that handles all candidate well pairs,
+        routing them to the appropriate spacing computation based on their alignment:
+
+        Routing Logic
+        -------------
+        - PARALLEL_LIKE (angle ≤ theta_parallel_deg): Uses crossline |Δy(x)| computed over
+          the x-overlap region in the reference well's i-frame.
+        - OBLIQUE (theta_parallel_deg < angle < theta_perp_deg): Uses nearest-projection
+          distance series from samples along well_i to the nearest point on well_k.
+        - PERPENDICULAR (angle ≥ theta_perp_deg): Same as oblique, with additional
+          min_distance_ft and mean_windowed_ft metrics.
+
+        Parameters
+        ----------
+        i_idx, k_idx : np.ndarray
+            Index arrays for (well_i, well_k) pairs to process.
+        ids : np.ndarray
+            Array of well identifiers (uwi), indexed by i_idx/k_idx.
+        coords : np.ndarray
+            Midpoint coordinates array with columns [x, y, tvd]. Shape: (N_wells, 3).
+        directions : np.ndarray
+            Drill direction array ('EW' or 'NS') for each well. Shape: (N_wells,).
+        step_ft : int
+            Sampling step size (ft).
+        n_samples : int or None
+            Override step_ft with fixed sample count.
+        max_crossline_ft : float or None
+            Maximum crossline threshold for filtering.
+        crossline_percentile : float
+            Percentile for crossline guardrail.
+        ds_crossline_step_ft : int
+            Downsampling step for coarse prefiltering.
+        emit_rejected : bool
+            If True, include rejected pairs in output with reject_reason populated.
+        use_pca_axis : bool
+            Use PCA for i-frame axis definition.
+        theta_parallel_deg, theta_perp_deg : float
+            Alignment classification thresholds (degrees).
+        reject_misaligned : bool
+            If True, reject oblique/perpendicular pairs entirely.
+        use_windowed_mean : bool
+            Compute windowed mean around closest approach for oblique/perp.
+        window_ft : float
+            Half-width of window (ft).
+        contact_threshold_ft : float
+            Distance threshold T for contact metrics (ft).
+        coverage_epsilon : float
+            Fraction for interior-only projection mask.
+
+        Returns
+        -------
+        pd.DataFrame
+            Pairwise spacing results with columns matching SpacingResult fields.
+
+        Notes
+        -----
+        Direction axis is always constrained based on drill direction:
+        NS-drilled wells → E/W direction axis; EW-drilled wells → N/S direction axis.
         """
         rows: List[Dict] = []
 
@@ -2093,6 +2437,18 @@ class DirectionalBenchNeighbors:
     ----------
     Output columns
     ----------
+    Bound category (positioned after well_i):
+        bound_category : str
+            Classification of how surrounded the well is by neighbors. One of:
+            - 'Unbounded'         : No neighbors at all (isolated well)
+            - 'Partially Bounded' : Has neighbor(s) but only on ONE directional side
+                                    (e.g., same_1 only, or near_1 only, or same_1+near_1 but no _2's)
+            - 'Mostly Bounded'    : Has both sides filled in at least one category (same OR near),
+                                    but not both categories fully bounded
+                                    (e.g., same_1+same_2 but no near_1+near_2, or vice versa)
+            - 'Fully Bounded'     : Has neighbors on both sides in BOTH same-bench and different-bench
+                                    (same_1+same_2+near_1+near_2 all present)
+
     Neighbor picks (per category 'same'/'near'):
         uwi_same_1,  hz_ft_to_same_1,  vt_ft_to_same_1,  3d_ft_to_same_1
         uwi_same_2,  hz_ft_to_same_2,  vt_ft_to_same_2,  3d_ft_to_same_2
@@ -2438,8 +2794,26 @@ class DirectionalBenchNeighbors:
             .merge(audit_df, on="well_i", how="left")
         )
 
+        # ---------- Add bound_category column ----------
+        has_same_1 = out["uwi_same_1"].notna()
+        has_same_2 = out["uwi_same_2"].notna()
+        has_near_1 = out["uwi_near_1"].notna()
+        has_near_2 = out["uwi_near_2"].notna()
+
+        has_any_neighbor = has_same_1 | has_same_2 | has_near_1 | has_near_2
+        same_both_sides = has_same_1 & has_same_2
+        near_both_sides = has_near_1 & has_near_2
+
+        conditions = [
+            ~has_any_neighbor,                      # Unbounded
+            same_both_sides & near_both_sides,      # Fully Bounded
+            same_both_sides | near_both_sides,      # Mostly Bounded
+        ]
+        choices = ["Unbounded", "Fully Bounded", "Mostly Bounded"]
+        out["bound_category"] = np.select(conditions, choices, default="Partially Bounded")
+
         ordered_cols = (
-            ["well_i"]
+            ["well_i", "bound_category"]
             + self._category_cols("same", 1)
             + self._category_cols("same", 2)
             + self._category_cols("near", 1)
@@ -2448,7 +2822,116 @@ class DirectionalBenchNeighbors:
         )
         existing_cols = [c for c in ordered_cols if c in out.columns]
         return out[existing_cols + [c for c in out.columns if c not in existing_cols]]
-    
+
+    @staticmethod
+    def classify_bound_category(summary_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Classify each well into a bound category based on neighbor configuration.
+
+        This method implements a 4-category system based on the presence/absence
+        of neighbors in same-bench (lateral) and different-bench (vertical/stacked) directions.
+
+        Categories:
+        -----------
+        1. Unbounded: No neighbors at all (isolated well)
+           - same_1=❌, same_2=❌, near_1=❌, near_2=❌
+
+        2. Partially Bounded: Has neighbor(s) but only on ONE directional side
+           - Has at least one neighbor, but no category has both _1 and _2 filled
+           - Examples: only same_1, only near_1, same_1+near_1 (but no _2's)
+
+        3. Mostly Bounded: Has both sides filled in at least one category, but not both
+           - Has same_1+same_2 OR near_1+near_2, but not BOTH pairs complete
+           - Examples: same_1+same_2 (laterally bounded), near_1+near_2 (vertically bounded)
+
+        4. Fully Bounded: Has neighbors on both sides in BOTH same and different bench
+           - same_1=✅, same_2=✅, near_1=✅, near_2=✅
+
+        Parameters
+        ----------
+        summary_df : pd.DataFrame
+            Output from the `summarize()` method containing columns:
+            uwi_same_1, uwi_same_2, uwi_near_1, uwi_near_2
+
+        Returns
+        -------
+        pd.DataFrame
+            Input dataframe with additional column 'bound_category'
+
+        Examples
+        --------
+        >>> nb = DirectionalBenchNeighbors()
+        >>> summary = nb.summarize(spacing_df, header_df, cutoff_ft=1800)
+        >>> summary_with_category = DirectionalBenchNeighbors.classify_bound_category(summary)
+        >>> summary_with_category['bound_category'].value_counts()
+        """
+        df = summary_df.copy()
+
+        # Check presence of each neighbor type
+        has_same_1 = df["uwi_same_1"].notna()
+        has_same_2 = df["uwi_same_2"].notna()
+        has_near_1 = df["uwi_near_1"].notna()
+        has_near_2 = df["uwi_near_2"].notna()
+
+        # Derived flags
+        has_any_neighbor = has_same_1 | has_same_2 | has_near_1 | has_near_2
+        same_both_sides = has_same_1 & has_same_2  # Laterally bounded (same bench)
+        near_both_sides = has_near_1 & has_near_2  # Vertically bounded (different bench)
+
+        # Classification logic
+        def classify(row_idx):
+            if not has_any_neighbor.iloc[row_idx]:
+                return "Unbounded"
+            elif same_both_sides.iloc[row_idx] and near_both_sides.iloc[row_idx]:
+                return "Fully Bounded"
+            elif same_both_sides.iloc[row_idx] or near_both_sides.iloc[row_idx]:
+                return "Mostly Bounded"
+            else:
+                return "Partially Bounded"
+
+        # Vectorized approach for performance
+        conditions = [
+            ~has_any_neighbor,                                      # Unbounded
+            same_both_sides & near_both_sides,                      # Fully Bounded
+            same_both_sides | near_both_sides,                      # Mostly Bounded
+        ]
+        choices = ["Unbounded", "Fully Bounded", "Mostly Bounded"]
+
+        df["bound_category"] = np.select(conditions, choices, default="Partially Bounded")
+
+        return df
+
+    @staticmethod
+    def get_bound_category_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Get a summary count of wells by bound category.
+
+        Parameters
+        ----------
+        summary_df : pd.DataFrame
+            Output from `classify_bound_category()` containing 'bound_category' column
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary with counts and percentages for each category
+        """
+        if "bound_category" not in summary_df.columns:
+            summary_df = DirectionalBenchNeighbors.classify_bound_category(summary_df)
+
+        # Define category order
+        cat_order = ["Unbounded", "Partially Bounded", "Mostly Bounded", "Fully Bounded"]
+
+        counts = summary_df["bound_category"].value_counts()
+        total = len(summary_df)
+
+        result = pd.DataFrame({
+            "bound_category": cat_order,
+            "count": [counts.get(cat, 0) for cat in cat_order],
+            "percentage": [counts.get(cat, 0) / total * 100 for cat in cat_order]
+        })
+
+        return result
 
     def summarize_avg_spacing(
         self,
@@ -2474,21 +2957,82 @@ class DirectionalBenchNeighbors:
         debug_label_members: bool = True,
     ) -> pd.DataFrame:
         """
-        Summarize per-well spacing from a pairwise spacing table by building a neighborhood S(i)
-        for each well_i and computing a neighborhood spacing metric.
+        Summarize per-well average spacing by building neighborhoods and computing aggregate metrics.
 
-        neighborhood_mode:
-        - "i2nbr": mean of eligible i→k survivor distances
-        - "chain": chain adjacency inside S(i): A→B, B→C, C→D (no repeats)
-                    A chosen by chain_sort_mode ("x" or "pca")
-        - "dense": mean of all unique undirected member-member pairs inside S(i)
+        For each well_i, this method:
+        1. Builds a neighborhood S(i) = {well_i} ∪ {eligible neighbors k}
+        2. Computes an average spacing metric using one of three aggregation modes
+        3. Returns one row per well_i with the computed metrics
 
-        NOTE on proj_coverage_min:
-        If proj_coverage_min is provided but spacing_df does not contain proj_coverage_i_pct,
-        this method will derive a proxy:
-            - proj_coverage_i_pct := overlap_pct_i (preferred, if present), else
-            - proj_coverage_i_pct := overlap_len_common_ft / LL_i (if present)
-        The coverage gate is applied only for non-parallel rows (pair_alignment != "parallel_like").
+        Parameters
+        ----------
+        spacing_df : pd.DataFrame
+            Pairwise spacing table from WellSpacingCalculator.calculate_spacing().
+            Required columns: well_i, well_k, horizontal_dist, vertical_dist,
+            pair_alignment, direction_to_k_from_i_axis, LL_i.
+        cutoff_ft : float
+            Global horizontal cutoff (ft). Pairs with horizontal_dist > cutoff are excluded.
+        vertical_cutoff_ft : float, optional
+            Global vertical cutoff (ft). If provided, pairs must satisfy vertical_dist <= cutoff.
+        overlap_pct_k_min : float, optional
+            Minimum overlap/adjacency percentage (0-1). For parallel pairs: overlap_pct_k.
+            For oblique/perp: contact_pct_i_interior.
+        overrides_df : pd.DataFrame, optional
+            Per-well override table with columns: well_i (or uwi), cutoff_ft,
+            vertical_cutoff_ft, overlap_pct_k_min. Overrides global values for specific wells.
+        proj_coverage_min : float, optional
+            Minimum projection coverage (0-1) for oblique/perp pairs.
+        axis_mode : {'any', 'EW', 'NS'}, default 'any'
+            Direction eligibility: 'EW' = only E/W directions, 'NS' = only N/S, 'any' = all.
+        neighborhood_mode : {'i2nbr', 'chain', 'dense'}, default 'chain'
+            Aggregation mode:
+            - 'i2nbr': Mean of i→k survivor distances (simple average).
+            - 'chain': Chain adjacency A→B→C→D sorted by chain_sort_mode (no repeats).
+            - 'dense': Mean of all unique undirected member-member pairs in S(i).
+        chain_sort_mode : {'x', 'pca'}, default 'pca'
+            For chain mode, how to order members: 'x' = by UTM X coordinate,
+            'pca' = by projection onto first principal component (handles any orientation).
+        trajectories : pd.DataFrame, optional
+            Required for chain/dense modes. Long-format trajectory table with columns:
+            uwi, x, y (and optionally md).
+        edge_pick : {'min', 'mean', 'forward'}, default 'min'
+            For chain mode, how to resolve bidirectional edges:
+            - 'min': min(u→v, v→u) distance
+            - 'mean': average of both directions
+            - 'forward': use u→v only (chain order)
+        include_unweighted : bool, default False
+            If True, include hz_mean_i2nbr_ft and vt_mean_i2nbr_ft columns.
+        debug_well_i : str, optional
+            If specified, generate debug plot for this well's neighborhood.
+        debug_mode : {'A', 'B', 'both'}, default 'both'
+            Debug plot style: 'A' = chain edges, 'B' = dense pairs, 'both' = overlay both.
+        debug_show : bool, default False
+            If True, display debug plot interactively.
+        debug_save_dir : str, optional
+            Directory to save debug plot PNG.
+        debug_max_members : int, default 30
+            Maximum neighborhood members to show in debug plot.
+        debug_label_members : bool, default True
+            If True, label members in debug plot legend.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per well_i with columns:
+            - well_i : str
+            - group_size : int, size of neighborhood S(i)
+            - neighbors_in_group : int, group_size - 1
+            - survivor_rows_i_to_k : int, number of eligible i→k pairs
+            - avg_hz_spacing_ft : float, aggregated horizontal spacing
+            - avg_vt_spacing_ft : float, aggregated vertical spacing
+            - neighborhood_mode_used : str
+            - (mode-specific columns for chain/dense statistics)
+
+        Notes
+        -----
+        proj_coverage_min fallback: If spacing_df lacks proj_coverage_i_pct, the method
+        derives it from overlap_pct_i (preferred) or overlap_len_common_ft / LL_i.
+        The coverage gate applies only to non-parallel pairs.
         """
         import os
         from typing import Dict, Tuple
@@ -3185,6 +3729,22 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _category_cols(cat: Literal["same", "near"], idx: Literal[1, 2]) -> List[str]:
+        """
+        Generate column names for a neighbor category and index.
+
+        Parameters
+        ----------
+        cat : {'same', 'near'}
+            Category: 'same' for same-bench, 'near' for different-bench.
+        idx : {1, 2}
+            Index: 1 for primary direction, 2 for opposite direction.
+
+        Returns
+        -------
+        List[str]
+            Column names: [uwi_{cat}_{idx}, hz_ft_to_{cat}_{idx},
+            vt_ft_to_{cat}_{idx}, 3d_ft_to_{cat}_{idx}].
+        """
         return [
             f"uwi_{cat}_{idx}",
             f"hz_ft_to_{cat}_{idx}",
@@ -3194,6 +3754,22 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _empty_summary(wells: Iterable[str]) -> pd.DataFrame:
+        """
+        Create an empty summary DataFrame with all neighbor columns set to NaN.
+
+        Used when there are no eligible neighbors for a set of wells.
+
+        Parameters
+        ----------
+        wells : Iterable[str]
+            Well identifiers to include in the summary.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with well_i column and all neighbor columns
+            (uwi_same_1, hz_ft_to_same_1, etc.) set to NaN.
+        """
         cols = ["well_i"]
         for cat in ("same", "near"):
             for idx in (1, 2):
@@ -3211,6 +3787,27 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _validate_inputs(spacing_df: pd.DataFrame, header_df: pd.DataFrame) -> None:
+        """
+        Validate that required columns are present in input DataFrames.
+
+        Parameters
+        ----------
+        spacing_df : pd.DataFrame
+            Pairwise spacing table to validate.
+        header_df : pd.DataFrame
+            Well header table with bench assignments.
+
+        Raises
+        ------
+        ValueError
+            If any required columns are missing from either DataFrame.
+
+        Notes
+        -----
+        Required spacing_df columns: well_i, well_k, horizontal_dist, vertical_dist,
+        3D_dist, direction_to_k_from_i_axis.
+        Required header_df columns: uwi, bench.
+        """
         spacing_required = {
             "well_i",
             "well_k",
@@ -3227,7 +3824,6 @@ class DirectionalBenchNeighbors:
             raise ValueError(f"spacing_df missing required columns: {sorted(missing_s)}")
         if missing_h:
             raise ValueError(f"header_df missing required columns: {sorted(missing_h)}")
-
 
 #%% # ==================== Floating Section WPS ====================
 
@@ -3463,9 +4059,32 @@ class FloatingSectionWPS:
         b: float,
     ) -> np.ndarray:
         """
-        Vectorized Liang–Barsky clipping against axis-aligned rectangle centered at origin:
-            x in [-a, a], y in [-b, b]
-        Returns inside-length for each segment; 0 if fully outside.
+        Compute clipped segment lengths inside a rectangle using Liang-Barsky algorithm.
+
+        This vectorized implementation clips line segments against an axis-aligned
+        rectangle centered at the origin and returns the inside-length of each segment.
+
+        Parameters
+        ----------
+        x0, y0 : np.ndarray
+            Start coordinates of segments. Shape: (N,).
+        x1, y1 : np.ndarray
+            End coordinates of segments. Shape: (N,).
+        a : float
+            Half-width of clipping rectangle (x in [-a, a]).
+        b : float
+            Half-height of clipping rectangle (y in [-b, b]).
+
+        Returns
+        -------
+        np.ndarray
+            Inside-length for each segment (ft). Shape: (N,).
+            Returns 0 if segment is fully outside the rectangle.
+
+        Notes
+        -----
+        Uses parametric form of line segments and edge-by-edge clipping to find
+        the portion of each segment that lies within the rectangle.
         """
         dx = x1 - x0
         dy = y1 - y0
@@ -3515,10 +4134,26 @@ class FloatingSectionWPS:
         orientation: Orientation,
     ) -> Tuple[float, float]:
         """
-        Return (a, b) half-sizes for the clipping rectangle for a given reference well.
+        Determine the half-sizes of the floating region for a reference well.
 
-        - 'cardinal' / 'i_frame' -> use global BoxSpec.
-        - 'corridor'             -> use per-well lateral length + CorridorSpec.
+        Parameters
+        ----------
+        ref_idx : int
+            Index of the reference well in the internal arrays.
+        orientation : {'cardinal', 'i_frame', 'corridor'}
+            The orientation mode determining box geometry.
+
+        Returns
+        -------
+        Tuple[float, float]
+            (a, b) where a is the half-width along the primary axis and b is the
+            half-height along the secondary axis (both in feet).
+
+        Notes
+        -----
+        - 'cardinal'/'i_frame': Uses global BoxSpec (e.g., 2640 ft for 1-mile section).
+        - 'corridor': Uses per-well lateral length + CorridorSpec margins.
+          a = 0.5 * lateral_length + extra_along_ft, b = half_width_ft.
         """
         if orientation == "corridor":
             if self.corridor is None:
@@ -3544,14 +4179,33 @@ class FloatingSectionWPS:
         orientation: Orientation,
     ) -> np.ndarray:
         """
-        Vectorized inside-lengths (ft) of all segments w.r.t. the floating region
-        centered on a reference well.
+        Compute the inside-lengths of all well segments within the floating region.
 
-        orientation:
-            - 'cardinal' → axis-aligned box in map frame,
-            - 'i_frame'  → rotate world by -az_ref so ref lateral is along +x,
-            - 'corridor' → same rotation as 'i_frame' but with per-well corridor
-                           half-sizes derived from that ref lateral's length.
+        This is the core vectorized computation that determines how much of each
+        well's lateral lies within the floating region centered on a reference well.
+
+        Parameters
+        ----------
+        ref_idx : int
+            Index of the reference well in the internal arrays.
+        orientation : {'cardinal', 'i_frame', 'corridor'}
+            Region orientation:
+            - 'cardinal': Axis-aligned box (north-up, east-right) in map frame.
+            - 'i_frame': Box rotated so reference lateral is along +X axis.
+            - 'corridor': Same rotation as 'i_frame' but with dynamic half-sizes
+              derived from the reference lateral's length + CorridorSpec.
+
+        Returns
+        -------
+        np.ndarray
+            Inside-length (ft) for each well's lateral segment. Shape: (N_wells,).
+            Zero if the lateral is entirely outside the region.
+
+        Notes
+        -----
+        The computation translates all segments so the region is centered at origin,
+        optionally rotates into the reference well's frame, then applies Liang-Barsky
+        clipping to compute inside lengths.
         """
         cx = self._mx[ref_idx]
         cy = self._my[ref_idx]
@@ -4261,4 +4915,1149 @@ f"""# Floating Section Diagnostics
 
         return out_paths
     
-#%%
+
+
+#%% # ======================= Average Spacing Calculator ======================= #
+"""
+Average Spacing Calculator.
+
+Extracted from DirectionalBenchNeighbors to provide a standalone class for
+computing per-well average spacing metrics using chain, dense, or i2nbr modes.
+"""
+class AvgSpacingCalculator:
+    """
+    Summarizes per-well spacing by building neighborhoods S(i) and computing
+    spacing metrics via chain, dense, or i2nbr modes.
+
+    For each well_i, the neighborhood S(i) consists of well_i itself plus all
+    eligible neighbor wells (survivors after filtering). The spacing metric
+    is then computed within this neighborhood.
+
+    ----------
+    Neighborhood modes
+    ----------
+    - "i2nbr": Mean of eligible i→k survivor distances (simple radial average)
+    - "chain": Chain adjacency inside S(i): A→B→C→D (no repeats), ordered by
+               chain_sort_mode ("x" or "pca")
+    - "dense": Mean of all unique undirected member-member pairs inside S(i)
+
+    ----------
+    Usage
+    ----------
+    >>> summarizer = AvgSpacingCalculator()
+    >>> result_df = summarizer.summarize(
+    ...     spacing_df,
+    ...     cutoff_ft=1320.0,
+    ...     neighborhood_mode="chain",
+    ...     trajectories=trajectories,
+    ... )
+    
+    # Optional: plot diagnostics for a specific well
+    >>> summarizer.plot_neighborhood(
+    ...     well_i="30025410040100",
+    ...     trajectories=trajectories,
+    ...     mode="both",
+    ...     show=True,
+    ... )
+
+    ----------
+    Parameters (at init)
+    ----------
+    overrides_df : pandas.DataFrame, optional
+        Default per-well override rules. Can be overridden at call time.
+
+    ----------
+    Output columns
+    ----------
+    - well_i: well identifier
+    - group_size: number of members in S(i) including well_i
+    - neighbors_in_group: group_size - 1
+    - survivor_rows_i_to_k: number of eligible i→k pairs
+    - avg_hz_spacing_ft: the computed horizontal spacing metric
+    - avg_vt_spacing_ft: the computed vertical spacing metric
+    - neighborhood_mode_used: which mode was applied
+
+    Plus mode-specific diagnostics (chain edges, dense pairs, percentiles, etc.)
+    """
+
+    AxisMode = Literal["any", "EW", "NS"]
+    NeighborhoodMode = Literal["i2nbr", "chain", "dense"]
+    ChainSortMode = Literal["x", "pca"]
+    EdgePick = Literal["min", "mean", "forward"]
+    PlotMode = Literal["chain", "dense", "both"]
+
+    def __init__(self, *, overrides_df: Optional[pd.DataFrame] = None) -> None:
+        """
+        Parameters
+        ----------
+        overrides_df : pandas.DataFrame, optional
+            Default per-well override rules. Can be overridden at call time.
+        """
+        self._overrides_df_default = overrides_df
+        
+        # Intermediate results stored for optional debug plotting
+        self._members: Optional[pd.DataFrame] = None
+        self._survivors: Optional[pd.DataFrame] = None
+        self._edges_chain: Optional[pd.DataFrame] = None
+        self._pairs_dense: Optional[pd.DataFrame] = None
+        self._ordered_members: Optional[pd.DataFrame] = None
+        self._output: Optional[pd.DataFrame] = None
+        self._cutoff_ft: Optional[float] = None
+        self._ov_cut: Optional[pd.Series] = None
+        self._all_wells: Optional[pd.Series] = None
+
+    def _resolve_overrides(
+        self, overrides_df: Optional[pd.DataFrame]
+    ) -> Optional[pd.DataFrame]:
+        """Return call-time overrides if provided, else fall back to init default."""
+        return overrides_df if overrides_df is not None else self._overrides_df_default
+
+    def _clear_intermediates(self) -> None:
+        """Clear stored intermediate results from previous run."""
+        self._members = None
+        self._survivors = None
+        self._edges_chain = None
+        self._pairs_dense = None
+        self._ordered_members = None
+        self._output = None
+        self._cutoff_ft = None
+        self._ov_cut = None
+        self._all_wells = None
+
+    def summarize(
+        self,
+        spacing_df: pd.DataFrame,
+        *,
+        cutoff_ft: float,
+        vertical_cutoff_ft: Optional[float] = None,
+        overlap_pct_k_min: Optional[float] = None,
+        overrides_df: Optional[pd.DataFrame] = None,
+        proj_coverage_min: Optional[float] = None,
+        axis_mode: AxisMode = "any",
+        neighborhood_mode: NeighborhoodMode = "chain",
+        chain_sort_mode: ChainSortMode = "pca",
+        trajectories: Optional[pd.DataFrame] = None,
+        edge_pick: EdgePick = "min",
+        include_unweighted: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Summarize per-well spacing from a pairwise spacing table by building a
+        neighborhood S(i) for each well_i and computing a neighborhood spacing metric.
+
+        Parameters
+        ----------
+        spacing_df : pandas.DataFrame
+            Pairwise spacing table with required columns:
+              - 'well_i', 'well_k': str/int (well identifiers)
+              - 'horizontal_dist': float (feet)
+              - 'vertical_dist': float (feet)
+              - 'pair_alignment': str ('parallel_like' or other)
+              - 'direction_to_k_from_i_axis': {'E','W','N','S'}
+              - 'LL_i': float (lateral length of well_i)
+
+        cutoff_ft : float
+            Global horizontal cutoff (ft).
+
+        vertical_cutoff_ft : float, optional
+            Global vertical cutoff (ft). If None, no vertical rule applied globally.
+
+        overlap_pct_k_min : float, optional
+            Global overlap/adjacency minimum. If None, no overlap rule applied globally.
+
+        overrides_df : pandas.DataFrame, optional
+            Per-well rule overrides. Columns: 'well_i' (or 'uwi'), plus optional
+            'cutoff_ft', 'vertical_cutoff_ft', 'overlap_pct_k_min'.
+
+        proj_coverage_min : float, optional
+            Coverage quality gate for oblique/perpendicular pairs only.
+
+        axis_mode : {'any', 'EW', 'NS'}, default 'any'
+            Direction eligibility filter for survivors.
+
+        neighborhood_mode : {'i2nbr', 'chain', 'dense'}, default 'chain'
+            How to compute the neighborhood spacing metric.
+
+        chain_sort_mode : {'x', 'pca'}, default 'pca'
+            For chain mode, how to order members along the chain.
+
+        trajectories : pandas.DataFrame, optional
+            Required for chain mode. Must have columns ['uwi', 'x', 'y'].
+
+        edge_pick : {'min', 'mean', 'forward'}, default 'min'
+            For chain mode, how to resolve directional edge distances.
+
+        include_unweighted : bool, default False
+            If True, include hz_mean_i2nbr_ft and vt_mean_i2nbr_ft columns.
+
+        Returns
+        -------
+        pandas.DataFrame
+            One row per well_i with spacing metrics and diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If required columns are missing or inputs are inconsistent.
+
+        Notes
+        -----
+        After calling this method, you can use `plot_neighborhood()` to generate
+        diagnostic plots for specific wells.
+
+        If proj_coverage_min is provided but spacing_df does not contain
+        proj_coverage_i_pct, this method will derive a proxy from overlap_pct_i
+        or overlap_len_common_ft / LL_i if available.
+        """
+        # Clear any previous run's intermediates
+        self._clear_intermediates()
+        
+        overrides_df = self._resolve_overrides(overrides_df)
+
+        spacing = spacing_df.copy()
+        spacing["well_i"] = spacing["well_i"].astype(str)
+        spacing["well_k"] = spacing["well_k"].astype(str)
+
+        # Validate required columns
+        req_base = {
+            "well_i",
+            "well_k",
+            "horizontal_dist",
+            "vertical_dist",
+            "pair_alignment",
+            "direction_to_k_from_i_axis",
+            "LL_i",
+        }
+        missing = req_base - set(spacing.columns)
+        if missing:
+            raise ValueError(
+                f"summarize: spacing_df missing required columns: {sorted(missing)}"
+            )
+
+        all_wells = (
+            spacing["well_i"].drop_duplicates().reset_index(drop=True).astype(str)
+        )
+        self._all_wells = all_wells
+        self._cutoff_ft = cutoff_ft
+
+        # ---------------- Overrides (per well_i) ----------------
+        ov_cut = ov_vcut = ov_omin = None
+        if overrides_df is not None and not overrides_df.empty:
+            ov = overrides_df.copy()
+            if "well_i" not in ov.columns and "uwi" in ov.columns:
+                ov = ov.rename(columns={"uwi": "well_i"})
+            if "well_i" in ov.columns:
+                ov["well_i"] = ov["well_i"].astype(str)
+                ov = ov.set_index("well_i")
+                ov_cut = ov["cutoff_ft"] if "cutoff_ft" in ov.columns else None
+                ov_vcut = (
+                    ov["vertical_cutoff_ft"]
+                    if "vertical_cutoff_ft" in ov.columns
+                    else None
+                )
+                ov_omin = (
+                    ov["overlap_pct_k_min"]
+                    if "overlap_pct_k_min" in ov.columns
+                    else None
+                )
+
+        self._ov_cut = ov_cut
+
+        # Effective horizontal cutoff per row
+        if ov_cut is not None:
+            eff_hcut = (
+                spacing["well_i"].map(ov_cut).astype(float).fillna(float(cutoff_ft))
+            )
+        else:
+            eff_hcut = pd.Series(float(cutoff_ft), index=spacing.index)
+
+        # Effective vertical cutoff per row (NaN = no rule)
+        if (vertical_cutoff_ft is not None) or (ov_vcut is not None):
+            eff_vcut = (
+                spacing["well_i"].map(ov_vcut).astype(float)
+                if ov_vcut is not None
+                else pd.Series(np.nan, index=spacing.index)
+            )
+            if vertical_cutoff_ft is not None:
+                eff_vcut = eff_vcut.fillna(float(vertical_cutoff_ft))
+        else:
+            eff_vcut = pd.Series(np.nan, index=spacing.index)
+
+        # Effective overlap/adjacency min per row (NaN = no rule)
+        if (overlap_pct_k_min is not None) or (ov_omin is not None):
+            eff_omin = (
+                spacing["well_i"].map(ov_omin).astype(float)
+                if ov_omin is not None
+                else pd.Series(np.nan, index=spacing.index)
+            )
+            if overlap_pct_k_min is not None:
+                eff_omin = eff_omin.fillna(float(overlap_pct_k_min))
+        else:
+            eff_omin = pd.Series(np.nan, index=spacing.index)
+
+        # ---------------- Adaptive adjacency percentage ----------------
+        contact_interior = (
+            spacing["contact_pct_i_interior"].astype(float)
+            if "contact_pct_i_interior" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+        contact_any = (
+            spacing["contact_pct_i"].astype(float)
+            if "contact_pct_i" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+        adj_oblique_perp = contact_interior.fillna(contact_any)
+
+        overlap_pct_k = (
+            spacing["overlap_pct_k"].astype(float)
+            if "overlap_pct_k" in spacing.columns
+            else pd.Series(np.nan, index=spacing.index)
+        )
+
+        spacing["adj_pct"] = np.where(
+            spacing["pair_alignment"].eq("parallel_like"),
+            overlap_pct_k,
+            adj_oblique_perp,
+        ).astype(float)
+
+        # ---------------- Eligibility mask (survivors) ----------------
+        mask = spacing["horizontal_dist"].astype(float) <= eff_hcut
+
+        if eff_vcut.notna().any():
+            has_vrule = eff_vcut.notna()
+            mask &= (~has_vrule) | (spacing["vertical_dist"].astype(float) <= eff_vcut)
+
+        if eff_omin.notna().any():
+            has_orule = eff_omin.notna()
+            mask &= (~has_orule) | (spacing["adj_pct"] >= eff_omin)
+
+        # --- proj_coverage_i_pct fallback ---
+        if proj_coverage_min is not None:
+            if "proj_coverage_i_pct" not in spacing.columns:
+                # Prefer overlap_pct_i if present
+                if "overlap_pct_i" in spacing.columns:
+                    spacing["proj_coverage_i_pct"] = spacing["overlap_pct_i"].astype(
+                        float
+                    )
+                # Else approximate from overlap length / LL_i if possible
+                elif ("overlap_len_common_ft" in spacing.columns) and (
+                    "LL_i" in spacing.columns
+                ):
+                    denom = spacing["LL_i"].astype(float).replace(0.0, np.nan)
+                    spacing["proj_coverage_i_pct"] = (
+                        spacing["overlap_len_common_ft"].astype(float) / denom
+                    ).replace([np.inf, -np.inf], np.nan)
+                else:
+                    # No info to compute; keep as NaN (non-parallel rows will fail)
+                    spacing["proj_coverage_i_pct"] = np.nan
+
+            ok_cov = np.where(
+                spacing["pair_alignment"].eq("parallel_like"),
+                True,
+                spacing["proj_coverage_i_pct"].astype(float) >= float(proj_coverage_min),
+            )
+            mask &= ok_cov
+
+        if axis_mode == "EW":
+            mask &= spacing["direction_to_k_from_i_axis"].isin({"E", "W"})
+        elif axis_mode == "NS":
+            mask &= spacing["direction_to_k_from_i_axis"].isin({"N", "S"})
+
+        survivors = spacing.loc[mask].copy()
+        self._survivors = survivors
+
+        # ---------------- Baseline i->eligible k summaries ----------------
+        g_i = survivors.groupby("well_i", sort=False)
+        survivor_rows = (
+            g_i.size().rename("survivor_rows_i_to_k").rename_axis("group_i")
+        )
+
+        hz_mean_i2nbr = (
+            g_i["horizontal_dist"].mean().rename("hz_mean_i2nbr_ft").rename_axis("group_i")
+        )
+        vt_mean_i2nbr = (
+            g_i["vertical_dist"].mean().rename("vt_mean_i2nbr_ft").rename_axis("group_i")
+        )
+
+        # ---------------- Build membership table for S(i) ----------------
+        members_self = pd.DataFrame(
+            {"group_i": all_wells.values, "member": all_wells.values}
+        )
+        members_nbrs = survivors[["well_i", "well_k"]].rename(
+            columns={"well_i": "group_i", "well_k": "member"}
+        )
+        members = pd.concat([members_self, members_nbrs], ignore_index=True).drop_duplicates()
+        self._members = members
+
+        group_size = (
+            members.groupby("group_i", sort=False)["member"]
+            .nunique()
+            .rename("group_size")
+            .rename_axis("group_i")
+        )
+        neighbors_in_group = (
+            (group_size - 1).clip(lower=0).rename("neighbors_in_group").rename_axis("group_i")
+        )
+
+        want_chain = neighborhood_mode == "chain"
+        want_dense = neighborhood_mode == "dense"
+
+        # -----------------------------
+        # CHAIN MODE (A->B->C->D)
+        # -----------------------------
+        chain_axis = None
+        chain_edges_used = chain_edges_missing = None
+        hz_mean_chain = vt_mean_chain = None
+        chain_p50 = chain_p25 = chain_p75 = chain_min = chain_max = None
+
+        if want_chain:
+            if trajectories is None:
+                raise ValueError(
+                    "summarize: chain mode requires `trajectories` "
+                    "with columns ['uwi','x','y']."
+                )
+
+            need_cols = {"uwi", "x", "y"}
+            miss_t = need_cols - set(trajectories.columns)
+            if miss_t:
+                raise ValueError(
+                    f"summarize: trajectories missing columns: {sorted(miss_t)}"
+                )
+
+            traj = trajectories.copy()
+            traj["uwi"] = traj["uwi"].astype(str)
+
+            centroids = (
+                traj.groupby("uwi", sort=False)[["x", "y"]]
+                .median()
+                .rename(columns={"x": "x_mid", "y": "y_mid"})
+            )
+
+            mem_xy = members.merge(
+                centroids.reset_index().rename(columns={"uwi": "member"}),
+                on="member",
+                how="left",
+            )
+
+            if mem_xy[["x_mid", "y_mid"]].isna().any(axis=1).any():
+                bad = (
+                    mem_xy.loc[
+                        mem_xy[["x_mid", "y_mid"]].isna().any(axis=1), "member"
+                    ]
+                    .drop_duplicates()
+                    .head(10)
+                    .tolist()
+                )
+                raise ValueError(
+                    "summarize: trajectories missing x/y for some neighborhood members. "
+                    f"Examples: {bad}"
+                )
+
+            mem_xy["chain_sort_mode"] = chain_sort_mode
+
+            def _order_members_one_group(g: pd.DataFrame) -> pd.DataFrame:
+                xy = g[["x_mid", "y_mid"]].to_numpy(dtype=float)
+
+                if g.shape[0] <= 1:
+                    g = g.copy()
+                    g["chain_axis_dx"] = 1.0
+                    g["chain_axis_dy"] = 0.0
+                    g["_score"] = 0.0
+                    return g
+
+                if chain_sort_mode == "x":
+                    axis = np.array([1.0, 0.0], dtype=float)
+                    score = xy[:, 0].copy()
+                else:
+                    C = xy - xy.mean(axis=0, keepdims=True)
+                    if np.allclose(C, 0.0):
+                        axis = np.array([1.0, 0.0], dtype=float)
+                        score = C @ axis
+                    else:
+                        _, _, Vt = np.linalg.svd(C, full_matrices=False)
+                        axis = Vt[0]
+
+                        # Deterministic axis sign
+                        if abs(axis[0]) >= abs(axis[1]):
+                            if axis[0] < 0:
+                                axis = -axis
+                        else:
+                            if axis[1] < 0:
+                                axis = -axis
+
+                        score = (xy - xy.mean(axis=0, keepdims=True)) @ axis
+
+                g = g.copy()
+                g["chain_axis_dx"] = float(axis[0])
+                g["chain_axis_dy"] = float(axis[1])
+                g["_score"] = score
+                return g.sort_values(["_score", "member"], ascending=[True, True]).drop(
+                    columns=["_score"]
+                )
+
+            ordered_members = (
+                mem_xy.groupby("group_i", sort=False, group_keys=False)
+                .apply(_order_members_one_group)
+                .reset_index(drop=True)
+            )
+            self._ordered_members = ordered_members
+
+            chain_edges = ordered_members[["group_i", "member"]].copy()
+            chain_edges["next_member"] = ordered_members.groupby("group_i", sort=False)[
+                "member"
+            ].shift(-1)
+            chain_edges = chain_edges.dropna(subset=["next_member"]).rename(
+                columns={"member": "u", "next_member": "v"}
+            )
+            chain_edges["u"] = chain_edges["u"].astype(str)
+            chain_edges["v"] = chain_edges["v"].astype(str)
+
+            chain_axis = (
+                ordered_members.groupby("group_i", sort=False)
+                .agg(
+                    chain_sort_mode=("chain_sort_mode", "first"),
+                    chain_axis_dx=("chain_axis_dx", "first"),
+                    chain_axis_dy=("chain_axis_dy", "first"),
+                )
+                .rename_axis("group_i")
+            )
+
+            lookup = spacing[
+                ["well_i", "well_k", "horizontal_dist", "vertical_dist"]
+            ].copy()
+            lookup["well_i"] = lookup["well_i"].astype(str)
+            lookup["well_k"] = lookup["well_k"].astype(str)
+
+            uv = lookup.rename(
+                columns={
+                    "well_i": "u",
+                    "well_k": "v",
+                    "horizontal_dist": "hz_uv",
+                    "vertical_dist": "vt_uv",
+                }
+            )
+            vu = lookup.rename(
+                columns={
+                    "well_i": "v",
+                    "well_k": "u",
+                    "horizontal_dist": "hz_vu",
+                    "vertical_dist": "vt_vu",
+                }
+            )
+
+            edges_chain = chain_edges.merge(uv, on=["u", "v"], how="left").merge(
+                vu, on=["u", "v"], how="left"
+            )
+
+            hz_uv = edges_chain["hz_uv"].astype(float)
+            hz_vu = edges_chain["hz_vu"].astype(float)
+            vt_uv = edges_chain["vt_uv"].astype(float)
+            vt_vu = edges_chain["vt_vu"].astype(float)
+
+            if edge_pick == "forward":
+                edges_chain["hz_edge_ft"] = hz_uv
+                edges_chain["vt_edge_ft"] = vt_uv
+            elif edge_pick == "mean":
+                edges_chain["hz_edge_ft"] = np.where(
+                    hz_uv.notna() & hz_vu.notna(),
+                    0.5 * (hz_uv + hz_vu),
+                    hz_uv.fillna(hz_vu),
+                )
+                edges_chain["vt_edge_ft"] = np.where(
+                    vt_uv.notna() & vt_vu.notna(),
+                    0.5 * (vt_uv + vt_vu),
+                    vt_uv.fillna(vt_vu),
+                )
+            else:  # "min"
+                edges_chain["hz_edge_ft"] = np.where(
+                    hz_uv.notna() & hz_vu.notna(),
+                    np.minimum(hz_uv, hz_vu),
+                    hz_uv.fillna(hz_vu),
+                )
+                edges_chain["vt_edge_ft"] = np.where(
+                    vt_uv.notna() & vt_vu.notna(),
+                    np.minimum(vt_uv, vt_vu),
+                    vt_uv.fillna(vt_vu),
+                )
+
+            self._edges_chain = edges_chain
+
+            ge_chain = edges_chain.groupby("group_i", sort=False)
+
+            chain_edges_used = (
+                ge_chain["hz_edge_ft"]
+                .count()
+                .rename("chain_edges_used")
+                .rename_axis("group_i")
+            )
+            hz_mean_chain = (
+                ge_chain["hz_edge_ft"]
+                .mean()
+                .rename("hz_mean_chain_ft")
+                .rename_axis("group_i")
+            )
+            vt_mean_chain = (
+                ge_chain["vt_edge_ft"]
+                .mean()
+                .rename("vt_mean_chain_ft")
+                .rename_axis("group_i")
+            )
+
+            chain_p50 = (
+                ge_chain["hz_edge_ft"]
+                .median()
+                .rename("p50_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_p25 = (
+                ge_chain["hz_edge_ft"]
+                .quantile(0.25)
+                .rename("p25_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_p75 = (
+                ge_chain["hz_edge_ft"]
+                .quantile(0.75)
+                .rename("p75_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_min = (
+                ge_chain["hz_edge_ft"]
+                .min()
+                .rename("min_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+            chain_max = (
+                ge_chain["hz_edge_ft"]
+                .max()
+                .rename("max_hz_chain_edge_ft")
+                .rename_axis("group_i")
+            )
+
+            chain_edges_missing = (
+                ((group_size - 1) - chain_edges_used)
+                .rename("chain_edges_missing")
+                .rename_axis("group_i")
+            )
+
+        # -----------------------------
+        # DENSE MODE (all member-member pairs)
+        # -----------------------------
+        cand_cnt = expected_dir_pairs = candidate_pair_density = None
+        pairs_used_dense = hz_mean_dense = vt_mean_dense = None
+        dense_p50 = dense_p25 = dense_p75 = dense_min = dense_max = None
+
+        if want_dense:
+            base_cols = [
+                "well_i",
+                "well_k",
+                "horizontal_dist",
+                "vertical_dist",
+                "direction_to_k_from_i_axis",
+            ]
+            spacing_base = spacing.loc[
+                :, [c for c in base_cols if c in spacing.columns]
+            ].copy()
+
+            cand = spacing_base.merge(
+                members.rename(columns={"member": "well_i"})[["group_i", "well_i"]],
+                on="well_i",
+                how="inner",
+            )
+            cand = cand.merge(
+                members.rename(columns={"member": "well_k"})[["group_i", "well_k"]],
+                on=["group_i", "well_k"],
+                how="inner",
+            )
+
+            cand = cand.loc[cand["well_i"] != cand["well_k"]].copy()
+
+            if axis_mode == "EW":
+                cand = cand.loc[cand["direction_to_k_from_i_axis"].isin(["E", "W"])]
+            elif axis_mode == "NS":
+                cand = cand.loc[cand["direction_to_k_from_i_axis"].isin(["N", "S"])]
+
+            cand_cnt = (
+                cand.groupby("group_i", sort=False)
+                .size()
+                .rename("member_member_rows_found")
+                .rename_axis("group_i")
+            )
+            expected_dir_pairs = (
+                (group_size * (group_size - 1))
+                .rename("expected_directed_pairs")
+                .rename_axis("group_i")
+            )
+            candidate_pair_density = (
+                (cand_cnt / expected_dir_pairs.replace(0, np.nan))
+                .rename("candidate_pair_density")
+                .rename_axis("group_i")
+            )
+
+            cand2 = cand.rename(
+                columns={
+                    "well_i": "src",
+                    "well_k": "dst",
+                    "direction_to_k_from_i_axis": "direction",
+                }
+            )
+
+            uu = np.minimum(cand2["src"].astype(str), cand2["dst"].astype(str))
+            vv = np.maximum(cand2["src"].astype(str), cand2["dst"].astype(str))
+
+            pairs_dense = cand2.assign(pair_u=uu, pair_v=vv).drop_duplicates(
+                subset=["group_i", "pair_u", "pair_v"], keep="first"
+            )
+            self._pairs_dense = pairs_dense
+
+            gp = pairs_dense.groupby("group_i", sort=False)
+            pairs_used_dense = (
+                gp.size().rename("pairs_used_dense").rename_axis("group_i")
+            )
+            hz_mean_dense = (
+                gp["horizontal_dist"]
+                .mean()
+                .rename("hz_mean_dense_ft")
+                .rename_axis("group_i")
+            )
+            vt_mean_dense = (
+                gp["vertical_dist"]
+                .mean()
+                .rename("vt_mean_dense_ft")
+                .rename_axis("group_i")
+            )
+
+            dense_p50 = (
+                gp["horizontal_dist"]
+                .median()
+                .rename("p50_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_p25 = (
+                gp["horizontal_dist"]
+                .quantile(0.25)
+                .rename("p25_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_p75 = (
+                gp["horizontal_dist"]
+                .quantile(0.75)
+                .rename("p75_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_min = (
+                gp["horizontal_dist"]
+                .min()
+                .rename("min_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+            dense_max = (
+                gp["horizontal_dist"]
+                .max()
+                .rename("max_hz_dense_pair_ft")
+                .rename_axis("group_i")
+            )
+
+        # ---------------- Merge into output (one row per well_i) ----------------
+        out = pd.DataFrame({"group_i": all_wells.astype(str)})
+
+        merges = [group_size, neighbors_in_group, survivor_rows]
+
+        if include_unweighted:
+            merges += [hz_mean_i2nbr, vt_mean_i2nbr]
+
+        if want_chain:
+            merges += [
+                chain_axis,
+                chain_edges_used,
+                chain_edges_missing,
+                hz_mean_chain,
+                vt_mean_chain,
+                chain_p50,
+                chain_p25,
+                chain_p75,
+                chain_min,
+                chain_max,
+            ]
+
+        if want_dense:
+            merges += [
+                cand_cnt,
+                expected_dir_pairs,
+                candidate_pair_density,
+                pairs_used_dense,
+                hz_mean_dense,
+                vt_mean_dense,
+                dense_p50,
+                dense_p25,
+                dense_p75,
+                dense_min,
+                dense_max,
+            ]
+
+        for s in merges:
+            if s is None:
+                continue
+            if getattr(s, "index", None) is not None and s.index.name != "group_i":
+                s = s.rename_axis("group_i")
+            out = out.merge(s.reset_index(), on="group_i", how="left")
+
+        out = out.rename(columns={"group_i": "well_i"})
+
+        out["group_size"] = out["group_size"].fillna(1).astype(int)
+        out["neighbors_in_group"] = out["neighbors_in_group"].fillna(0).astype(int)
+        out["survivor_rows_i_to_k"] = out["survivor_rows_i_to_k"].fillna(0).astype(int)
+
+        if want_chain:
+            out["chain_edges_used"] = out["chain_edges_used"].fillna(0).astype(int)
+            out["chain_edges_missing"] = out["chain_edges_missing"].fillna(
+                out["neighbors_in_group"]
+            ).astype(int)
+
+        if want_dense:
+            out["member_member_rows_found"] = out["member_member_rows_found"].fillna(0).astype(int)
+            out["pairs_used_dense"] = out["pairs_used_dense"].fillna(0).astype(int)
+
+        if neighborhood_mode == "i2nbr":
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_i2nbr_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_i2nbr_ft")
+            out["neighborhood_mode_used"] = "i2nbr"
+        elif neighborhood_mode == "chain":
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_chain_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_chain_ft")
+            out["neighborhood_mode_used"] = "chain"
+        else:
+            out["avg_hz_spacing_ft"] = out.get("hz_mean_dense_ft")
+            out["avg_vt_spacing_ft"] = out.get("vt_mean_dense_ft")
+            out["neighborhood_mode_used"] = "dense"
+
+        self._output = out
+        return out
+
+    # =========================================================================
+    # Debug / Diagnostic Plotting (separate from summarize)
+    # =========================================================================
+
+    def plot_neighborhood(
+        self,
+        well_i: str,
+        trajectories: pd.DataFrame,
+        *,
+        mode: PlotMode = "both",
+        show: bool = True,
+        save_path: Optional[str] = None,
+        max_members: int = 30,
+        figsize: Tuple[float, float] = (12.5, 8),
+        dpi: int = 160,
+    ) -> None:
+        """
+        Generate a diagnostic plot for a specific well's neighborhood.
+
+        Must be called after `summarize()` has been run.
+
+        Parameters
+        ----------
+        well_i : str
+            The well identifier to plot the neighborhood for.
+
+        trajectories : pandas.DataFrame
+            Well trajectories with columns ['uwi', 'x', 'y'] (and optionally 'md').
+
+        mode : {'chain', 'dense', 'both'}, default 'both'
+            What to overlay on the plot:
+            - 'chain': Show chain edges (A→B→C→D) with distance annotations
+            - 'dense': Show all member-member pairs as light lines
+            - 'both': Show both overlays
+
+        show : bool, default True
+            If True, display the plot interactively (plt.show()).
+
+        save_path : str, optional
+            If provided, save the plot to this file path.
+
+        max_members : int, default 30
+            Maximum number of neighborhood members to include in the plot.
+
+        figsize : tuple, default (12.5, 8)
+            Figure size in inches (width, height).
+
+        dpi : int, default 160
+            Resolution for saved figure.
+
+        Raises
+        ------
+        RuntimeError
+            If called before `summarize()` has been run.
+
+        ValueError
+            If trajectories is missing required columns or well_i data.
+
+        Examples
+        --------
+        >>> summarizer = NeighborhoodSpacingSummarizer()
+        >>> result = summarizer.summarize(spacing_df, cutoff_ft=1320, ...)
+        >>> summarizer.plot_neighborhood(
+        ...     well_i="30025410040100",
+        ...     trajectories=trajectories,
+        ...     mode="chain",
+        ...     show=True,
+        ...     save_path="./debug/well_30025410040100.png"
+        ... )
+        """
+        # Check that summarize() has been called
+        if self._members is None or self._output is None:
+            raise RuntimeError(
+                "plot_neighborhood() must be called after summarize(). "
+                "No intermediate data found."
+            )
+
+        # Validate trajectories
+        if trajectories is None:
+            raise ValueError("trajectories DataFrame is required for plotting.")
+
+        need_cols = {"uwi", "x", "y"}
+        miss_t = need_cols - set(trajectories.columns)
+        if miss_t:
+            raise ValueError(f"trajectories missing columns: {sorted(miss_t)}")
+
+
+        # Helper functions
+        def _traj_lookup(uwi: str) -> Optional[pd.DataFrame]:
+            df = trajectories.loc[trajectories["uwi"].astype(str) == str(uwi)].copy()
+            return None if df.empty else df
+
+        def _midpoint_xy(df_traj: pd.DataFrame) -> Tuple[float, float]:
+            d = df_traj.sort_values("md") if "md" in df_traj.columns else df_traj
+            x0, y0 = float(d["x"].iloc[0]), float(d["y"].iloc[0])
+            x1, y1 = float(d["x"].iloc[-1]), float(d["y"].iloc[-1])
+            return (x0 + x1) / 2.0, (y0 + y1) / 2.0
+
+        g = str(well_i)
+
+        # Get neighborhood members
+        mem = (
+            self._members.loc[self._members["group_i"].astype(str) == g, "member"]
+            .astype(str)
+            .drop_duplicates()
+            .tolist()
+        )
+        if not mem:
+            print(f"No neighborhood members found for well_i={g}")
+            return
+        if len(mem) > int(max_members):
+            mem = mem[: int(max_members)]
+
+        # Get survivors
+        surv_k: List[str] = []
+        if self._survivors is not None:
+            surv_k = (
+                self._survivors.loc[self._survivors["well_i"].astype(str) == g, "well_k"]
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+            surv_k = [x for x in surv_k if x in set(mem)]
+
+        # Load trajectories + midpoints
+        mids: Dict[str, Tuple[float, float]] = {}
+        trajs: Dict[str, pd.DataFrame] = {}
+        for u in mem:
+            dfu = _traj_lookup(u)
+            if dfu is None:
+                continue
+            dfu = dfu.sort_values("md") if "md" in dfu.columns else dfu
+            trajs[u] = dfu
+            mids[u] = _midpoint_xy(dfu)
+
+        if g not in trajs:
+            print(f"No trajectory data found for well_i={g}")
+            return
+
+        fig = plt.figure(figsize=figsize)
+        ax = fig.add_subplot(111)
+
+        # Plot each well trajectory
+        line_by_uwi: Dict[str, any] = {}
+        for u, dfu in trajs.items():
+            x = dfu["x"].to_numpy(float)
+            y = dfu["y"].to_numpy(float)
+            lw = 2.7 if u == g else (2.0 if u in surv_k else 1.2)
+            (ln,) = ax.plot(x, y, linewidth=lw)
+            line_by_uwi[u] = ln
+
+        # Midpoints
+        for u, (mx, my) in mids.items():
+            ax.scatter([mx], [my], s=35)
+
+        # Convex hull
+        pts = np.array(list(mids.values()), dtype=float)
+        if pts.shape[0] >= 3:
+            try:
+
+                hull = ConvexHull(pts)
+                poly = pts[hull.vertices]
+                poly = np.vstack([poly, poly[0]])
+                ax.plot(poly[:, 0], poly[:, 1], linestyle="--", linewidth=1.5)
+            except Exception:
+                pass
+
+        # Cutoff circle around well_i midpoint
+        if g in mids and self._cutoff_ft is not None:
+            mx, my = mids[g]
+            hcut_i = float(self._cutoff_ft)
+            if self._ov_cut is not None and g in self._ov_cut.index:
+                v = self._ov_cut.loc[g]
+                if pd.notna(v):
+                    hcut_i = float(v)
+            ax.add_patch(
+                Circle((mx, my), radius=hcut_i, fill=False, linestyle=":", linewidth=1.5)
+            )
+
+        # Chain edges overlay
+        if mode in ("chain", "both") and self._edges_chain is not None:
+            e = self._edges_chain.loc[self._edges_chain["group_i"].astype(str) == g].copy()
+            for _, r in e.iterrows():
+                u = str(r["u"])
+                v = str(r["v"])
+                hz = r.get("hz_edge_ft", np.nan)
+                if (u in mids) and (v in mids):
+                    x1, y1 = mids[u]
+                    x2, y2 = mids[v]
+                    ax.plot([x1, x2], [y1, y2], linewidth=2.2, linestyle="--")
+                    xm, ym = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+                    if pd.notna(hz):
+                        ax.text(xm, ym, f"{float(hz):.0f} ft", fontsize=8)
+
+        # Dense pairs overlay
+        if mode in ("dense", "both") and self._pairs_dense is not None:
+            p = self._pairs_dense.loc[self._pairs_dense["group_i"].astype(str) == g].copy()
+            if len(p) > 160:
+                p = p.nsmallest(160, "horizontal_dist")
+            for _, r in p.iterrows():
+                u = str(r["pair_u"])
+                v = str(r["pair_v"])
+                if (u in mids) and (v in mids):
+                    x1, y1 = mids[u]
+                    x2, y2 = mids[v]
+                    ax.plot([x1, x2], [y1, y2], linewidth=0.9, alpha=0.22)
+
+        # Title from output
+        if self._output is not None:
+            row = self._output.loc[self._output["well_i"].astype(str) == g]
+            if not row.empty:
+                r0 = row.iloc[0].to_dict()
+                title = (
+                    f"Neighborhood S(i) diagnostics for well_i={g}\n"
+                    f"group_size={r0.get('group_size')}, survivors(i->k)={r0.get('survivor_rows_i_to_k')}"
+                )
+                if "member_member_rows_found" in r0 and pd.notna(r0.get("member_member_rows_found")):
+                    title += (
+                        f", member_member_rows_found={int(r0.get('member_member_rows_found'))}, "
+                        f"candidate_pair_density={r0.get('candidate_pair_density'):.2f}"
+                        if pd.notna(r0.get('candidate_pair_density')) else ""
+                    )
+                ax.set_title(title)
+
+        ax.set_xlabel("UTM Easting (ft)")
+        ax.set_ylabel("UTM Northing (ft)")
+        ax.axis("equal")
+
+        # Side legend
+        legend_order = [g] + [u for u in mem if u != g and u in line_by_uwi]
+        handles = [line_by_uwi[u] for u in legend_order if u in line_by_uwi]
+
+        labels = []
+        surv_k_set: Set[str] = set(surv_k)
+        for u in legend_order:
+            if u not in line_by_uwi:
+                continue
+            tag = "i" if u == g else ("k*" if u in surv_k_set else "k")
+            labels.append(f"{tag}: {u}")
+
+        fig.subplots_adjust(right=0.72)
+        ax.legend(
+            handles,
+            labels,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=True,
+            fontsize=8,
+            title="Legend (color → well)",
+            title_fontsize=9,
+        )
+
+        if save_path is not None:
+            save_dir = os.path.dirname(save_path)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+
+        if show:
+            plt.show()
+        
+        plt.close(fig)
+
+    def plot_multiple_neighborhoods(
+        self,
+        well_ids: List[str],
+        trajectories: pd.DataFrame,
+        *,
+        save_dir: str,
+        mode: PlotMode = "both",
+        max_members: int = 30,
+        figsize: Tuple[float, float] = (12.5, 8),
+        dpi: int = 160,
+    ) -> None:
+        """
+        Generate diagnostic plots for multiple wells, saving each to a file.
+
+        Convenience method that calls `plot_neighborhood()` for each well.
+
+        Parameters
+        ----------
+        well_ids : list of str
+            List of well identifiers to plot.
+
+        trajectories : pandas.DataFrame
+            Well trajectories with columns ['uwi', 'x', 'y'].
+
+        save_dir : str
+            Directory to save plot files (created if doesn't exist).
+
+        mode : {'chain', 'dense', 'both'}, default 'both'
+            What to overlay on the plots.
+
+        max_members : int, default 30
+            Maximum number of neighborhood members per plot.
+
+        figsize : tuple, default (12.5, 8)
+            Figure size in inches.
+
+        dpi : int, default 160
+            Resolution for saved figures.
+
+        Examples
+        --------
+        >>> summarizer.plot_multiple_neighborhoods(
+        ...     well_ids=["well_001", "well_002", "well_003"],
+        ...     trajectories=trajectories,
+        ...     save_dir="./debug_plots/",
+        ...     mode="chain"
+        ... )
+        """
+        os.makedirs(save_dir, exist_ok=True)
+
+        for well_id in well_ids:
+            save_path = os.path.join(save_dir, f"neighborhood_{well_id}.png")
+            try:
+                self.plot_neighborhood(
+                    well_i=well_id,
+                    trajectories=trajectories,
+                    mode=mode,
+                    show=False,
+                    save_path=save_path,
+                    max_members=max_members,
+                    figsize=figsize,
+                    dpi=dpi,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to plot well_i={well_id}: {e}")

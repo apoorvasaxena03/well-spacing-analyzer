@@ -31,12 +31,89 @@ from scipy.spatial import ConvexHull
 #%% # ==================== Well Spacing Calculator ====================
 
 class AlignmentType(Enum):
+    """
+    Classification of well pair alignment based on the angle between their lateral axes.
+
+    Values
+    ------
+    PARALLEL_LIKE : Wells are roughly parallel (angle <= theta_parallel_deg, typically 25°)
+    OBLIQUE : Wells are at an intermediate angle (between parallel and perpendicular thresholds)
+    PERPENDICULAR : Wells are roughly perpendicular (angle >= theta_perp_deg, typically 65°)
+    MISALIGNED : Wells that don't fit other categories (used when reject_misaligned=True)
+    """
     PARALLEL_LIKE = auto()
     OBLIQUE = auto()
     PERPENDICULAR = auto()
     MISALIGNED = auto()
+
+
 @dataclass
 class SpacingResult:
+    """
+    Container for well-pair spacing metrics computed by WellSpacingCalculator.
+
+    This dataclass holds all computed metrics for a single (well_i, well_k) pair,
+    including spacing distances, overlap metrics, alignment classification, and
+    directional information.
+
+    Attributes
+    ----------
+    well_i, well_k : Any
+        Unique identifiers for the well pair.
+    horizontal_dist : float
+        Mean horizontal spacing (ft). For parallel-like pairs: crossline mean |Δy(x)|.
+        For oblique/perp: mean nearest-projection distance.
+    horizontal_dist_median : float
+        Median horizontal spacing (ft).
+    vertical_dist : float
+        Absolute vertical separation between well midpoints (ft).
+    dist3d : float
+        3D distance: sqrt(horizontal_dist² + vertical_dist²) (ft).
+    overlap_len_common_ft : float
+        Length of lateral overlap in i-frame (ft). NaN for oblique/perp pairs.
+    LL_i, LL_k : float
+        Lateral lengths of well_i and well_k respectively (ft).
+    overlap_pct_i, overlap_pct_k : float
+        Overlap length as percentage of each well's lateral (0-1). NaN for oblique/perp.
+    n_samples : int
+        Number of sample points used in spacing calculation.
+    dy_p5 : float
+        5th percentile of crossline distances (ft). Used as quality filter.
+    angle_deg : float
+        Angle between well lateral axes (degrees, 0-90).
+    pair_alignment : str
+        Classification: 'parallel_like', 'oblique', 'perpendicular', or 'misaligned'.
+    min_distance_ft : float
+        Minimum nearest-projection distance (ft). For oblique/perp only; NaN for parallel.
+    mean_windowed_ft : float
+        Mean distance in ±window_ft around closest approach (ft). For oblique/perp only.
+    reject_reason : str
+        If pair was rejected, reason string (e.g., 'no_overlap_x', 'coarse_far'). Empty if valid.
+    direction_axis : str
+        The axis used for direction classification ('EW' or 'NS').
+    direction_to_k_from_i_axis : str
+        Cardinal direction from i to k constrained to direction_axis ('E','W','N', or 'S').
+    direction_axis_confidence : float
+        Confidence score for direction classification (0-1).
+    direction_axis_distribution : str
+        Distribution of directional votes (e.g., 'E:0.83,W:0.17').
+    drill_direction_i, drill_direction_k : str
+        Drill direction classification for each well ('EW' or 'NS').
+    axis_forced : bool
+        Whether direction was forced to axis (always True in current implementation).
+    contact_threshold_ft : float
+        Distance threshold T used for contact metrics (ft). For oblique/perp only.
+    contact_len_i_ft : float
+        Length of well_i within T ft of well_k (ft). For oblique/perp only.
+    contact_pct_i : float
+        contact_len_i_ft as percentage of LL_i (0-1). For oblique/perp only.
+    contact_len_i_interior_ft : float
+        Contact length excluding endpoints (interior only). For oblique/perp only.
+    contact_pct_i_interior : float
+        Interior contact as percentage of LL_i (0-1). For oblique/perp only.
+    proj_coverage_i_pct : float
+        Percentage of well_i samples with valid interior projection onto well_k (0-1).
+    """
     # core identifiers
     well_i: Any
     well_k: Any
@@ -85,6 +162,50 @@ class SpacingResult:
     proj_coverage_i_pct: float = float("nan")
 @dataclass
 class PairArtifacts:
+    """
+    Container for intermediate computation artifacts used in debug visualizations.
+
+    This dataclass stores arrays and metadata generated during spacing calculations
+    that are useful for diagnostic plots (e.g., debug_pair_spacing). Most fields
+    are None unless want_artifacts=True is passed to the computation method.
+
+    Attributes (Common)
+    -------------------
+    Xi_utm, Xk_utm : np.ndarray or None
+        Full-resolution UTM coordinates for well_i and well_k. Shape: (N, 2).
+    Xi_if, Xk_if : np.ndarray or None
+        Coordinates projected into well_i's local frame. Shape: (N, 2).
+    dir_axis : str or None
+        Direction axis used ('EW' or 'NS').
+    has_latlon : bool
+        Whether lat/lon coordinates were available for geodetic calculations.
+
+    Attributes (Parallel-like pairs)
+    --------------------------------
+    overlap_band : Tuple[float, float] or None
+        (x_lo, x_hi) bounds of the overlap region in i-frame coordinates.
+    Xi_clip, Xk_clip : np.ndarray or None
+        Clipped polylines within the overlap band. Shape: (M, 2).
+    xgrid : np.ndarray or None
+        X-coordinates of sample stations in overlap region.
+    yi, yk : np.ndarray or None
+        Interpolated y-coordinates at each x-station for wells i and k.
+    Xi_utml, Xk_utml : np.ndarray or None
+        UTM coordinates of sample points for quiver/arrow plots. Shape: (N, 2).
+    theta_rose : np.ndarray or None
+        Azimuth angles (radians) for polar rose plot of i→k directions.
+
+    Attributes (Oblique/Perpendicular pairs)
+    ----------------------------------------
+    s_targets : np.ndarray or None
+        Arclength sample positions along well_i (ft).
+    Pi : np.ndarray or None
+        Sample points on well_i in UTM coordinates. Shape: (N, 2).
+    Q : np.ndarray or None
+        Nearest points on well_k for each sample in Pi. Shape: (N, 2).
+    d_series : np.ndarray or None
+        Distance from each Pi sample to its nearest point Q on well_k (ft).
+    """
     # Always useful
     Xi_utm: Optional[np.ndarray] = None
     Xk_utm: Optional[np.ndarray] = None
@@ -121,6 +242,36 @@ class WellSpacingCalculator:
     _DIR4_LABELS: ClassVar[np.ndarray] = np.array(["N", "E", "S", "W"], dtype=object)
 
     def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame]):
+        """
+        Initialize WellSpacingCalculator with well trajectory data.
+
+        Parameters
+        ----------
+        trajectories : Union[Dict[str, pd.DataFrame], pd.DataFrame]
+            Well trajectory data in one of two formats:
+
+            1. DataFrame (long format): Must contain columns:
+               - 'uwi' : str, unique well identifier
+               - 'md' : float, measured depth (ft)
+               - 'x', 'y' : float, UTM coordinates (ft)
+               - 'tvd' : float, true vertical depth (ft)
+               - 'latitude', 'longitude' : float, optional for geodetic direction
+               - 'azimuth' : float, optional for drill direction classification
+
+            2. Dict[str, pd.DataFrame]: Mapping of uwi -> trajectory DataFrame,
+               where each DataFrame has the columns above (except 'uwi').
+
+        Raises
+        ------
+        ValueError
+            If trajectories is a DataFrame without 'uwi' column, or invalid type.
+
+        Notes
+        -----
+        The calculator stores trajectories in both formats internally:
+        - self.trajectories : Dict[str, pd.DataFrame] for fast per-well lookups
+        - self._trajectory_df : pd.DataFrame for vectorized operations
+        """
         if isinstance(trajectories, pd.DataFrame):
             if "uwi" not in trajectories.columns:
                 raise ValueError("Trajectory DataFrame must contain 'uwi' column.")
@@ -395,7 +546,33 @@ class WellSpacingCalculator:
         return combined_df
 
     def _filter_close_pairs(self, lat: np.ndarray, lon: np.ndarray, max_distance_miles: float = 20.0) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prefilter well pairs by approximate geographic distance to reduce computation.
 
+        Uses a fast planar approximation (lat/lon degree-to-miles conversion) to identify
+        pairs within max_distance_miles. This is much faster than computing exact geodetic
+        distances for all N² pairs.
+
+        Parameters
+        ----------
+        lat : np.ndarray
+            Latitude coordinates for all wells (degrees). Shape: (N,).
+        lon : np.ndarray
+            Longitude coordinates for all wells (degrees). Shape: (N,).
+        max_distance_miles : float, default 20.0
+            Maximum distance threshold (miles). Pairs farther apart are excluded.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            (i_idx, k_idx) arrays of well index pairs that pass the distance filter.
+            Self-pairs (i == k) are excluded.
+
+        Notes
+        -----
+        Uses 69 miles/degree for latitude and cos(lat)-adjusted for longitude.
+        This is approximate but sufficient for filtering at 20-mile scale.
+        """
         lat1, lat2 = np.meshgrid(lat, lat, indexing="ij")
         lon1, lon2 = np.meshgrid(lon, lon, indexing="ij")
 
@@ -545,6 +722,23 @@ class WellSpacingCalculator:
         return midpoint_df.set_index("uwi")
     
     def _compute_drill_directions(self) -> pd.Series:
+        """
+        Classify each well's drill direction as 'EW' (East-West) or 'NS' (North-South).
+
+        Uses the median azimuth of each well's trajectory to determine the primary
+        drilling direction. Wells drilled predominantly east-west (azimuth 45-135° or
+        225-315°) are classified as 'EW'; others are classified as 'NS'.
+
+        Returns
+        -------
+        pd.Series
+            Series indexed by 'uwi' with values 'EW' or 'NS'.
+
+        Notes
+        -----
+        The drill direction is used to determine the axis for spacing direction
+        classification: NS-drilled wells use E/W direction labels, and vice versa.
+        """
         median_azimuth = self._trajectory_df.groupby("uwi")["azimuth"].median()
         is_ew = ((median_azimuth >= 45) & (median_azimuth <= 135)) | ((median_azimuth >= 225) & (median_azimuth <= 315))
         return pd.Series(np.where(is_ew, "EW", "NS"), index=median_azimuth.index, name="drill_direction")
@@ -1155,6 +1349,31 @@ class WellSpacingCalculator:
         theta_parallel_deg: float,
         theta_perp_deg: float
     ) -> Tuple[AlignmentType, float]:
+        """
+        Classify the alignment between two wells based on their lateral axis directions.
+
+        Parameters
+        ----------
+        ex_i : np.ndarray
+            Unit vector along well_i's lateral axis. Shape: (2,).
+        ex_k : np.ndarray
+            Unit vector along well_k's lateral axis. Shape: (2,).
+        theta_parallel_deg : float
+            Maximum angle (degrees) to be classified as PARALLEL_LIKE.
+        theta_perp_deg : float
+            Minimum angle (degrees) to be classified as PERPENDICULAR.
+
+        Returns
+        -------
+        Tuple[AlignmentType, float]
+            (alignment_type, angle_deg) where angle_deg is the actual angle between axes.
+
+        Notes
+        -----
+        Uses absolute dot product to be direction-agnostic (heel-to-toe vs toe-to-heel).
+        Angle ranges: [0, theta_parallel] → PARALLEL_LIKE, [theta_perp, 90] → PERPENDICULAR,
+        otherwise → OBLIQUE.
+        """
         # use absolute dot (direction-agnostic)
         dot_abs = float(np.abs(float(np.dot(ex_i, ex_k))))
         angle_deg = float(np.degrees(np.arccos(np.clip(dot_abs, -1.0, 1.0))))
@@ -1189,9 +1408,54 @@ class WellSpacingCalculator:
         want_artifacts: bool = True,
     ) -> Tuple[SpacingResult, Optional[PairArtifacts]]:
         """
-        Single source of truth for a pair's spacing + direction metrics.
-        Reuses the class helpers you already have. If want_artifacts=True,
-        returns all arrays the debug plots need; otherwise returns None for artifacts.
+        Compute all spacing and direction metrics for a single well pair.
+
+        This is the unified computation engine that handles both parallel-like pairs
+        (crossline spacing over overlap) and oblique/perpendicular pairs (nearest-projection
+        distance series). It produces consistent results for both the batch processor
+        and the debug_pair_spacing visualizer.
+
+        Parameters
+        ----------
+        uwi_i, uwi_k : Any
+            Unique identifiers for the well pair.
+        step_ft : int
+            Sampling step size along laterals (ft).
+        n_samples : int or None
+            If specified, overrides step_ft to use exactly this many samples.
+        max_crossline_ft : float or None
+            Maximum crossline distance threshold for filtering.
+        crossline_percentile : float
+            Percentile (0-100) for crossline distance guardrail (e.g., 5.0 for p5).
+        ds_crossline_step_ft : int
+            Downsampling step for coarse-resolution prefiltering.
+        use_pca_axis : bool
+            If True, use PCA to define the i-frame axis; else use heel-to-toe vector.
+        theta_parallel_deg : float
+            Maximum angle for PARALLEL_LIKE classification (degrees).
+        theta_perp_deg : float
+            Minimum angle for PERPENDICULAR classification (degrees).
+        reject_misaligned : bool
+            If True, reject oblique/perpendicular pairs (return NaN metrics).
+        use_windowed_mean : bool
+            If True, compute mean distance in ±window_ft around closest approach.
+        window_ft : float
+            Half-width of window for windowed mean (ft).
+        contact_threshold_ft : float
+            Distance threshold T for contact length metrics (ft).
+        coverage_epsilon : float
+            Fraction of segment ends to exclude for "interior" projection (0-0.5).
+        drill_direction_i, drill_direction_k : str or None
+            Pre-computed drill directions ('EW' or 'NS'). If None, computed from azimuth.
+        tvd_i, tvd_k : float or None
+            Pre-computed TVD values. If None, computed as midpoint TVD from trajectory.
+        want_artifacts : bool, default True
+            If True, populate PairArtifacts for debug visualization.
+
+        Returns
+        -------
+        Tuple[SpacingResult, Optional[PairArtifacts]]
+            (result, artifacts) where artifacts is None if want_artifacts=False.
         """
         # Cache build if needed
         if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
@@ -1742,13 +2006,66 @@ class WellSpacingCalculator:
         coverage_epsilon: float,
     ) -> pd.DataFrame:
         """
-        Angle-aware routing:
-        - parallel-like (Δθ ≤ theta_parallel_deg): crossline |Δy(x)| over i-frame overlap (existing flow)
-        - oblique (theta_parallel_deg < Δθ < theta_perp_deg): nearest-projection mean/median
-        - perpendicular (Δθ ≥ theta_perp_deg): closest-approach min (+ optional ±window mean)
-        Axis-constrained direction is always reported:
-        NS reference -> E/W
-        EW reference -> N/S
+        Process a batch of well pairs with angle-aware routing to appropriate spacing methods.
+
+        This method is the main batch processor that handles all candidate well pairs,
+        routing them to the appropriate spacing computation based on their alignment:
+
+        Routing Logic
+        -------------
+        - PARALLEL_LIKE (angle ≤ theta_parallel_deg): Uses crossline |Δy(x)| computed over
+          the x-overlap region in the reference well's i-frame.
+        - OBLIQUE (theta_parallel_deg < angle < theta_perp_deg): Uses nearest-projection
+          distance series from samples along well_i to the nearest point on well_k.
+        - PERPENDICULAR (angle ≥ theta_perp_deg): Same as oblique, with additional
+          min_distance_ft and mean_windowed_ft metrics.
+
+        Parameters
+        ----------
+        i_idx, k_idx : np.ndarray
+            Index arrays for (well_i, well_k) pairs to process.
+        ids : np.ndarray
+            Array of well identifiers (uwi), indexed by i_idx/k_idx.
+        coords : np.ndarray
+            Midpoint coordinates array with columns [x, y, tvd]. Shape: (N_wells, 3).
+        directions : np.ndarray
+            Drill direction array ('EW' or 'NS') for each well. Shape: (N_wells,).
+        step_ft : int
+            Sampling step size (ft).
+        n_samples : int or None
+            Override step_ft with fixed sample count.
+        max_crossline_ft : float or None
+            Maximum crossline threshold for filtering.
+        crossline_percentile : float
+            Percentile for crossline guardrail.
+        ds_crossline_step_ft : int
+            Downsampling step for coarse prefiltering.
+        emit_rejected : bool
+            If True, include rejected pairs in output with reject_reason populated.
+        use_pca_axis : bool
+            Use PCA for i-frame axis definition.
+        theta_parallel_deg, theta_perp_deg : float
+            Alignment classification thresholds (degrees).
+        reject_misaligned : bool
+            If True, reject oblique/perpendicular pairs entirely.
+        use_windowed_mean : bool
+            Compute windowed mean around closest approach for oblique/perp.
+        window_ft : float
+            Half-width of window (ft).
+        contact_threshold_ft : float
+            Distance threshold T for contact metrics (ft).
+        coverage_epsilon : float
+            Fraction for interior-only projection mask.
+
+        Returns
+        -------
+        pd.DataFrame
+            Pairwise spacing results with columns matching SpacingResult fields.
+
+        Notes
+        -----
+        Direction axis is always constrained based on drill direction:
+        NS-drilled wells → E/W direction axis; EW-drilled wells → N/S direction axis.
         """
         rows: List[Dict] = []
 
@@ -2120,6 +2437,18 @@ class DirectionalBenchNeighbors:
     ----------
     Output columns
     ----------
+    Bound category (positioned after well_i):
+        bound_category : str
+            Classification of how surrounded the well is by neighbors. One of:
+            - 'Unbounded'         : No neighbors at all (isolated well)
+            - 'Partially Bounded' : Has neighbor(s) but only on ONE directional side
+                                    (e.g., same_1 only, or near_1 only, or same_1+near_1 but no _2's)
+            - 'Mostly Bounded'    : Has both sides filled in at least one category (same OR near),
+                                    but not both categories fully bounded
+                                    (e.g., same_1+same_2 but no near_1+near_2, or vice versa)
+            - 'Fully Bounded'     : Has neighbors on both sides in BOTH same-bench and different-bench
+                                    (same_1+same_2+near_1+near_2 all present)
+
     Neighbor picks (per category 'same'/'near'):
         uwi_same_1,  hz_ft_to_same_1,  vt_ft_to_same_1,  3d_ft_to_same_1
         uwi_same_2,  hz_ft_to_same_2,  vt_ft_to_same_2,  3d_ft_to_same_2
@@ -2465,8 +2794,26 @@ class DirectionalBenchNeighbors:
             .merge(audit_df, on="well_i", how="left")
         )
 
+        # ---------- Add bound_category column ----------
+        has_same_1 = out["uwi_same_1"].notna()
+        has_same_2 = out["uwi_same_2"].notna()
+        has_near_1 = out["uwi_near_1"].notna()
+        has_near_2 = out["uwi_near_2"].notna()
+
+        has_any_neighbor = has_same_1 | has_same_2 | has_near_1 | has_near_2
+        same_both_sides = has_same_1 & has_same_2
+        near_both_sides = has_near_1 & has_near_2
+
+        conditions = [
+            ~has_any_neighbor,                      # Unbounded
+            same_both_sides & near_both_sides,      # Fully Bounded
+            same_both_sides | near_both_sides,      # Mostly Bounded
+        ]
+        choices = ["Unbounded", "Fully Bounded", "Mostly Bounded"]
+        out["bound_category"] = np.select(conditions, choices, default="Partially Bounded")
+
         ordered_cols = (
-            ["well_i"]
+            ["well_i", "bound_category"]
             + self._category_cols("same", 1)
             + self._category_cols("same", 2)
             + self._category_cols("near", 1)
@@ -2475,7 +2822,116 @@ class DirectionalBenchNeighbors:
         )
         existing_cols = [c for c in ordered_cols if c in out.columns]
         return out[existing_cols + [c for c in out.columns if c not in existing_cols]]
-    
+
+    @staticmethod
+    def classify_bound_category(summary_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Classify each well into a bound category based on neighbor configuration.
+
+        This method implements a 4-category system based on the presence/absence
+        of neighbors in same-bench (lateral) and different-bench (vertical/stacked) directions.
+
+        Categories:
+        -----------
+        1. Unbounded: No neighbors at all (isolated well)
+           - same_1=❌, same_2=❌, near_1=❌, near_2=❌
+
+        2. Partially Bounded: Has neighbor(s) but only on ONE directional side
+           - Has at least one neighbor, but no category has both _1 and _2 filled
+           - Examples: only same_1, only near_1, same_1+near_1 (but no _2's)
+
+        3. Mostly Bounded: Has both sides filled in at least one category, but not both
+           - Has same_1+same_2 OR near_1+near_2, but not BOTH pairs complete
+           - Examples: same_1+same_2 (laterally bounded), near_1+near_2 (vertically bounded)
+
+        4. Fully Bounded: Has neighbors on both sides in BOTH same and different bench
+           - same_1=✅, same_2=✅, near_1=✅, near_2=✅
+
+        Parameters
+        ----------
+        summary_df : pd.DataFrame
+            Output from the `summarize()` method containing columns:
+            uwi_same_1, uwi_same_2, uwi_near_1, uwi_near_2
+
+        Returns
+        -------
+        pd.DataFrame
+            Input dataframe with additional column 'bound_category'
+
+        Examples
+        --------
+        >>> nb = DirectionalBenchNeighbors()
+        >>> summary = nb.summarize(spacing_df, header_df, cutoff_ft=1800)
+        >>> summary_with_category = DirectionalBenchNeighbors.classify_bound_category(summary)
+        >>> summary_with_category['bound_category'].value_counts()
+        """
+        df = summary_df.copy()
+
+        # Check presence of each neighbor type
+        has_same_1 = df["uwi_same_1"].notna()
+        has_same_2 = df["uwi_same_2"].notna()
+        has_near_1 = df["uwi_near_1"].notna()
+        has_near_2 = df["uwi_near_2"].notna()
+
+        # Derived flags
+        has_any_neighbor = has_same_1 | has_same_2 | has_near_1 | has_near_2
+        same_both_sides = has_same_1 & has_same_2  # Laterally bounded (same bench)
+        near_both_sides = has_near_1 & has_near_2  # Vertically bounded (different bench)
+
+        # Classification logic
+        def classify(row_idx):
+            if not has_any_neighbor.iloc[row_idx]:
+                return "Unbounded"
+            elif same_both_sides.iloc[row_idx] and near_both_sides.iloc[row_idx]:
+                return "Fully Bounded"
+            elif same_both_sides.iloc[row_idx] or near_both_sides.iloc[row_idx]:
+                return "Mostly Bounded"
+            else:
+                return "Partially Bounded"
+
+        # Vectorized approach for performance
+        conditions = [
+            ~has_any_neighbor,                                      # Unbounded
+            same_both_sides & near_both_sides,                      # Fully Bounded
+            same_both_sides | near_both_sides,                      # Mostly Bounded
+        ]
+        choices = ["Unbounded", "Fully Bounded", "Mostly Bounded"]
+
+        df["bound_category"] = np.select(conditions, choices, default="Partially Bounded")
+
+        return df
+
+    @staticmethod
+    def get_bound_category_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Get a summary count of wells by bound category.
+
+        Parameters
+        ----------
+        summary_df : pd.DataFrame
+            Output from `classify_bound_category()` containing 'bound_category' column
+
+        Returns
+        -------
+        pd.DataFrame
+            Summary with counts and percentages for each category
+        """
+        if "bound_category" not in summary_df.columns:
+            summary_df = DirectionalBenchNeighbors.classify_bound_category(summary_df)
+
+        # Define category order
+        cat_order = ["Unbounded", "Partially Bounded", "Mostly Bounded", "Fully Bounded"]
+
+        counts = summary_df["bound_category"].value_counts()
+        total = len(summary_df)
+
+        result = pd.DataFrame({
+            "bound_category": cat_order,
+            "count": [counts.get(cat, 0) for cat in cat_order],
+            "percentage": [counts.get(cat, 0) / total * 100 for cat in cat_order]
+        })
+
+        return result
 
     def summarize_avg_spacing(
         self,
@@ -2501,21 +2957,82 @@ class DirectionalBenchNeighbors:
         debug_label_members: bool = True,
     ) -> pd.DataFrame:
         """
-        Summarize per-well spacing from a pairwise spacing table by building a neighborhood S(i)
-        for each well_i and computing a neighborhood spacing metric.
+        Summarize per-well average spacing by building neighborhoods and computing aggregate metrics.
 
-        neighborhood_mode:
-        - "i2nbr": mean of eligible i→k survivor distances
-        - "chain": chain adjacency inside S(i): A→B, B→C, C→D (no repeats)
-                    A chosen by chain_sort_mode ("x" or "pca")
-        - "dense": mean of all unique undirected member-member pairs inside S(i)
+        For each well_i, this method:
+        1. Builds a neighborhood S(i) = {well_i} ∪ {eligible neighbors k}
+        2. Computes an average spacing metric using one of three aggregation modes
+        3. Returns one row per well_i with the computed metrics
 
-        NOTE on proj_coverage_min:
-        If proj_coverage_min is provided but spacing_df does not contain proj_coverage_i_pct,
-        this method will derive a proxy:
-            - proj_coverage_i_pct := overlap_pct_i (preferred, if present), else
-            - proj_coverage_i_pct := overlap_len_common_ft / LL_i (if present)
-        The coverage gate is applied only for non-parallel rows (pair_alignment != "parallel_like").
+        Parameters
+        ----------
+        spacing_df : pd.DataFrame
+            Pairwise spacing table from WellSpacingCalculator.calculate_spacing().
+            Required columns: well_i, well_k, horizontal_dist, vertical_dist,
+            pair_alignment, direction_to_k_from_i_axis, LL_i.
+        cutoff_ft : float
+            Global horizontal cutoff (ft). Pairs with horizontal_dist > cutoff are excluded.
+        vertical_cutoff_ft : float, optional
+            Global vertical cutoff (ft). If provided, pairs must satisfy vertical_dist <= cutoff.
+        overlap_pct_k_min : float, optional
+            Minimum overlap/adjacency percentage (0-1). For parallel pairs: overlap_pct_k.
+            For oblique/perp: contact_pct_i_interior.
+        overrides_df : pd.DataFrame, optional
+            Per-well override table with columns: well_i (or uwi), cutoff_ft,
+            vertical_cutoff_ft, overlap_pct_k_min. Overrides global values for specific wells.
+        proj_coverage_min : float, optional
+            Minimum projection coverage (0-1) for oblique/perp pairs.
+        axis_mode : {'any', 'EW', 'NS'}, default 'any'
+            Direction eligibility: 'EW' = only E/W directions, 'NS' = only N/S, 'any' = all.
+        neighborhood_mode : {'i2nbr', 'chain', 'dense'}, default 'chain'
+            Aggregation mode:
+            - 'i2nbr': Mean of i→k survivor distances (simple average).
+            - 'chain': Chain adjacency A→B→C→D sorted by chain_sort_mode (no repeats).
+            - 'dense': Mean of all unique undirected member-member pairs in S(i).
+        chain_sort_mode : {'x', 'pca'}, default 'pca'
+            For chain mode, how to order members: 'x' = by UTM X coordinate,
+            'pca' = by projection onto first principal component (handles any orientation).
+        trajectories : pd.DataFrame, optional
+            Required for chain/dense modes. Long-format trajectory table with columns:
+            uwi, x, y (and optionally md).
+        edge_pick : {'min', 'mean', 'forward'}, default 'min'
+            For chain mode, how to resolve bidirectional edges:
+            - 'min': min(u→v, v→u) distance
+            - 'mean': average of both directions
+            - 'forward': use u→v only (chain order)
+        include_unweighted : bool, default False
+            If True, include hz_mean_i2nbr_ft and vt_mean_i2nbr_ft columns.
+        debug_well_i : str, optional
+            If specified, generate debug plot for this well's neighborhood.
+        debug_mode : {'A', 'B', 'both'}, default 'both'
+            Debug plot style: 'A' = chain edges, 'B' = dense pairs, 'both' = overlay both.
+        debug_show : bool, default False
+            If True, display debug plot interactively.
+        debug_save_dir : str, optional
+            Directory to save debug plot PNG.
+        debug_max_members : int, default 30
+            Maximum neighborhood members to show in debug plot.
+        debug_label_members : bool, default True
+            If True, label members in debug plot legend.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per well_i with columns:
+            - well_i : str
+            - group_size : int, size of neighborhood S(i)
+            - neighbors_in_group : int, group_size - 1
+            - survivor_rows_i_to_k : int, number of eligible i→k pairs
+            - avg_hz_spacing_ft : float, aggregated horizontal spacing
+            - avg_vt_spacing_ft : float, aggregated vertical spacing
+            - neighborhood_mode_used : str
+            - (mode-specific columns for chain/dense statistics)
+
+        Notes
+        -----
+        proj_coverage_min fallback: If spacing_df lacks proj_coverage_i_pct, the method
+        derives it from overlap_pct_i (preferred) or overlap_len_common_ft / LL_i.
+        The coverage gate applies only to non-parallel pairs.
         """
         import os
         from typing import Dict, Tuple
@@ -3212,6 +3729,22 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _category_cols(cat: Literal["same", "near"], idx: Literal[1, 2]) -> List[str]:
+        """
+        Generate column names for a neighbor category and index.
+
+        Parameters
+        ----------
+        cat : {'same', 'near'}
+            Category: 'same' for same-bench, 'near' for different-bench.
+        idx : {1, 2}
+            Index: 1 for primary direction, 2 for opposite direction.
+
+        Returns
+        -------
+        List[str]
+            Column names: [uwi_{cat}_{idx}, hz_ft_to_{cat}_{idx},
+            vt_ft_to_{cat}_{idx}, 3d_ft_to_{cat}_{idx}].
+        """
         return [
             f"uwi_{cat}_{idx}",
             f"hz_ft_to_{cat}_{idx}",
@@ -3221,6 +3754,22 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _empty_summary(wells: Iterable[str]) -> pd.DataFrame:
+        """
+        Create an empty summary DataFrame with all neighbor columns set to NaN.
+
+        Used when there are no eligible neighbors for a set of wells.
+
+        Parameters
+        ----------
+        wells : Iterable[str]
+            Well identifiers to include in the summary.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with well_i column and all neighbor columns
+            (uwi_same_1, hz_ft_to_same_1, etc.) set to NaN.
+        """
         cols = ["well_i"]
         for cat in ("same", "near"):
             for idx in (1, 2):
@@ -3238,6 +3787,27 @@ class DirectionalBenchNeighbors:
 
     @staticmethod
     def _validate_inputs(spacing_df: pd.DataFrame, header_df: pd.DataFrame) -> None:
+        """
+        Validate that required columns are present in input DataFrames.
+
+        Parameters
+        ----------
+        spacing_df : pd.DataFrame
+            Pairwise spacing table to validate.
+        header_df : pd.DataFrame
+            Well header table with bench assignments.
+
+        Raises
+        ------
+        ValueError
+            If any required columns are missing from either DataFrame.
+
+        Notes
+        -----
+        Required spacing_df columns: well_i, well_k, horizontal_dist, vertical_dist,
+        3D_dist, direction_to_k_from_i_axis.
+        Required header_df columns: uwi, bench.
+        """
         spacing_required = {
             "well_i",
             "well_k",
@@ -3489,9 +4059,32 @@ class FloatingSectionWPS:
         b: float,
     ) -> np.ndarray:
         """
-        Vectorized Liang–Barsky clipping against axis-aligned rectangle centered at origin:
-            x in [-a, a], y in [-b, b]
-        Returns inside-length for each segment; 0 if fully outside.
+        Compute clipped segment lengths inside a rectangle using Liang-Barsky algorithm.
+
+        This vectorized implementation clips line segments against an axis-aligned
+        rectangle centered at the origin and returns the inside-length of each segment.
+
+        Parameters
+        ----------
+        x0, y0 : np.ndarray
+            Start coordinates of segments. Shape: (N,).
+        x1, y1 : np.ndarray
+            End coordinates of segments. Shape: (N,).
+        a : float
+            Half-width of clipping rectangle (x in [-a, a]).
+        b : float
+            Half-height of clipping rectangle (y in [-b, b]).
+
+        Returns
+        -------
+        np.ndarray
+            Inside-length for each segment (ft). Shape: (N,).
+            Returns 0 if segment is fully outside the rectangle.
+
+        Notes
+        -----
+        Uses parametric form of line segments and edge-by-edge clipping to find
+        the portion of each segment that lies within the rectangle.
         """
         dx = x1 - x0
         dy = y1 - y0
@@ -3541,10 +4134,26 @@ class FloatingSectionWPS:
         orientation: Orientation,
     ) -> Tuple[float, float]:
         """
-        Return (a, b) half-sizes for the clipping rectangle for a given reference well.
+        Determine the half-sizes of the floating region for a reference well.
 
-        - 'cardinal' / 'i_frame' -> use global BoxSpec.
-        - 'corridor'             -> use per-well lateral length + CorridorSpec.
+        Parameters
+        ----------
+        ref_idx : int
+            Index of the reference well in the internal arrays.
+        orientation : {'cardinal', 'i_frame', 'corridor'}
+            The orientation mode determining box geometry.
+
+        Returns
+        -------
+        Tuple[float, float]
+            (a, b) where a is the half-width along the primary axis and b is the
+            half-height along the secondary axis (both in feet).
+
+        Notes
+        -----
+        - 'cardinal'/'i_frame': Uses global BoxSpec (e.g., 2640 ft for 1-mile section).
+        - 'corridor': Uses per-well lateral length + CorridorSpec margins.
+          a = 0.5 * lateral_length + extra_along_ft, b = half_width_ft.
         """
         if orientation == "corridor":
             if self.corridor is None:
@@ -3570,14 +4179,33 @@ class FloatingSectionWPS:
         orientation: Orientation,
     ) -> np.ndarray:
         """
-        Vectorized inside-lengths (ft) of all segments w.r.t. the floating region
-        centered on a reference well.
+        Compute the inside-lengths of all well segments within the floating region.
 
-        orientation:
-            - 'cardinal' → axis-aligned box in map frame,
-            - 'i_frame'  → rotate world by -az_ref so ref lateral is along +x,
-            - 'corridor' → same rotation as 'i_frame' but with per-well corridor
-                           half-sizes derived from that ref lateral's length.
+        This is the core vectorized computation that determines how much of each
+        well's lateral lies within the floating region centered on a reference well.
+
+        Parameters
+        ----------
+        ref_idx : int
+            Index of the reference well in the internal arrays.
+        orientation : {'cardinal', 'i_frame', 'corridor'}
+            Region orientation:
+            - 'cardinal': Axis-aligned box (north-up, east-right) in map frame.
+            - 'i_frame': Box rotated so reference lateral is along +X axis.
+            - 'corridor': Same rotation as 'i_frame' but with dynamic half-sizes
+              derived from the reference lateral's length + CorridorSpec.
+
+        Returns
+        -------
+        np.ndarray
+            Inside-length (ft) for each well's lateral segment. Shape: (N_wells,).
+            Zero if the lateral is entirely outside the region.
+
+        Notes
+        -----
+        The computation translates all segments so the region is centered at origin,
+        optionally rotates into the reference well's frame, then applies Liang-Barsky
+        clipping to compute inside lengths.
         """
         cx = self._mx[ref_idx]
         cy = self._my[ref_idx]

@@ -1035,26 +1035,27 @@ def compute_rsv_cat(
 
     # Coerce dates on resolved columns (only if they exist)
     if spud_col in work.columns:
-        work[spud_col] = pd.to_datetime(work[spud_col], errors="coerce")
+        work[spud_col] = pd.to_datetime(work[spud_col], errors="coerce", utc=utc)
     if last_prod_col in work.columns:
-        work[last_prod_col] = pd.to_datetime(work[last_prod_col], errors="coerce")
+        work[last_prod_col] = pd.to_datetime(work[last_prod_col], errors="coerce", utc=utc)
     if first_prod_col and first_prod_col in work.columns:
-        work[first_prod_col] = pd.to_datetime(work[first_prod_col], errors="coerce")
+        work[first_prod_col] = pd.to_datetime(work[first_prod_col], errors="coerce", utc=utc)
     if comp_col and comp_col in work.columns:
-        work[comp_col] = pd.to_datetime(work[comp_col], errors="coerce")
+        work[comp_col] = pd.to_datetime(work[comp_col], errors="coerce", utc=utc)
     if permit_date_col and permit_date_col in work.columns:
-        work[permit_date_col] = pd.to_datetime(work[permit_date_col], errors="coerce")
+        work[permit_date_col] = pd.to_datetime(work[permit_date_col], errors="coerce", utc=utc)
 
     # Extract series for convenience
     status_raw = work[status_col].fillna("")
     status = _normalize_status_for_rsv_cat(status_raw, source_type=source_type)
-
-    spud = work[spud_col] if spud_col in work.columns else pd.Series(pd.NaT, index=work.index)
-    last_prod = work[last_prod_col] if last_prod_col in work.columns else pd.Series(pd.NaT, index=work.index)
-    first_prod = work[first_prod_col] if first_prod_col and first_prod_col in work.columns else pd.Series(pd.NaT, index=work.index)
-    comp = work[comp_col] if comp_col and comp_col in work.columns else pd.Series(pd.NaT, index=work.index)
-    permit_date = work[permit_date_col] if permit_date_col and permit_date_col in work.columns else pd.Series(pd.NaT, index=work.index)
-
+    
+    tz_dtype = "datetime64[ns, UTC]" if utc else "datetime64[ns]"
+    
+    spud = work[spud_col] if spud_col in work.columns else pd.Series(pd.NaT, index=work.index, dtype=tz_dtype)
+    last_prod = work[last_prod_col] if last_prod_col in work.columns else pd.Series(pd.NaT, index=work.index, dtype=tz_dtype)
+    first_prod = work[first_prod_col] if first_prod_col and first_prod_col in work.columns else pd.Series(pd.NaT, index=work.index, dtype=tz_dtype)
+    comp = work[comp_col] if comp_col and comp_col in work.columns else pd.Series(pd.NaT, index=work.index, dtype=tz_dtype)
+    permit_date = work[permit_date_col] if permit_date_col and permit_date_col in work.columns else pd.Series(pd.NaT, index=work.index, dtype=tz_dtype)
     # Production status (IHS A/P) if available
     if prod_status_col and prod_status_col in work.columns:
         prod_status = work[prod_status_col].fillna("").astype(str).str.upper().str.strip()
@@ -1201,7 +1202,7 @@ def add_producing_months(
 
     return df
 
-#%%
+#%% Cumulative Volumes by Period
 
 def calculate_cumulative_volumes_by_period(
     df: pd.DataFrame,

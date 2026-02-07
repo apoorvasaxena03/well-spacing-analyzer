@@ -4,6 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import time
+
+import logging
+
 import pandas as pd 
 
 pd.set_option('display.max_columns', None) # show all columns when printing DataFrames
@@ -383,7 +387,7 @@ class WellSpacingCalculator:
     # Class-level constant (shared, immutable-by-convention)
     _DIR4_LABELS: ClassVar[np.ndarray] = np.array(["N", "E", "S", "W"], dtype=object)
 
-    def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame]):
+    def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame], logger: Optional[logging.Logger] = None,):
         """
         Initialize WellSpacingCalculator with well trajectory data.
 
@@ -525,20 +529,46 @@ class WellSpacingCalculator:
         _calculate_spacing_statistics : Main method to compute pairwise spacing metrics
         _compute_normalized_midpoints : Extracts midpoint coordinates from trajectories
         """
+        # Set up hierarchical logger
+        parent_logger = logger or logging.getLogger("well_spacing_calculator")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.well_spacing_calculator")
+        self.logger.propagate = True
+
+        self.logger.info("Initializing WellSpacingCalculator")
+
         if isinstance(trajectories, pd.DataFrame):
             if "uwi" not in trajectories.columns:
                 raise ValueError("Trajectory DataFrame must contain 'uwi' column.")
+            self.logger.debug("  Input format: DataFrame (long format)")
             self._trajectory_df = trajectories.reset_index(drop=True)
             self.trajectories = {
                 cid: group for cid, group in self._trajectory_df.groupby("uwi")
             }
         elif isinstance(trajectories, dict):
+            self.logger.debug("  Input format: Dict[str, DataFrame]")
             self.trajectories = trajectories
             self._trajectory_df = pd.concat(
                 trajectories.values(), keys=trajectories.keys()
             ).reset_index(drop=True)
         else:
             raise ValueError("Invalid type for trajectories. Must be DataFrame or Dict.")
+
+        # Log initialization summary
+        n_wells = len(self.trajectories)
+        n_points = len(self._trajectory_df)
+        avg_points_per_well = n_points / n_wells if n_wells > 0 else 0
+
+        # Check for optional columns
+        has_latlon = "latitude" in self._trajectory_df.columns and "longitude" in self._trajectory_df.columns
+        has_azimuth = "azimuth" in self._trajectory_df.columns
+
+        self.logger.info(f"✓ Loaded {n_wells:,} wells with {n_points:,} trajectory points")
+        self.logger.debug(f"  Average points per well: {avg_points_per_well:.1f}")
+        self.logger.debug(f"  Lat/lon available: {'Yes' if has_latlon else 'No (direction calculation limited)'}")
+        self.logger.debug(f"  Azimuth available: {'Yes' if has_azimuth else 'No (drill direction inference limited)'}")
         
     def _apply_effective_horizontal(
         self,
@@ -938,13 +968,46 @@ class WellSpacingCalculator:
         - Nearest-projection uses polyline distance algorithms from computational geometry
         - Contact metrics inspired by well interference analysis in unconventional reservoirs
         """
-        # Build the pair cache once (local frames + coarse arrays for precheck)
-        self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
+        # ═══════════════════════════════════════════════════════════════════════
+        self.logger.info("=" * 80)
+        self.logger.info("WELL SPACING CALCULATOR - PAIRWISE ANALYSIS PIPELINE")
+        self.logger.info("=" * 80)
 
-        # 1) Midpoints + drill directions (vertical distances remain midpoint-based)
+        pipeline_start = time.time()
+        n_wells = len(self.trajectories)
+        n_max_pairs = (n_wells * (n_wells - 1)) // 2
+
+        self.logger.info(f"Input: {n_wells:,} wells → {n_max_pairs:,} potential well pairs")
+        self.logger.debug(f"Configuration:")
+        self.logger.debug(f"  Midpoint fraction: {frac:.1%}")
+        self.logger.debug(f"  Batch size: {batch_size:,} pairs")
+        self.logger.debug(f"  Geographic filter: {max_distance_miles} miles" if max_distance_miles else "  Geographic filter: None (all pairs)")
+        self.logger.debug(f"  Alignment thresholds: parallel ≤{theta_parallel_deg}°, perpendicular ≥{theta_perp_deg}°")
+        self.logger.debug(f"  Sampling: step={step_ft} ft" + (f", n_samples={n_samples}" if n_samples else ""))
+        self.logger.debug(f"  Contact threshold: {contact_threshold_ft} ft")
+
+        # Step 1: Build the pair cache once (local frames + coarse arrays for precheck)
+        self.logger.info("─" * 80)
+        self.logger.info("Step 1/5: Building pair cache (local frames + coarse arrays)")
+        step1_start = time.time()
+        self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
+        step1_elapsed = time.time() - step1_start
+        self.logger.info(f"✓ Pair cache built for {n_wells:,} wells ({step1_elapsed:.2f}s)")
+
+        # Step 2: Midpoints + drill directions (vertical distances remain midpoint-based)
+        self.logger.info("─" * 80)
+        self.logger.info(f"Step 2/5: Computing normalized midpoints (frac={frac:.1%})")
+        step2_start = time.time()
         midpoint_df = self._compute_normalized_midpoints(frac=frac, use_interpolation=use_interpolation)
         drill_dirs = self._compute_drill_directions()
         midpoint_df["drill_direction"] = drill_dirs
+        step2_elapsed = time.time() - step2_start
+
+        # Direction distribution
+        dir_counts = drill_dirs.value_counts()
+        dir_summary = ", ".join([f"{dir}={count}" for dir, count in dir_counts.items()])
+        self.logger.info(f"✓ Midpoints computed: {len(midpoint_df):,} wells ({step2_elapsed:.2f}s)")
+        self.logger.debug(f"  Drill direction distribution: {dir_summary}")
 
         # 2) Arrays
         ids = midpoint_df.index.to_numpy()
@@ -952,19 +1015,43 @@ class WellSpacingCalculator:
         lat_lon = midpoint_df[["latitude", "longitude"]].to_numpy()
         directions = midpoint_df["drill_direction"].to_numpy()
 
-        # 3) Prefilter pairs (miles)
+        # Step 3: Prefilter pairs (miles)
+        self.logger.info("─" * 80)
+        self.logger.info("Step 3/5: Geographic prefiltering")
+        step3_start = time.time()
+
         if max_distance_miles is not None:
             lat = lat_lon[:, 0]; lon = lat_lon[:, 1]
             i_idx, k_idx = self._filter_close_pairs(lat, lon, max_distance_miles)
         else:
             i_idx, k_idx = self._get_pairwise_indices(ids)
 
+        step3_elapsed = time.time() - step3_start
+        n_filtered_pairs = len(i_idx)
+        filter_pct = (n_filtered_pairs / n_max_pairs * 100) if n_max_pairs > 0 else 0
+
+        if max_distance_miles is not None:
+            self.logger.info(f"✓ Geographic filter complete: {n_filtered_pairs:,} pairs within {max_distance_miles} mi "
+                           f"({filter_pct:.1f}% of total, {step3_elapsed:.2f}s)")
+        else:
+            self.logger.info(f"✓ No geographic filter: processing all {n_filtered_pairs:,} pairs ({step3_elapsed:.2f}s)")
+
         pairs = list(zip(i_idx, k_idx))
         batch_generator = list(self._batch_filtered_indices(pairs, batch_size=batch_size))
         n_batches = len(batch_generator)
 
+        self.logger.debug(f"  Batch configuration: {n_batches} batches of ~{batch_size:,} pairs each")
+
+        # Step 4: Batch processing (parallel)
+        self.logger.info("─" * 80)
+        self.logger.info(f"Step 4/5: Processing {n_batches} batches in parallel")
         if save_batches_dir:
             os.makedirs(save_batches_dir, exist_ok=True)
+            self.logger.info(f"  Output mode: Saving batches to {save_batches_dir}")
+        else:
+            self.logger.info(f"  Output mode: In-memory (returning combined DataFrame)")
+
+        step4_start = time.time()
 
         def process_and_save(batch_number: int, i_idx: np.ndarray, k_idx: np.ndarray):
             batch_df = self._process_batch(
@@ -1007,13 +1094,58 @@ class WellSpacingCalculator:
             for batch_num, (i_i, k_i) in tqdm(enumerate(batch_generator), total=n_batches, **tqdm_kwargs)
         )
 
+        step4_elapsed = time.time() - step4_start
+
+        # Step 5: Finalize output
+        self.logger.info("─" * 80)
+        self.logger.info("Step 5/5: Finalizing results")
+        step5_start = time.time()
+
         if save_batches_dir:
-            print(f"✅ All batches saved to {save_batches_dir}")
+            self.logger.info(f"✓ All {n_batches} batches saved to {save_batches_dir}")
+            self.logger.info(f"  Use _load_saved_batches('{save_batches_dir}') to load combined results")
+            step5_elapsed = time.time() - step5_start
+            pipeline_elapsed = time.time() - pipeline_start
+
+            self.logger.info("=" * 80)
+            self.logger.info("PIPELINE COMPLETE")
+            self.logger.info(f"Total time: {pipeline_elapsed:.2f}s ({pipeline_elapsed/60:.1f} min)")
+            self.logger.debug(f"  Step breakdown: Cache={step1_elapsed:.2f}s, Midpoints={step2_elapsed:.2f}s, "
+                            f"Filter={step3_elapsed:.2f}s, Batch={step4_elapsed:.2f}s, Finalize={step5_elapsed:.2f}s")
+            self.logger.info("=" * 80)
             return None
         else:
             out = pd.concat(results, ignore_index=True)
             # ▶ Apply effective horizontal ONCE globally if not saving batches
             out = self._apply_effective_horizontal(out, inplace=False, keep_effective_3d_audit=True)
+            step5_elapsed = time.time() - step5_start
+
+            # Summary statistics
+            total_pairs = len(out)
+            valid_pairs = (out['reject_reason'] == '').sum()
+            rejected_pairs = total_pairs - valid_pairs
+            valid_pct = (valid_pairs / total_pairs * 100) if total_pairs > 0 else 0
+
+            alignment_counts = out['pair_alignment'].value_counts()
+            alignment_summary = ", ".join([f"{align}={count:,}" for align, count in alignment_counts.items()])
+
+            pipeline_elapsed = time.time() - pipeline_start
+            throughput = total_pairs / pipeline_elapsed if pipeline_elapsed > 0 else 0
+
+            self.logger.info(f"✓ Results combined: {total_pairs:,} total pairs")
+            self.logger.info(f"  Valid: {valid_pairs:,} ({valid_pct:.1f}%)")
+            if rejected_pairs > 0:
+                self.logger.debug(f"  Rejected: {rejected_pairs:,} ({100-valid_pct:.1f}%)")
+            self.logger.debug(f"  Alignment distribution: {alignment_summary}")
+
+            self.logger.info("=" * 80)
+            self.logger.info("PIPELINE COMPLETE")
+            self.logger.info(f"Total time: {pipeline_elapsed:.2f}s ({pipeline_elapsed/60:.1f} min)")
+            self.logger.info(f"Throughput: {throughput:.0f} pairs/sec")
+            self.logger.debug(f"  Step breakdown: Cache={step1_elapsed:.2f}s, Midpoints={step2_elapsed:.2f}s, "
+                            f"Filter={step3_elapsed:.2f}s, Batch={step4_elapsed:.2f}s, Finalize={step5_elapsed:.2f}s")
+            self.logger.info("=" * 80)
+
             return out
     
     def _load_saved_batches(self, batch_folder: str) -> pd.DataFrame:
@@ -1181,6 +1313,9 @@ class WellSpacingCalculator:
         - For multi-TB datasets, consider using Dask: dask.dataframe.read_parquet()
         - Verify disk space: batch outputs typically 10-50 MB per 100k pairs
         """
+
+        self.logger.info(f"Loading saved batches from: {batch_folder}")
+
         if not os.path.isdir(batch_folder):
             raise FileNotFoundError(f"Batch folder '{batch_folder}' not found.")
 
@@ -1193,14 +1328,26 @@ class WellSpacingCalculator:
         if not batch_files:
             raise ValueError(f"No Parquet files found in folder '{batch_folder}'.")
 
-        print(f"🔍 Found {len(batch_files)} batch files. Loading and combining...")
+        n_files = len(batch_files)
+        self.logger.info(f"Found {n_files} batch file(s)")
+        print(f"🔍 Found {n_files} batch files. Loading and combining...")
 
+        load_start = time.time()
         dfs = []
-        for file in batch_files:
+        for idx, file in enumerate(batch_files, 1):
+            self.logger.debug(f"  Loading batch {idx}/{n_files}: {os.path.basename(file)}")
             dfs.append(pd.read_parquet(file))
 
+        self.logger.debug("  Concatenating batches...")
         combined_df = pd.concat(dfs, ignore_index=True)
-        print(f"✅ Loaded {len(combined_df):,} rows from all batches.")
+        load_elapsed = time.time() - load_start
+
+        n_rows = len(combined_df)
+        throughput = n_rows / load_elapsed if load_elapsed > 0 else 0
+
+        self.logger.info(f"✓ Loaded {n_rows:,} rows from {n_files} batches in {load_elapsed:.2f}s ({throughput:.0f} rows/sec)")
+        print(f"✅ Loaded {n_rows:,} rows from all batches.")
+
         return combined_df
 
     def _filter_close_pairs(self, lat: np.ndarray, lon: np.ndarray, max_distance_miles: float = 20.0) -> Tuple[np.ndarray, np.ndarray]:
@@ -1231,6 +1378,10 @@ class WellSpacingCalculator:
         Uses 69 miles/degree for latitude and cos(lat)-adjusted for longitude.
         This is approximate but sufficient for filtering at 20-mile scale.
         """
+        n_wells = len(lat)
+        n_max_pairs = (n_wells * (n_wells - 1)) // 2
+        self.logger.debug(f"    Applying geographic filter: {max_distance_miles} mi threshold")
+
         lat1, lat2 = np.meshgrid(lat, lat, indexing="ij")
         lon1, lon2 = np.meshgrid(lon, lon, indexing="ij")
 
@@ -1247,6 +1398,9 @@ class WellSpacingCalculator:
 
         mask = (rough_dist_miles <= max_distance_miles) & (delta_lat + delta_lon > 0)
         i_idx, k_idx = np.where(mask)
+
+        n_filtered = len(i_idx)
+        self.logger.debug(f"    ✓ {n_filtered:,} pairs within {max_distance_miles} mi ({n_filtered/n_max_pairs*100:.1f}% of total)")
 
         return i_idx, k_idx
 
@@ -1488,6 +1642,10 @@ class WellSpacingCalculator:
         - Linear interpolation between survey stations per SPE best practices
         - Midpoint (50% MD) most common for spacing regulations (e.g., Texas RRC)
         """
+        n_wells = len(self.trajectories)
+        mode_str = "MD interpolation" if use_interpolation else "geometric (heel+toe)/2"
+        self.logger.debug(f"  Computing normalized midpoints: frac={frac:.1%}, mode={mode_str}")
+
         df = self._trajectory_df.copy()
         df = df.sort_values(["uwi", "md"]).reset_index(drop=True)
 
@@ -1517,6 +1675,9 @@ class WellSpacingCalculator:
                 "longitude": (heel_toe_df["heel_lon"] + heel_toe_df["toe_lon"]) / 2,
             })
             midpoint_df.index.name = "uwi"
+
+            has_latlon = midpoint_df["latitude"].notna().sum()
+            self.logger.debug(f"  ✓ Midpoints computed for {n_wells:,} wells ({has_latlon}/{n_wells} with lat/lon)")
             return midpoint_df
 
         # Interpolated midpoint (MD-based)
@@ -1546,7 +1707,11 @@ class WellSpacingCalculator:
             "longitude": merged["longitude_prev"] + ratio * (merged["longitude_next"] - merged["longitude_prev"]),
         })
         midpoint_df["uwi"] = merged["uwi"]
-        return midpoint_df.set_index("uwi")
+        result = midpoint_df.set_index("uwi")
+
+        has_latlon = result["latitude"].notna().sum()
+        self.logger.debug(f"  ✓ Midpoints computed for {n_wells:,} wells ({has_latlon}/{n_wells} with lat/lon)")
+        return result
     
     def _compute_drill_directions(self) -> pd.Series:
         """
@@ -1566,9 +1731,17 @@ class WellSpacingCalculator:
         The drill direction is used to determine the axis for spacing direction
         classification: NS-drilled wells use E/W direction labels, and vice versa.
         """
+        self.logger.debug("  Computing drill directions from azimuth data")
         median_azimuth = self._trajectory_df.groupby("uwi")["azimuth"].median()
         is_ew = ((median_azimuth >= 45) & (median_azimuth <= 135)) | ((median_azimuth >= 225) & (median_azimuth <= 315))
-        return pd.Series(np.where(is_ew, "EW", "NS"), index=median_azimuth.index, name="drill_direction")
+        result = pd.Series(np.where(is_ew, "EW", "NS"), index=median_azimuth.index, name="drill_direction")
+
+        # Log distribution
+        n_ew = (result == "EW").sum()
+        n_ns = (result == "NS").sum()
+        self.logger.debug(f"  ✓ Drill directions classified: EW={n_ew}, NS={n_ns}")
+
+        return result
 
     def _axis_component_from_az(self, az_deg: np.ndarray, want_axis: str) -> np.ndarray:
         """
@@ -1706,6 +1879,11 @@ class WellSpacingCalculator:
         - origin, ex, ey (local frame metadata)
         - coarse resample XY (same length across wells) for vectorized cross-line precheck
         """
+        n_wells = len(self.trajectories)
+        self.logger.debug(f"  Building pair cache for {n_wells:,} wells")
+        self.logger.debug(f"    Axis mode: {'PCA' if use_pca_axis else 'heel-to-toe'}")
+        self.logger.debug(f"    Downsampling step: {ds_crossline_step_ft} ft")
+
         # Compute each well's lateral length to pick a *global* coarse point count
         lengths = {}
         for uwi, df in self.trajectories.items():
@@ -1715,8 +1893,13 @@ class WellSpacingCalculator:
 
         # Choose a *single* coarse count using median length / step, then clamp
         median_len = np.median(list(lengths.values())) if lengths else 3000.0
+        min_len = min(lengths.values()) if lengths else 0.0
+        max_len = max(lengths.values()) if lengths else 0.0
         m_guess = int(np.ceil(max(median_len, 1.0) / max(ds_crossline_step_ft, 1))) + 1
         M_ds = int(np.clip(m_guess, ds_min_points, ds_max_points))
+
+        self.logger.debug(f"    Lateral length stats: min={min_len:.0f} ft, median={median_len:.0f} ft, max={max_len:.0f} ft")
+        self.logger.debug(f"    Coarse resampling: {M_ds} points per well")
 
         cache = {
             "origin": {},
@@ -1766,6 +1949,7 @@ class WellSpacingCalculator:
             cache["XY_coarse"][uwi] = XYc
 
         self._paircache = cache
+        self.logger.debug(f"  ✓ Pair cache built: {n_wells:,} wells with local frames and coarse arrays")
 
     def _build_local_frame_from_i(self, df_i: pd.DataFrame, use_pca_axis: bool = True
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2284,6 +2468,9 @@ class WellSpacingCalculator:
         Tuple[SpacingResult, Optional[PairArtifacts]]
             (result, artifacts) where artifacts is None if want_artifacts=False.
         """
+        # DEBUG-level logging (called many times per batch)
+        self.logger.debug(f"      Computing pair: {uwi_i} → {uwi_k}")
+
         # Cache build if needed
         if getattr(self, "_paircache", None) is None or self._paircache.get("use_pca_axis", None) != use_pca_axis:
             self._build_pair_cache(use_pca_axis, ds_crossline_step_ft)
@@ -2308,6 +2495,7 @@ class WellSpacingCalculator:
 
         # Alignment class
         align_type, angle_deg = self._classify_alignment(ex_i, ex_k_global, theta_parallel_deg, theta_perp_deg)
+        self.logger.debug(f"        Alignment: {align_type.name.lower()}, angle={angle_deg:.1f}°")
 
         # Decide direction axis (same rule you use elsewhere)
         # If i is NS → E/W; if i is EW → N/S. If not provided, compute.
@@ -2887,8 +3075,29 @@ class WellSpacingCalculator:
         - Compare use_pca_axis=True vs False for curved wells
         - Check reject_reason to understand why pairs fail QC filters
         """
+
+        self.logger.info("=" * 80)
+        self.logger.info(f"DEBUG PAIR SPACING: {uwi_i} → {uwi_k}")
+        self.logger.info("=" * 80)
+        debug_start = time.time()
+
+        self.logger.debug(f"Configuration:")
+        self.logger.debug(f"  Sampling step: {step_ft} ft")
+        self.logger.debug(f"  Axis mode: {'PCA' if use_pca_axis else 'heel-to-toe'}")
+        self.logger.debug(f"  Alignment thresholds: parallel ≤{theta_parallel_deg}°, perp ≥{theta_perp_deg}°")
+        self.logger.debug(f"  Contact threshold: {contact_threshold_ft} ft")
+        self.logger.debug(f"  Arrow stride: {arrow_stride}")
+        if save_dir is not None:
+            self.logger.debug(f"  Output: {save_dir}/{figure_prefix}_*.png")
+        else:
+            self.logger.debug(f"  Output: interactive display (show={show})")
+
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
+
+        self.logger.info("─" * 80)
+        self.logger.info("Computing pair metrics and artifacts...")
+        compute_start = time.time()
 
         # compute once, request artifacts
         res, art = self._compute_pair_metrics_and_artifacts(
@@ -2902,6 +3111,23 @@ class WellSpacingCalculator:
             contact_threshold_ft=contact_threshold_ft,
             coverage_epsilon=coverage_epsilon,
         )
+
+        compute_elapsed = time.time() - compute_start
+        self.logger.info(f"✓ Metrics computed in {compute_elapsed:.2f}s")
+        self.logger.debug(f"  Alignment: {res.pair_alignment}, angle={res.angle_deg:.1f}°")
+        if res.reject_reason:
+            self.logger.info(f"  ⚠ Pair rejected: {res.reject_reason}")
+        else:
+            if res.pair_alignment == "parallel_like":
+                self.logger.debug(f"  Horizontal spacing: {res.horizontal_dist:.1f} ft (median={res.horizontal_dist_median:.1f} ft)")
+                self.logger.debug(f"  Overlap: {res.overlap_len_common_ft:.0f} ft ({res.overlap_pct_i*100:.1f}% of well_i)")
+            else:
+                self.logger.debug(f"  Min distance: {res.min_distance_ft:.1f} ft")
+                self.logger.debug(f"  Contact length: {res.contact_len_i_ft:.0f} ft ({res.contact_pct_i*100:.1f}% of well_i)")
+
+        self.logger.info("─" * 80)
+        self.logger.info("Generating diagnostic visualizations...")
+        viz_start = time.time()
 
         paths: Dict[str, str] = {}
         def _save(fig, key):
@@ -3032,6 +3258,19 @@ class WellSpacingCalculator:
                 r, c = divmod(j, ncols); axes[r, c].axis("off")
             plt.show()
 
+        viz_elapsed = time.time() - viz_start
+        n_figures = len(paths)
+        self.logger.info(f"✓ Generated {n_figures} diagnostic figure(s) in {viz_elapsed:.2f}s")
+        if save_dir is not None:
+            self.logger.debug(f"  Figures saved to: {save_dir}")
+            for key in sorted(paths.keys()):
+                self.logger.debug(f"    - {figure_prefix}_{key}.png")
+
+        debug_elapsed = time.time() - debug_start
+        self.logger.info("─" * 80)
+        self.logger.info(f"✓ Debug complete in {debug_elapsed:.2f}s (compute: {compute_elapsed:.2f}s, viz: {viz_elapsed:.2f}s)")
+        self.logger.info("=" * 80)
+
         # Return a compact metrics dict (same fields as before to avoid breaking downstream)
         return {
             "pair_alignment": res.pair_alignment,
@@ -3146,7 +3385,14 @@ class WellSpacingCalculator:
         Direction axis is always constrained based on drill direction:
         NS-drilled wells → E/W direction axis; EW-drilled wells → N/S direction axis.
         """
+
+        batch_start = time.time()
+        n_pairs = len(i_idx)
+
+        self.logger.debug(f"  Processing batch: {n_pairs:,} pairs")
+
         rows: List[Dict] = []
+        rejection_counts = {}  # Track rejection reasons
 
         def _res_to_row(res) -> Dict[str, Any]:
             row = {
@@ -3258,6 +3504,7 @@ class WellSpacingCalculator:
                 if emit_rejected:
                     for idx_k, k in enumerate(k_list):
                         if is_oblique[idx_k] or is_perp[idx_k]:
+                            rejection_counts["misaligned_angle"] = rejection_counts.get("misaligned_angle", 0) + 1
                             rows.append({
                                 "well_i": uwi_i, "well_k": ids[k],
                                 "horizontal_dist": np.nan, "horizontal_dist_median": np.nan,
@@ -3301,6 +3548,7 @@ class WellSpacingCalculator:
                 if emit_rejected:
                     for local, k in enumerate(k_list):
                         if (local in par_idx) and (not has_overlap[local]):
+                            rejection_counts["no_overlap_x"] = rejection_counts.get("no_overlap_x", 0) + 1
                             rows.append({
                                 "well_i": uwi_i, "well_k": ids[k],
                                 "horizontal_dist": np.nan, "horizontal_dist_median": np.nan,
@@ -3388,6 +3636,7 @@ class WellSpacingCalculator:
 
                 if coarse_min > coarse_skip_ft:
                     if emit_rejected:
+                        rejection_counts["coarse_far"] = rejection_counts.get("coarse_far", 0) + 1
                         rows.append({
                             "well_i": uwi_i, "well_k": ids[k],
                             "horizontal_dist": np.nan, "horizontal_dist_median": np.nan,
@@ -3431,7 +3680,34 @@ class WellSpacingCalculator:
                 )
                 rows.append(_res_to_row(res))
 
-        return pd.DataFrame(rows)
+        # Batch summary logging
+        batch_elapsed = time.time() - batch_start
+        df_batch = pd.DataFrame(rows)
+
+        if len(df_batch) > 0:
+            n_valid = (df_batch['reject_reason'] == '').sum() if 'reject_reason' in df_batch.columns else len(df_batch)
+            n_rejected = len(df_batch) - n_valid
+            valid_pct = (n_valid / len(df_batch) * 100) if len(df_batch) > 0 else 0
+
+            # Alignment distribution
+            if 'pair_alignment' in df_batch.columns:
+                alignment_counts = df_batch['pair_alignment'].value_counts()
+                alignment_summary = ", ".join([f"{align}={count}" for align, count in alignment_counts.items()])
+            else:
+                alignment_summary = "N/A"
+
+            throughput = n_pairs / batch_elapsed if batch_elapsed > 0 else 0
+
+            self.logger.debug(f"  Batch complete: {len(df_batch):,} results ({n_valid:,} valid, {n_rejected:,} rejected) "
+                            f"in {batch_elapsed:.2f}s ({throughput:.0f} pairs/sec)")
+
+            if rejection_counts:
+                rejection_summary = ", ".join([f"{reason}={count}" for reason, count in rejection_counts.items()])
+                self.logger.debug(f"    Rejections: {rejection_summary}")
+
+            self.logger.debug(f"    Alignments: {alignment_summary}")
+
+        return df_batch
     
 
 #%% # ==================== Directional Bench Neighbors ====================
@@ -3529,6 +3805,13 @@ class DirectionalBenchNeighbors:
                                     (e.g., same_1+same_2 but no near_1+near_2, or vice versa)
             - 'Fully Bounded'     : Has neighbors on both sides in BOTH same-bench and different-bench
                                     (same_1+same_2+near_1+near_2 all present)
+
+    Well_i attributes (positioned after bound_category):
+        tvd_i : float
+            True vertical depth of well_i at the normalized midpoint position (ft).
+            Sourced from spacing_df (computed by WellSpacingCalculator at frac parameter).
+        LL_i : float
+            Lateral length of well_i (ft). Full measured length of the horizontal lateral section.
 
     Neighbor picks (per category 'same'/'near'):
         uwi_same_1,  hz_ft_to_same_1,  vt_ft_to_same_1,  3d_ft_to_same_1
@@ -3665,16 +3948,32 @@ class DirectionalBenchNeighbors:
 
     _OPPOSITE: Dict[Direction, Direction] = {"E": "W", "W": "E", "N": "S", "S": "N"}
 
-    def __init__(self, *, tie_break_on: str = "well_k", 
-                 overrides_df: Optional[pd.DataFrame] = None) -> None:
+    def __init__(self, *, tie_break_on: str = "well_k", overrides_df: Optional[pd.DataFrame] = None, logger: Optional[logging.Logger] = None,) -> None:
         """
         Parameters
         ----------
         tie_break_on : str, default 'well_k'
             Secondary stable key when distances tie.
         """
+        # Set up hierarchical logger
+        parent_logger = logger or logging.getLogger("directional_bench_neighbors")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.directional_bench_neighbors")
+        self.logger.propagate = True
+
+        self.logger.info("Initializing DirectionalBenchNeighbors")
+        self.logger.debug(f"  Tie-break column: {tie_break_on}")
+
         self.tie_break_on = tie_break_on
         self._overrides_df_default = overrides_df
+
+        if overrides_df is not None:
+            n_overrides = len(overrides_df)
+            self.logger.info(f"✓ Initialized with default overrides for {n_overrides:,} wells")
+        else:
+            self.logger.debug("  No default overrides configured")
 
     def _resolve_overrides(self, overrides_df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
         return overrides_df if overrides_df is not None else self._overrides_df_default
@@ -3696,16 +3995,59 @@ class DirectionalBenchNeighbors:
     ) -> pd.DataFrame:
         """Return one summary row per well_i with *_same_{1,2} and *_near_{1,2}.
 
-        See class docstring for details on behavior and examples.
+        Output includes well_i attributes (tvd_i, LL_i), bound category classification,
+        neighbor selections in four slots (same_1, same_2, near_1, near_2), and
+        effective cutoff audit columns.
+
+        See class docstring for complete details on behavior, parameters, and examples.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per well_i with columns:
+            - well_i : str
+            - bound_category : str (Unbounded/Partially/Mostly/Fully Bounded)
+            - tvd_i : float (true vertical depth at midpoint, ft)
+            - LL_i : float (lateral length, ft)
+            - uwi_same_1, hz_ft_to_same_1, vt_ft_to_same_1, 3d_ft_to_same_1
+            - uwi_same_2, hz_ft_to_same_2, vt_ft_to_same_2, 3d_ft_to_same_2
+            - uwi_near_1, hz_ft_to_near_1, vt_ft_to_near_1, 3d_ft_to_near_1
+            - uwi_near_2, hz_ft_to_near_2, vt_ft_to_near_2, 3d_ft_to_near_2
+            - override_applied, eff_cutoff_ft, eff_vertical_cutoff_ft, eff_overlap_pct_k_min
 
         Raises
         ------
         ValueError
             If required columns are missing or inputs are inconsistent.
         """
+
+        # ═══════════════════════════════════════════════════════════════════════
+        self.logger.info("=" * 80)
+        self.logger.info("DIRECTIONAL BENCH NEIGHBORS - IDENTIFICATION PIPELINE")
+        self.logger.info("=" * 80)
+
+        pipeline_start = time.time()
+
         overrides_df = self._resolve_overrides(overrides_df)
-        
+
         self._validate_inputs(spacing_df, header_df)
+
+        n_input_pairs = len(spacing_df)
+        n_input_wells = spacing_df["well_i"].nunique()
+
+        self.logger.info(f"Input: {n_input_pairs:,} spacing pairs across {n_input_wells:,} wells")
+        self.logger.debug(f"Configuration:")
+        self.logger.debug(f"  Horizontal cutoff: {cutoff_ft} ft")
+        self.logger.debug(f"  Vertical cutoff: {vertical_cutoff_ft} ft" if vertical_cutoff_ft else "  Vertical cutoff: None")
+        self.logger.debug(f"  Overlap min: {overlap_pct_k_min:.1%}" if overlap_pct_k_min else "  Overlap min: None")
+        self.logger.debug(f"  Axis mode: {axis_mode}")
+        self.logger.debug(f"  Direction preference: {prefer_axis}" if prefer_axis else "  Direction preference: None")
+        if proj_coverage_min:
+            self.logger.debug(f"  Coverage quality gate: {proj_coverage_min:.1%}")
+
+        if overrides_df is not None:
+            n_overrides = len(overrides_df)
+            self.logger.info(f"Applying per-well overrides for {n_overrides:,} wells")
 
         # Normalize IDs to strings
         spacing = spacing_df.copy()
@@ -3719,6 +4061,9 @@ class DirectionalBenchNeighbors:
         bench_map = header.set_index("uwi")["bench"]
         spacing["bench_i"] = spacing["well_i"].map(bench_map)
         spacing["bench_k"] = spacing["well_k"].map(bench_map)
+
+        n_benches = header["bench"].nunique()
+        self.logger.debug(f"Mapped {n_benches} unique bench(es) to wells")
 
 
         # --- NEW: adaptive adjacency percentage (parallel uses overlap; oblique/perp use contact)
@@ -3750,6 +4095,13 @@ class DirectionalBenchNeighbors:
 
         # ---------- NEW: set up per-well effective rules (independent of filtering) ----------
         all_wells = spacing_df["well_i"].astype(str).drop_duplicates().reset_index(drop=True)
+
+        # ---------- NEW: Extract well_i attributes (tvd_i, LL_i) from spacing_df ----------
+        # These are constant per well_i, so we take the first occurrence
+        well_attrs = spacing_df[["well_i", "tvd_i", "LL_i"]].copy()
+        well_attrs["well_i"] = well_attrs["well_i"].astype(str)
+        well_attrs = well_attrs.drop_duplicates(subset=["well_i"]).reset_index(drop=True)
+        well_attrs_df = well_attrs  # Will be merged into final output
 
         # Defaults: no overrides
         override_wells = set()
@@ -3853,22 +4205,44 @@ class DirectionalBenchNeighbors:
 
         spacing = spacing.loc[mask].copy()
 
+        n_survivors = len(spacing)
+        n_filtered_out = n_input_pairs - n_survivors
+        survival_rate = (n_survivors / n_input_pairs * 100) if n_input_pairs > 0 else 0
+
+        self.logger.info("─" * 80)
+        self.logger.info(f"Filtering complete: {n_survivors:,} pairs survived ({survival_rate:.1f}%)")
+        if n_filtered_out > 0:
+            self.logger.debug(f"  Filtered out: {n_filtered_out:,} pairs ({100-survival_rate:.1f}%)")
+
         if spacing.empty:
+            self.logger.warning("No pairs survived filtering - returning empty summary")
             out = self._empty_summary(all_wells)
-            # Merge audit columns even when no neighbors survive
+            # Merge well attributes and audit columns even when no neighbors survive
+            out = out.merge(well_attrs_df, on="well_i", how="left")
             out = out.merge(audit_df, on="well_i", how="left")
+
+            pipeline_elapsed = time.time() - pipeline_start
+            self.logger.info("=" * 80)
+            self.logger.info(f"PIPELINE COMPLETE: {pipeline_elapsed:.2f}s")
+            self.logger.info("=" * 80)
             return out
 
         # SAME vs NEAR summaries (unchanged)
+        self.logger.info("─" * 80)
+        self.logger.info("Computing directional neighbor summaries")
         spacing["is_same"] = spacing["bench_i"] == spacing["bench_k"]
         same = spacing.loc[spacing["is_same"]].copy()
         near = spacing.loc[~spacing["is_same"]].copy()
+
+        self.logger.debug(f"  Same-bench pairs: {len(same):,}")
+        self.logger.debug(f"  Different-bench pairs: {len(near):,}")
 
         same_summary = self._compute_category_summary(same, category="same", axis_mode=axis_mode, prefer_axis=prefer_axis)
         near_summary = self._compute_category_summary(near, category="near", axis_mode=axis_mode, prefer_axis=prefer_axis)
 
         out = (
             all_wells.to_frame(name="well_i")
+            .merge(well_attrs_df, on="well_i", how="left")  # Add tvd_i and LL_i
             .merge(same_summary, on="well_i", how="left")
             .merge(near_summary, on="well_i", how="left")
             # ---------- NEW: audit columns ----------
@@ -3894,7 +4268,7 @@ class DirectionalBenchNeighbors:
         out["bound_category"] = np.select(conditions, choices, default="Partially Bounded")
 
         ordered_cols = (
-            ["well_i", "bound_category"]
+            ["well_i", "bound_category", "tvd_i", "LL_i"]  # Added tvd_i and LL_i after bound_category
             + self._category_cols("same", 1)
             + self._category_cols("same", 2)
             + self._category_cols("near", 1)
@@ -3902,7 +4276,34 @@ class DirectionalBenchNeighbors:
             + ["override_applied", "eff_cutoff_ft", "eff_vertical_cutoff_ft", "eff_overlap_pct_k_min"]
         )
         existing_cols = [c for c in ordered_cols if c in out.columns]
-        return out[existing_cols + [c for c in out.columns if c not in existing_cols]]
+        final_out = out[existing_cols + [c for c in out.columns if c not in existing_cols]]
+
+        # Final summary
+        pipeline_elapsed = time.time() - pipeline_start
+
+        n_wells_with_neighbors = final_out[
+            final_out["uwi_same_1"].notna() |
+            final_out["uwi_same_2"].notna() |
+            final_out["uwi_near_1"].notna() |
+            final_out["uwi_near_2"].notna()
+        ].shape[0]
+
+        pct_with_neighbors = (n_wells_with_neighbors / len(final_out) * 100) if len(final_out) > 0 else 0
+
+        # Bound category distribution
+        bound_counts = final_out["bound_category"].value_counts()
+        bound_summary = ", ".join([f"{cat}={count}" for cat, count in bound_counts.items()])
+
+        self.logger.info("─" * 80)
+        self.logger.info(f"✓ Summary complete: {len(final_out):,} wells analyzed")
+        self.logger.info(f"  Wells with neighbors: {n_wells_with_neighbors:,} ({pct_with_neighbors:.1f}%)")
+        self.logger.debug(f"  Bound categories: {bound_summary}")
+
+        self.logger.info("=" * 80)
+        self.logger.info(f"PIPELINE COMPLETE: {pipeline_elapsed:.2f}s")
+        self.logger.info("=" * 80)
+
+        return final_out
 
     @staticmethod
     def classify_bound_category(summary_df: pd.DataFrame) -> pd.DataFrame:
@@ -4115,9 +4516,6 @@ class DirectionalBenchNeighbors:
         derives it from overlap_pct_i (preferred) or overlap_len_common_ft / LL_i.
         The coverage gate applies only to non-parallel pairs.
         """
-        import os
-        from typing import Dict, Tuple
-
         overrides_df = self._resolve_overrides(overrides_df)
 
         spacing = spacing_df.copy()
@@ -4528,9 +4926,6 @@ class DirectionalBenchNeighbors:
             return (x0 + x1) / 2.0, (y0 + y1) / 2.0
 
         def _plot_group(group_i: str) -> None:
-            import os
-            import matplotlib.pyplot as plt
-            from matplotlib.patches import Circle
 
             g = str(group_i)
 
@@ -4587,7 +4982,6 @@ class DirectionalBenchNeighbors:
             pts = np.array(list(mids.values()), dtype=float)
             if pts.shape[0] >= 3:
                 try:
-                    from scipy.spatial import ConvexHull
                     hull = ConvexHull(pts)
                     poly = pts[hull.vertices]
                     poly = np.vstack([poly, poly[0]])
@@ -4978,11 +5372,20 @@ class FloatingSectionWPS:
         min_inside_ft: float = 660.0,
         exclude_self: bool = True,
         corridor: Optional[CorridorSpec] = None,
+        logger: Optional[logging.Logger] = None,
     ) -> None:
         self.box = box
         self.corridor = corridor
         self.min_inside_ft = float(min_inside_ft)
         self.exclude_self = bool(exclude_self)
+    
+        # Set up hierarchical logger
+        parent_logger = logger or logging.getLogger("wps")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.wps")
+        self.logger.propagate = True
 
         df = wells_df.copy()
 
@@ -6067,15 +6470,31 @@ class AvgSpacingCalculator:
     EdgePick = Literal["min", "mean", "forward"]
     PlotMode = Literal["chain", "dense", "both"]
 
-    def __init__(self, *, overrides_df: Optional[pd.DataFrame] = None) -> None:
+    def __init__(self, *, overrides_df: Optional[pd.DataFrame] = None, logger: Optional[logging.Logger] = None) -> None:
         """
         Parameters
         ----------
         overrides_df : pandas.DataFrame, optional
             Default per-well override rules. Can be overridden at call time.
         """
+        # Set up hierarchical logger
+        parent_logger = logger or logging.getLogger("avg_Spacing_neighborhoods")
+        if logger is None:
+            self.logger = parent_logger
+        else:
+            self.logger = logging.getLogger(f"{parent_logger.name}.avg_Spacing_neighborhoods")
+        self.logger.propagate = True
+
+        self.logger.info("Initializing AvgSpacingCalculator")
+
         self._overrides_df_default = overrides_df
-        
+
+        if overrides_df is not None:
+            n_overrides = len(overrides_df)
+            self.logger.info(f"✓ Initialized with default overrides for {n_overrides:,} wells")
+        else:
+            self.logger.debug("  No default overrides configured")
+
         # Intermediate results stored for optional debug plotting
         self._members: Optional[pd.DataFrame] = None
         self._survivors: Optional[pd.DataFrame] = None
@@ -6189,9 +6608,16 @@ class AvgSpacingCalculator:
         proj_coverage_i_pct, this method will derive a proxy from overlap_pct_i
         or overlap_len_common_ft / LL_i if available.
         """
+        # ═══════════════════════════════════════════════════════════════════════
+        self.logger.info("=" * 80)
+        self.logger.info("AVERAGE SPACING CALCULATOR - NEIGHBORHOOD ANALYSIS")
+        self.logger.info("=" * 80)
+
+        pipeline_start = time.time()
+
         # Clear any previous run's intermediates
         self._clear_intermediates()
-        
+
         overrides_df = self._resolve_overrides(overrides_df)
 
         spacing = spacing_df.copy()
@@ -6219,6 +6645,26 @@ class AvgSpacingCalculator:
         )
         self._all_wells = all_wells
         self._cutoff_ft = cutoff_ft
+
+        n_input_pairs = len(spacing)
+        n_input_wells = len(all_wells)
+
+        self.logger.info(f"Input: {n_input_pairs:,} spacing pairs across {n_input_wells:,} wells")
+        self.logger.debug(f"Configuration:")
+        self.logger.debug(f"  Neighborhood mode: {neighborhood_mode}")
+        if neighborhood_mode == "chain":
+            self.logger.debug(f"  Chain sort mode: {chain_sort_mode}")
+            self.logger.debug(f"  Edge pick: {edge_pick}")
+        self.logger.debug(f"  Horizontal cutoff: {cutoff_ft} ft")
+        self.logger.debug(f"  Vertical cutoff: {vertical_cutoff_ft} ft" if vertical_cutoff_ft else "  Vertical cutoff: None")
+        self.logger.debug(f"  Overlap min: {overlap_pct_k_min:.1%}" if overlap_pct_k_min else "  Overlap min: None")
+        self.logger.debug(f"  Axis mode: {axis_mode}")
+        if proj_coverage_min:
+            self.logger.debug(f"  Coverage quality gate: {proj_coverage_min:.1%}")
+
+        if overrides_df is not None and not overrides_df.empty:
+            n_overrides = len(overrides_df)
+            self.logger.info(f"Applying per-well overrides for {n_overrides:,} wells")
 
         # ---------------- Overrides (per well_i) ----------------
         ov_cut = ov_vcut = ov_omin = None
@@ -6346,6 +6792,15 @@ class AvgSpacingCalculator:
         survivors = spacing.loc[mask].copy()
         self._survivors = survivors
 
+        n_survivors = len(survivors)
+        n_filtered_out = n_input_pairs - n_survivors
+        survival_rate = (n_survivors / n_input_pairs * 100) if n_input_pairs > 0 else 0
+
+        self.logger.info("─" * 80)
+        self.logger.info(f"Filtering complete: {n_survivors:,} survivor pairs ({survival_rate:.1f}%)")
+        if n_filtered_out > 0:
+            self.logger.debug(f"  Filtered out: {n_filtered_out:,} pairs ({100-survival_rate:.1f}%)")
+
         # ---------------- Baseline i->eligible k summaries ----------------
         g_i = survivors.groupby("well_i", sort=False)
         survivor_rows = (
@@ -6360,6 +6815,8 @@ class AvgSpacingCalculator:
         )
 
         # ---------------- Build membership table for S(i) ----------------
+        self.logger.info("─" * 80)
+        self.logger.info("Building neighborhood memberships S(i)")
         members_self = pd.DataFrame(
             {"group_i": all_wells.values, "member": all_wells.values}
         )
@@ -6379,8 +6836,15 @@ class AvgSpacingCalculator:
             (group_size - 1).clip(lower=0).rename("neighbors_in_group").rename_axis("group_i")
         )
 
+        avg_group_size = group_size.mean()
+        max_group_size = group_size.max()
+        self.logger.info(f"✓ Neighborhoods built: avg size={avg_group_size:.1f}, max size={max_group_size:.0f}")
+
         want_chain = neighborhood_mode == "chain"
         want_dense = neighborhood_mode == "dense"
+
+        self.logger.info("─" * 80)
+        self.logger.info(f"Computing spacing metrics using '{neighborhood_mode}' mode")
 
         # -----------------------------
         # CHAIN MODE (A->B->C->D)
@@ -6812,6 +7276,24 @@ class AvgSpacingCalculator:
             out["neighborhood_mode_used"] = "dense"
 
         self._output = out
+
+        # Final summary
+        pipeline_elapsed = time.time() - pipeline_start
+
+        n_wells_analyzed = len(out)
+        avg_hz = out["avg_hz_spacing_ft"].mean()
+        avg_vt = out["avg_vt_spacing_ft"].mean()
+
+        self.logger.info("─" * 80)
+        self.logger.info(f"✓ Analysis complete: {n_wells_analyzed:,} wells")
+        self.logger.info(f"  Average horizontal spacing: {avg_hz:.1f} ft")
+        self.logger.info(f"  Average vertical spacing: {avg_vt:.1f} ft")
+        self.logger.debug(f"  Mode used: {neighborhood_mode}")
+
+        self.logger.info("=" * 80)
+        self.logger.info(f"PIPELINE COMPLETE: {pipeline_elapsed:.2f}s")
+        self.logger.info("=" * 80)
+
         return out
 
     # =========================================================================

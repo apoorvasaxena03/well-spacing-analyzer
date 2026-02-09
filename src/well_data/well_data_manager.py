@@ -2011,14 +2011,14 @@ class GeoSurveyProcessor:
 
         return df
     
-    def filter_after_heel_point(self, df: pd.DataFrame) -> pd.DataFrame:
+    def filter_after_heel_point(self, df: pd.DataFrame, inclination_filter: float) -> pd.DataFrame:
         """
         Keep rows at/after the first high-inclination point per UWI.
 
         For each `uwi`, this method identifies the **first** survey station where
-        `inclination >= 80` degrees (the "heel trigger") and then retains that row
-        and all *subsequent* rows for that `uwi`. Wells that never reach
-        `inclination >= 80` are dropped entirely.
+        `inclination >= inclination_filter` degrees (the "heel trigger") and then
+        retains that row and all *subsequent* rows for that `uwi`. Wells that never
+        reach `inclination >= inclination_filter` are dropped entirely.
 
         Implementation details
         ----------------------
@@ -2026,7 +2026,7 @@ class GeoSurveyProcessor:
            and its index is reset to a simple RangeIndex (0..N-1). This ensures
            that index labels and row positions coincide.
 
-        2. Among rows where `inclination >= 80`, the method finds, for each `uwi`,
+        2. Among rows where `inclination >= inclination_filter`, the method finds, for each `uwi`,
            the index (row position) of the *first* such row.
 
         3. For every row, it then compares its position to the corresponding
@@ -2041,18 +2041,23 @@ class GeoSurveyProcessor:
             - 'uwi'         : well identifier
             - 'md'          : measured depth (used for sorting within each UWI)
             - 'inclination' : inclination in degrees
+        inclination_filter : float
+            Minimum inclination angle (in degrees) used to identify the heel
+            point. Survey rows with ``inclination >= inclination_filter`` are
+            considered lateral; the first such row per well marks the start of
+            the lateral section.
 
         Returns
         -------
         pandas.DataFrame
             Filtered DataFrame containing only rows at/after the heel point for
-            each `uwi` that reaches `inclination >= 80`. The result is:
+            each `uwi` that reaches `inclination >= inclination_filter`. The result is:
               - sorted by ['uwi', 'md'] ascending, and
               - index reset to a simple RangeIndex.
 
         Notes
         -----
-        - If a given `uwi` has **no** row with `inclination >= 80`, all of its
+        - If a given `uwi` has **no** row with `inclination >= inclination_filter`, all of its
           rows are dropped from the output.
         - Because the index is explicitly reset before computing the heel
           positions, the logic is robust to any original index (e.g., API/uwi
@@ -2066,7 +2071,7 @@ class GeoSurveyProcessor:
         ...     "inclination": [10, 82, 90, 79, 85],
         ... })
         >>> geo = GeoSurveyProcessor()
-        >>> out = geo.filter_after_heel_point(df)
+        >>> out = geo.filter_after_heel_point(df, inclination_filter=80)
         >>> out
           uwi    md  inclination
         0   A  1100         82.0
@@ -2086,15 +2091,15 @@ class GeoSurveyProcessor:
         # Sort and reset index so that labels == positions
         df = df.sort_values(by=["uwi", "md"], ascending=True).reset_index(drop=True)
 
-        mask = (df["inclination"] >= 80)
+        mask = (df["inclination"] >= inclination_filter)
         heel_count = mask.sum()
 
-        self.logger.debug(f"Found {heel_count:,} survey points with inclination >= 80°")
+        self.logger.debug(f"Found {heel_count:,} survey points with inclination >= {inclination_filter}°")
 
         # If no heel trigger at all, drop everything
         if not mask.any():
             self.logger.warning(
-                "⚠️ No inclination >= 80° found for any well. "
+                f"⚠️ No inclination >= {inclination_filter}° found for any well. "
                 "All data represents vertical/build sections - returning empty DataFrame."
             )
             return df.iloc[0:0].copy()
@@ -2107,9 +2112,15 @@ class GeoSurveyProcessor:
         wells_without_heel = initial_wells - wells_with_heel
 
         if wells_without_heel > 0:
+            all_uwis = set(df['uwi'].unique())
+            wells_missing_heel = sorted(all_uwis - set(start_idx_map.keys()))
+            uwi_lines = "\n".join(
+                ", ".join(wells_missing_heel[i:i + 5])
+                for i in range(0, len(wells_missing_heel), 5)
+            )
             self.logger.debug(
-                f"{wells_without_heel} wells do not reach 80° inclination "
-                "(will be excluded from output)"
+                f"{wells_without_heel} wells do not reach {inclination_filter}° inclination "
+                f"(will be excluded from output):\n{uwi_lines}"
             )
 
         # Vectorized filtering: keep rows at/after heel point
@@ -2136,7 +2147,7 @@ class GeoSurveyProcessor:
 
         return out
     
-    def get_heel_toe_midpoints_latlon(self, df: pd.DataFrame) -> pd.DataFrame:
+    def get_heel_toe_midpoints_latlon(self, df: pd.DataFrame, inclination_filter: float) -> pd.DataFrame:
         """
         Extract heel, toe, and geometric mid-point (lat/lon) per UWI.
 
@@ -2151,6 +2162,9 @@ class GeoSurveyProcessor:
         ----------
         df : pandas.DataFrame
             Must contain: ['uwi', 'md', 'latitude', 'longitude', 'point_type_name'].
+        inclination_filter : float
+            Minimum inclination angle (in degrees) passed to
+            ``filter_after_heel_point()`` to identify the heel point.
 
         Returns
         -------
@@ -2168,7 +2182,7 @@ class GeoSurveyProcessor:
         ...     "longitude": [-103.314,-103.315,-103.316,-103.318,-103.319],
         ... }
         >>> df = pd.DataFrame(data)
-        >>> out = GeoSurveyProcessor().get_heel_toe_midpoints_latlon(df)
+        >>> out = GeoSurveyProcessor().get_heel_toe_midpoints_latlon(df, inclination_filter=80)
         >>> set(["heel_lat","heel_lon","toe_lat","toe_lon","mid_Lat","mid_Lon"]).issubset(out.columns)
         True
         """
@@ -2178,7 +2192,7 @@ class GeoSurveyProcessor:
         self.logger.debug(f"Input: {len(df):,} survey points across {initial_wells} wells")
 
         # Getting DataFrame with only the rows after the heel point
-        df = self.filter_after_heel_point(df)
+        df = self.filter_after_heel_point(df, inclination_filter=inclination_filter)
 
         if df.empty:
             self.logger.warning("No lateral data after heel filtering - returning empty DataFrame")
@@ -2209,7 +2223,7 @@ class GeoSurveyProcessor:
 
         return heel_toe_df
 
-    def prepare_lateral_trajectory_data(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def prepare_lateral_trajectory_data(self, inclination_filter: float) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Prepare and synchronize directional survey data with well header data.
 
@@ -2222,6 +2236,12 @@ class GeoSurveyProcessor:
 
         The synchronization ensures downstream analysis (e.g., spacing calculations,
         neighbor identification) has consistent well lists across both data sources.
+
+        Parameters
+        ----------
+        inclination_filter : float
+            Minimum inclination angle (in degrees) passed to
+            ``filter_after_heel_point()`` to identify the heel point.
 
         Returns
         -------
@@ -2258,7 +2278,7 @@ class GeoSurveyProcessor:
         Examples
         --------
         >>> geo = GeoSurveyProcessor(header_df, directional_df, directional_source="enverus")
-        >>> lateral_traj, header_aligned = geo.prepare_lateral_trajectory_data()
+        >>> lateral_traj, header_aligned = geo.prepare_lateral_trajectory_data(inclination_filter=80)
         >>> print(f"Prepared {lateral_traj['uwi'].nunique()} wells with {len(lateral_traj)} survey points")
 
         See Also
@@ -2287,7 +2307,7 @@ class GeoSurveyProcessor:
         self.logger.info("Step 2/3: Filtering to lateral section (after heel point)...")
         step2_start = time.time()
         wells_before_filter = df_utm["uwi"].nunique()
-        df_utm_lateral = self.filter_after_heel_point(df_utm)
+        df_utm_lateral = self.filter_after_heel_point(df_utm, inclination_filter=inclination_filter)
         wells_after_filter = df_utm_lateral["uwi"].nunique()
         step2_elapsed = time.time() - step2_start
         self.logger.info(

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import time
+import warnings
 
 import logging
 
@@ -20,7 +21,6 @@ from typing import Dict, Tuple, List, Union, Optional, ClassVar, Any, Literal, I
 
 from tqdm import tqdm 
 
-from joblib import Parallel, delayed 
 
 from matplotlib import pyplot as plt 
 from matplotlib.patches import Circle
@@ -387,7 +387,7 @@ class WellSpacingCalculator:
     # Class-level constant (shared, immutable-by-convention)
     _DIR4_LABELS: ClassVar[np.ndarray] = np.array(["N", "E", "S", "W"], dtype=object)
 
-    def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame], logger: Optional[logging.Logger] = None,):
+    def __init__(self, trajectories: Union[Dict[str, pd.DataFrame], pd.DataFrame], header_df: pd.DataFrame, logger: Optional[logging.Logger] = None,):
         """
         Initialize WellSpacingCalculator with well trajectory data.
 
@@ -423,6 +423,11 @@ class WellSpacingCalculator:
                - Keys: Well identifiers (uwi as strings)
                - Values: Trajectory DataFrames with columns above (except 'uwi')
                - Useful when loading pre-grouped trajectories or from APIs
+
+        header_df : pd.DataFrame
+            Well header data containing at minimum 'uwi' and 'bench' columns.
+            Used to map bench_i and bench_k columns into spacing output
+            (positioned right after well_k).
 
         Raises
         ------
@@ -569,7 +574,13 @@ class WellSpacingCalculator:
         self.logger.debug(f"  Average points per well: {avg_points_per_well:.1f}")
         self.logger.debug(f"  Lat/lon available: {'Yes' if has_latlon else 'No (direction calculation limited)'}")
         self.logger.debug(f"  Azimuth available: {'Yes' if has_azimuth else 'No (drill direction inference limited)'}")
-        
+
+        # Store bench mapping from header_df
+        if not {'uwi', 'bench'}.issubset(header_df.columns):
+            raise ValueError("header_df must contain 'uwi' and 'bench' columns.")
+        self._bench_map = header_df.set_index("uwi")["bench"]
+        self.logger.debug(f"  Bench mapping loaded: {len(self._bench_map)} wells")
+
     def _apply_effective_horizontal(
         self,
         spacing_df: pd.DataFrame,
@@ -1075,13 +1086,19 @@ class WellSpacingCalculator:
             # ▶ Apply effective horizontal ONCE per batch (so saved parquet is already normalized)
             self._apply_effective_horizontal(batch_df, inplace=True, keep_effective_3d_audit=True)
 
+            # ▶ Insert bench columns right after well_k
+            well_k_pos = batch_df.columns.get_loc("well_k") + 1
+            batch_df.insert(well_k_pos, "bench_i", batch_df["well_i"].map(self._bench_map))
+            batch_df.insert(well_k_pos + 1, "bench_k", batch_df["well_k"].map(self._bench_map))
+
             if save_batches_dir:
                 filepath = os.path.join(save_batches_dir, f"spacing_batch_{batch_number:04d}.parquet")
                 batch_df.to_parquet(filepath, index=False)
             return batch_df
 
+        tqdm_desc = "Calculating & Saving Batches" if save_batches_dir else "Calculating Spacing"
         tqdm_kwargs = dict(
-            desc="🚀 Calculating Spacing (Parallel)",
+            desc=f"🚀 {tqdm_desc}",
             dynamic_ncols=True,
             smoothing=0.3,
             bar_format="{desc}: |{bar:40}| {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
@@ -1089,10 +1106,12 @@ class WellSpacingCalculator:
             leave=True,
         )
 
-        results = Parallel(n_jobs=-1)(
-            delayed(process_and_save)(batch_num, i_i, k_i)
-            for batch_num, (i_i, k_i) in tqdm(enumerate(batch_generator), total=n_batches, **tqdm_kwargs)
-        )
+        results = []
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="All-NaN slice", category=RuntimeWarning)
+            for batch_num, (i_i, k_i) in tqdm(enumerate(batch_generator), total=n_batches, **tqdm_kwargs):
+                batch_result = process_and_save(batch_num, i_i, k_i)
+                results.append(batch_result)
 
         step4_elapsed = time.time() - step4_start
 

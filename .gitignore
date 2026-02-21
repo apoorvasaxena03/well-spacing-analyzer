@@ -164,3 +164,6 @@ logs/
 
 # Ignore SpacingStats output folder
 SpacingStats/
+
+# Ignore Claude's internal files
+/.claude/

@@ -300,6 +300,63 @@ def drop_uwi_duplicates_keep_max_last_prod(
     keep_idx = pd.Index(list(max_candidates.index) + list(first_of_all_na.index)).sort_values()
     return df.loc[keep_idx].copy()
 
+def add_bench_columns_to_spacing(
+    df_spacing: pd.DataFrame,
+    df_header: pd.DataFrame,
+    reorder_columns_func,
+) -> pd.DataFrame:
+    """
+    Adds 'bench_i' and 'bench_k' columns to the spacing DataFrame by mapping well IDs to their benches,
+    and reorders columns for better readability.
+
+    Parameters
+    ----------
+    df_spacing : pd.DataFrame
+        DataFrame containing well spacing results with columns 'well_i' and 'well_k'.
+    df_header : pd.DataFrame
+        DataFrame containing well header information with columns 'uwi' and 'bench'.
+    reorder_columns_func : callable
+        Function to reorder columns in a DataFrame. Should accept arguments:
+        - df: DataFrame to reorder
+        - columns_to_move: list of columns to move
+        - reference_column: column after which to insert the moved columns
+
+    Returns
+    -------
+    pd.DataFrame
+        The input spacing DataFrame with 'bench_i' and 'bench_k' columns added and columns reordered.
+
+    Examples
+    --------
+    >>> df_header = pd.DataFrame({'uwi': ['A', 'B'], 'bench': ['Bench1', 'Bench2']})
+    >>> df_spacing = pd.DataFrame({'well_i': ['A', 'B'], 'well_k': ['B', 'A'], '3D_dist': [100, 200]})
+    >>> def reorder_columns(df, columns_to_move, reference_column):
+    ...     cols = list(df.columns)
+    ...     for col in columns_to_move:
+    ...         cols.remove(col)
+    ...     ref_idx = cols.index(reference_column) + 1
+    ...     for col in reversed(columns_to_move):
+    ...         cols.insert(ref_idx, col)
+    ...     return df[cols]
+    >>> result = add_bench_columns_to_spacing(df_spacing, df_header, reorder_columns)
+    >>> result[['well_i', 'bench_i', 'well_k', 'bench_k']]
+      well_i  bench_i well_k  bench_k
+    0      A  Bench1      B   Bench2
+    1      B  Bench2      A   Bench1
+    """
+    bench_map = df_header.set_index("uwi")["bench"]
+    df_spacing = df_spacing.copy()
+    df_spacing["bench_i"] = df_spacing["well_i"].map(bench_map)
+    df_spacing["bench_k"] = df_spacing["well_k"].map(bench_map)
+    df_spacing = reorder_columns_func(df=df_spacing, columns_to_move=['bench_i', 'bench_k'], reference_column='well_k')
+    df_spacing = reorder_columns_func(
+        df=df_spacing,
+        columns_to_move=['direction_to_k_from_i_axis', 'overlap_pct_i', 'overlap_pct_k', 'overlap_len_common_ft', 'LL_i', 'LL_k'],
+        reference_column='3D_dist'
+    )
+    return df_spacing
+
+
 #%% BG_RCAT Computation
 
 def compute_bg_rcat(

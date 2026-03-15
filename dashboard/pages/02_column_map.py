@@ -41,6 +41,14 @@ CANONICAL_BY_FILE = {
     "production":  CANONICAL_PRODUCTION,
 }
 
+# Columns that MUST be mapped for the pipeline to run.
+# Header uwi + directional uwi/uwi12 are enforced by toggle_confirm_button / confirm_mapping.
+REQUIRED_CANONICAL = {
+    "header":      {"uwi"},
+    "directional": {"uwi", "uwi12"},   # one of these is required
+    "production":  set(),              # production is optional overall
+}
+
 # Enverus templates
 ENVERUS_HEADER = {
     "API_UWI_14_Unformatted": "uwi",
@@ -174,7 +182,11 @@ def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str,
 def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) -> list:
     """Build one dbc.Row per source column with a dcc.Dropdown for canonical selection."""
     canonical = CANONICAL_BY_FILE[file_key]
-    options = [{"label": c, "value": c} for c in canonical]
+    required = REQUIRED_CANONICAL[file_key]
+    options = [
+        {"label": f"★ {c}  (required)" if c in required else c, "value": c}
+        for c in canonical
+    ]
     rows = []
     for src in source_cols:
         value = prefill.get(src) or None
@@ -218,14 +230,30 @@ def _panel(file_key: str, store: dict, template_name: str) -> list:
     if not source_cols:
         return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
     prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
-    header = dbc.Row(
+
+    required = REQUIRED_CANONICAL[file_key]
+    if required:
+        required_note = dbc.Alert(
+            [
+                html.Strong("★ Required: "),
+                html.Span(", ".join(sorted(required))),
+                html.Span(" — the pipeline cannot run without these mappings.", className="text-muted"),
+            ],
+            color="warning",
+            className="py-2 mb-2",
+        )
+    else:
+        required_note = None
+
+    col_header = dbc.Row(
         [
             dbc.Col(html.Strong("Your Column", style={"fontSize": "0.8rem"}), width=5),
             dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.8rem"}), width=7),
         ],
         className="mb-2 text-muted",
     )
-    return [header] + _build_rows(file_key, source_cols, prefill)
+    children = [required_note, col_header] if required_note else [col_header]
+    return children + _build_rows(file_key, source_cols, prefill)
 
 
 @callback(

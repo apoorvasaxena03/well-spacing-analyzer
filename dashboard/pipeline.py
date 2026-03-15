@@ -12,6 +12,7 @@ add it to src/ first, then expose it here.
 from __future__ import annotations
 
 import pickle
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,12 @@ from src.well_data.well_spacing_stats import (
     DirectionalBenchNeighbors,
     AvgSpacingCalculator,
 )
+from src.utils.custom_logger import get_logger, new_run_id, set_run_id
+
+# ---------------------------------------------------------------------------
+# Module-level logger — writes to logs/dashboard.log + terminal
+# ---------------------------------------------------------------------------
+logger = get_logger("dashboard", log_to_console=True)
 
 # ---------------------------------------------------------------------------
 # Cache directory for pipeline outputs
@@ -60,23 +67,31 @@ def load_from_files(
     Returns:
         dict with keys: 'header_df', 'directional_df', 'production_df' (or None)
     """
+    logger.info("Loading header from: %s", Path(header_path).name)
     loader = WellDataLoader(directional_source=directional_source)
     header_df = loader.get_header_data(
         source=header_path,
         column_map=column_map_header or None,
     )
+    logger.info("Header loaded: %d wells", len(header_df))
+
+    logger.info("Loading directional survey from: %s", Path(directional_path).name)
     directional_df = loader.get_directional_data(
         source=directional_path,
         column_map=column_map_directional or None,
     )
+    logger.info("Directional loaded: %d survey stations across %d wells",
+                len(directional_df), directional_df["uwi"].nunique() if "uwi" in directional_df.columns else -1)
 
     production_df = None
     if production_path:
+        logger.info("Loading production from: %s", Path(production_path).name)
         prod_loader = WellDataLoader()
         production_df = prod_loader.get_header_data(
             source=production_path,
             column_map=column_map_production or None,
         )
+        logger.info("Production loaded: %d rows", len(production_df))
 
     return {
         "header_df": header_df,
@@ -159,14 +174,19 @@ def project_and_extract_laterals(
         (header_aligned, lateral_df, crs_used)
     """
     crs_used = crs_to or _auto_detect_utm(header_df)
+    logger.info("UTM projection: %s (inclination filter: %.1f°)", crs_used, inclination_filter)
+
     processor = GeoSurveyProcessor(
         header_df=header_df,
         directional_df=directional_df,
         directional_source="ihs",   # use full uwi (not uwi12) for cross-filtering
+        logger=logger,
     )
     lateral_df, header_aligned = processor.prepare_lateral_trajectory_data(
         inclination_filter=inclination_filter,
     )
+    logger.info("Lateral extraction complete: %d stations, %d wells",
+                len(lateral_df), lateral_df["uwi"].nunique() if "uwi" in lateral_df.columns else -1)
     return header_aligned, lateral_df, crs_used
 
 
@@ -182,7 +202,9 @@ def _auto_detect_utm(header_df: pd.DataFrame) -> str:
     lon = header_df[lon_col].dropna().mean()
     zone = int((lon + 180) / 6) + 1
     hemisphere = "326" if lat >= 0 else "327"
-    return f"EPSG:{hemisphere}{zone:02d}"
+    crs = f"EPSG:{hemisphere}{zone:02d}"
+    logger.info("Auto-detected UTM zone: %s (centroid lat=%.4f, lon=%.4f)", crs, lat, lon)
+    return crs
 
 
 # ---------------------------------------------------------------------------
@@ -215,25 +237,39 @@ def run_spacing_calculation(
     Returns:
         Path to cached pipeline output (pickle file).
     """
+    # Set run_id so all log lines for this calculation are correlated
+    rid = run_id or new_run_id()
+    set_run_id(rid)
+
+    n_wells = lateral_df["uwi"].nunique() if "uwi" in lateral_df.columns else "?"
+    logger.info("=== Spacing calculation START | wells=%s | max_dist=%.1f mi | cutoff=%g ft | batch=%d ===",
+                n_wells, max_distance_miles, cutoff_ft, batch_size)
+
+    t0 = time.perf_counter()
     calculator = WellSpacingCalculator(
         trajectories=lateral_df,
         header_df=header_df,
+        logger=logger,
     )
     df_spacing = calculator._calculate_spacing_statistics(
         batch_size=batch_size,
         max_distance_miles=max_distance_miles,
         cutoff_ft=cutoff_ft,
     )
+    logger.info("Spacing stats done: %d pairs in %.1fs", len(df_spacing), time.perf_counter() - t0)
 
-    neighbors = DirectionalBenchNeighbors()
+    t1 = time.perf_counter()
+    neighbors = DirectionalBenchNeighbors(logger=logger)
     df_enriched = neighbors.summarize(
         spacing_df=df_spacing,
         header_df=header_df,
         cutoff_ft=cutoff_ft,
     )
+    logger.info("Neighbor enrichment done: %d enriched rows in %.1fs",
+                len(df_enriched), time.perf_counter() - t1)
 
     # Cache to disk
-    cache_key = PIPELINE_CACHE_DIR / f"pipeline_{run_id or 'latest'}.pkl"
+    cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
     with open(cache_key, "wb") as f:
         pickle.dump(
             {
@@ -243,6 +279,8 @@ def run_spacing_calculation(
             },
             f,
         )
+    logger.info("=== Spacing calculation DONE | total=%.1fs | cache=%s ===",
+                time.perf_counter() - t0, cache_key.name)
 
     return str(cache_key)
 

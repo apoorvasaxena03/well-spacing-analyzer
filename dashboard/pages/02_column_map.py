@@ -2,13 +2,15 @@
 Step 2 — Column Mapping
 User maps their source columns to canonical names required by src/.
 
-Uses dcc.Dropdown per row (pattern-matching callbacks) instead of DataTable
-dropdown cells — gives full search, backspace, and clear functionality.
+Uses html.Datalist + dbc.Input per row (pattern-matching callbacks):
+- Autocomplete suggestions from canonical column list (click or type to filter)
+- Free-form text entry allowed (for custom passthrough column names)
+- Backspace, clear, and full keyboard control
 """
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import ALL, Input, Output, State, callback, ctx, dcc, html
+from dash import ALL, Input, Output, State, callback, dcc, html
 from rapidfuzz import process as fuzz_process
 
 dash.register_page(__name__, path="/column-map", name="2 Map Columns", order=2)
@@ -180,17 +182,13 @@ def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str,
 
 
 def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) -> list:
-    """Build one dbc.Row per source column with a dcc.Dropdown for canonical selection."""
+    """Build one row per source column: datalist + text input for free-form canonical entry."""
     canonical = CANONICAL_BY_FILE[file_key]
-    required = REQUIRED_CANONICAL[file_key]
-    options = [
-        {"label": f"★ {c}  (required)" if c in required else c, "value": c}
-        for c in canonical
-    ]
     rows = []
-    for src in source_cols:
-        value = prefill.get(src) or None
-        mapped = value is not None
+    for idx, src in enumerate(source_cols):
+        value = prefill.get(src) or ""
+        mapped = bool(value)
+        datalist_id = f"dl-{file_key}-{idx}"
         rows.append(
             dbc.Row(
                 [
@@ -200,15 +198,22 @@ def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) 
                         className="d-flex align-items-center",
                     ),
                     dbc.Col(
-                        dcc.Dropdown(
-                            id={"type": "map-drop", "file": file_key, "src": src},
-                            options=options,
-                            value=value,
-                            clearable=True,
-                            searchable=True,
-                            placeholder="— leave unmapped (excluded) —",
-                            style={"fontSize": "0.85rem"},
-                        ),
+                        [
+                            html.Datalist(
+                                id=datalist_id,
+                                children=[html.Option(value=c) for c in canonical],
+                            ),
+                            dbc.Input(
+                                id={"type": "map-input", "file": file_key, "src": src},
+                                type="text",
+                                list=datalist_id,
+                                value=value,
+                                placeholder="— leave blank to exclude —",
+                                debounce=False,
+                                size="sm",
+                                style={"fontSize": "0.85rem"},
+                            ),
+                        ],
                         width=7,
                     ),
                 ],
@@ -277,8 +282,8 @@ def build_mapping_rows(store, template_name):
 
 @callback(
     Output("btn-confirm-mapping", "disabled"),
-    Input({"type": "map-drop", "file": "header",      "src": ALL}, "value"),
-    Input({"type": "map-drop", "file": "directional", "src": ALL}, "value"),
+    Input({"type": "map-input", "file": "header",      "src": ALL}, "value"),
+    Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
     prevent_initial_call=False,
 )
 def toggle_confirm_button(header_vals, dir_vals):
@@ -293,8 +298,8 @@ def toggle_confirm_button(header_vals, dir_vals):
     Output("column-map-error",   "children"),
     Output("column-map-error",   "is_open"),
     Input("btn-confirm-mapping", "n_clicks"),
-    State({"type": "map-drop", "file": ALL, "src": ALL}, "value"),
-    State({"type": "map-drop", "file": ALL, "src": ALL}, "id"),
+    State({"type": "map-input", "file": ALL, "src": ALL}, "value"),
+    State({"type": "map-input", "file": ALL, "src": ALL}, "id"),
     prevent_initial_call=True,
 )
 def confirm_mapping(n_clicks, values, ids):

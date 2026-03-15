@@ -2,12 +2,231 @@
 
 ## Vision
 
-Replace the Spotfire dashboard with a **fully open-source, locally launchable Dash (Plotly)** application that is:
-- Better than Spotfire — QGIS-like spatial capabilities
-- Self-contained — no license required, runs with `python dashboard/app.py`
-- Interactive — click a well on the map → all panels update
-- Geospatially rich — layer control, basemap switching, spatial queries
-- Data-agnostic — column mapping UI lets any dataset work without code changes
+This is not just a dashboard — it is a **complete one-stop well spacing application** for layman users.
+No Python knowledge required. No Jupyter notebooks. No manual config files.
+
+A user opens the app in a browser, uploads their data, maps their columns,
+hits **Calculate Spacing**, and within minutes has a fully interactive analysis
+with maps, gun barrel diagrams, production charts, and neighbor identification.
+
+**The app replaces the entire workflow:**
+
+```text
+Old: Excel → Python notebook → Spotfire → manual updates
+New: Upload files → Map columns → Calculate → Explore results
+```
+
+Built with **Dash (Plotly)** — fully open-source, runs locally with `python dashboard/app.py`,
+no Spotfire license, no cloud dependency.
+
+**Core principles:**
+
+- Any reservoir engineer can use it without touching code
+- Works with any column naming convention (column mapper handles it)
+- QGIS-like spatial capabilities — better than Spotfire
+- One app, entire workflow: ingest → calculate → visualize → export
+
+### Hybrid Design — Both Audiences Supported
+
+```text
+                    ┌─────────────────────────────┐
+                    │       src/ library           │  ← unchanged, always works
+                    │  (WellDataLoader, Calculator, │
+                    │   GeoSurveyProcessor, etc.)   │
+                    └──────────┬──────────────────-┘
+                               │
+               ┌───────────────┴───────────────┐
+               │                               │
+   ┌───────────▼──────────┐      ┌─────────────▼──────────┐
+   │   Jupyter Notebooks  │      │    dashboard/app.py     │
+   │   (power users /     │      │    (layman users /      │
+   │    developers)       │      │     front-end)          │
+   │                      │      │                         │
+   │  Full control, custom│      │  Upload → Map → Run →   │
+   │  column maps, custom │      │  Visualize → Export     │
+   │  batch sizes, debug  │      │  No code required       │
+   └──────────────────────┘      └─────────────────────────┘
+```
+
+The `src/` library is **never modified** for the dashboard. `dashboard/pipeline.py` simply
+calls the same classes and functions that notebooks already use.
+Power users keep full control via notebooks. Layman users get the guided app.
+Both produce identical results from the same underlying code.
+
+---
+
+## End-to-End User Workflow (UX Design)
+
+The app is organized as a **guided multi-step flow** with a persistent sidebar showing progress.
+Each step unlocks the next. A layman user can complete the full analysis without reading any docs.
+
+### Step 1 — Upload Files
+
+Three upload zones (drag-and-drop or browse), all optional except header + survey:
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  📂 Well Header        [Drop CSV/Excel here]  ✅ Loaded  │
+│  📂 Directional Survey [Drop CSV/Excel here]  ✅ Loaded  │
+│  📂 Production Data    [Drop CSV/Excel here]  ⬜ Optional │
+└─────────────────────────────────────────────────────────┘
+```
+
+Each file shows: row count, column count, preview of first 5 rows.
+
+### Step 2 — Map Columns
+
+For each uploaded file, show a two-column mapping table.
+Auto-suggest matches using fuzzy string matching (`thefuzz`).
+User corrects any wrong suggestions, then clicks **Confirm Mapping**.
+
+```text
+Your File Column          →    Canonical Name         Status
+──────────────────────────────────────────────────────────
+"API 14"                  →    [uwi            ▼]     ✅
+"Well Name"               →    [well_name      ▼]     ✅
+"Bench/Zone"              →    [bench          ▼]     ✅
+"Surface Latitude"        →    [latitude       ▼]     ✅
+"Surface Longitude"       →    [longitude      ▼]     ✅
+"First Production Date"   →    [first_prod_date▼]     ✅
+"Operator Name"           →    [operator       ▼]     ⚪ optional
+──────────────────────────────────────────────────────────
+                          Required: 6/6 ✅   [Confirm →]
+```
+
+Required canonical columns clearly marked. Optional columns greyed out.
+Unmapped required columns shown in red — cannot proceed until resolved.
+
+### Step 3 — Configure Parameters
+
+Collapsible panel with sensible defaults. Most users never need to change these.
+
+```text
+┌─ Calculation Settings ──────────────────────────────────┐
+│  UTM Zone              [Auto-detect from data    ▼]     │
+│  Max Search Radius     [3.0  miles  ────●──────] 0–10   │
+│  Max Crossline Dist    [2500 ft     ──●────────] 0–5000  │
+│  Batch Size            [200,000     ────────●──]         │
+│                                                          │
+│  ▼ Neighbor Settings                                     │
+│  Horizontal Cutoff     [1800 ft     ──●────────] 0–5000  │
+│  Vertical Cutoff TVD   [150 ft      ─●─────────] 0–500   │
+│  Min Lateral Overlap   [30%         ──●────────] 0–100%  │
+└─────────────────────────────────────────────────────────┘
+
+            [← Back]        [🚀 Calculate Spacing]
+```
+
+**UTM auto-detect**: compute centroid of all lat/lon points → look up the correct UTM zone automatically.
+No user needs to know what "EPSG:32613" means.
+
+### Step 4 — Calculating (Progress View)
+
+While the pipeline runs, show a live progress UI:
+
+```text
+┌─ Well Spacing Calculation ──────────────────────────────┐
+│                                                          │
+│  ✅  Loading & deduplicating wells          (0.3s)       │
+│  ✅  Computing UTM coordinates              (1.2s)       │
+│  ✅  Filtering lateral sections             (0.8s)       │
+│  🔄  Computing pairwise spacing...                       │
+│      Batch 3 / 12  ████████░░░░░░░░░░  38%  ~4 min left │
+│  ⬜  Identifying neighbors                               │
+│  ⬜  Building map layers                                  │
+│                                                          │
+│  Wells loaded: 1,247    Pairs in progress: 245,000+      │
+└─────────────────────────────────────────────────────────┘
+```
+
+Progress driven by Dash `dcc.Interval` polling a background thread/process.
+User can cancel and adjust parameters if results look wrong.
+
+**Implementation**: Use `dash.long_callback` (built into Dash 2.x) with a
+`DiskcacheManager` or `CeleryManager` for the background job. No extra infrastructure
+needed for local use — `diskcache` is a pure-Python dependency.
+
+### Step 5 — Explore Results
+
+Once calculation is complete, the full visualization app unlocks. All panels are populated.
+A persistent top bar shows the session summary:
+
+```text
+[Asset: Ring Energy]  [1,247 wells]  [312,450 pairs]  [Re-run ↺]  [Export ⬇]
+```
+
+Navigation tabs across the top:
+
+```text
+[🗺 Map]  [⬇ Gun Barrel]  [📈 Production]  [📊 Statistics]  [🔍 QC]  [⬇ Export]
+```
+
+Each tab is one of the visualization panels described below.
+
+### Step 6 — Export
+
+Download panel with format options:
+
+```text
+┌─ Export Results ────────────────────────────────────────┐
+│  Spacing pairs (all)           [⬇ CSV]  [⬇ Excel]       │
+│  Neighbor summary (one/well)   [⬇ CSV]  [⬇ Excel]       │
+│  Well trajectories             [⬇ GeoJSON] [⬇ Shapefile]│
+│  Gun barrel data               [⬇ CSV]                   │
+│  Current map view              [⬇ PNG]                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## App Architecture
+
+```text
+dashboard/
+├── app.py                  # Entry point: python dashboard/app.py
+├── layout.py               # Top-level layout: sidebar + tabs
+├── pages/
+│   ├── upload.py           # Step 1: file upload
+│   ├── column_mapper.py    # Step 2: column mapping UI
+│   ├── configure.py        # Step 3: parameter config
+│   ├── progress.py         # Step 4: calculation progress
+│   └── results.py          # Step 5: all result panels
+├── callbacks/
+│   ├── pipeline.py         # long_callback: runs full spacing pipeline
+│   ├── map_callbacks.py    # map interactions → filter other panels
+│   ├── gb_callbacks.py     # gun barrel: selected wells → GB data
+│   └── production_callbacks.py
+├── components/
+│   ├── column_mapper.py    # reusable column mapping component
+│   ├── map_panel.py        # dash-leaflet map + trajectory layers
+│   ├── gun_barrel.py       # GB diagram (replicates Spotfire GB function)
+│   ├── production_charts.py
+│   └── progress_bar.py
+├── pipeline.py             # wraps well_spacing_analyzer src/ pipeline
+│                           # WellDataLoader → GeoSurveyProcessor →
+│                           # WellSpacingCalculator → DirectionalBenchNeighbors
+└── assets/
+    ├── style.css
+    └── map_extensions.js   # dash-leaflet JS callbacks (bench colors etc.)
+```
+
+**`pipeline.py`** is the bridge between the app and the `src/` library:
+
+```python
+def run_full_pipeline(
+    header_path: str,
+    survey_path: str,
+    header_col_map: dict,
+    survey_col_map: dict,
+    utm_epsg: str,
+    max_distance_miles: float,
+    cutoff_ft: float,
+    vertical_cutoff_ft: float,
+    overlap_pct_min: float,
+    progress_callback=None,   # called with (step_name, pct_complete)
+) -> PipelineResult:
+    ...
+```
 
 ---
 
@@ -115,15 +334,173 @@ def compute_gun_barrel(IK: pd.DataFrame, HeelToe: pd.DataFrame) -> pd.DataFrame:
 ## Planned Dashboard Panels
 
 ### Panel 1: Interactive Map (QGIS-like)
-- **Library**: `dash-leaflet` or `plotly go.Scattermapbox`
-- **Layers** (toggle-able):
-  - Well trajectories (polylines, color by bench or vintage year)
-  - Bottom-hole markers
-  - Spacing pair lines (color by horizontal_dist)
-  - Corridor filter polygon overlay
-  - Basemap: OpenStreetMap / Satellite / USGS topo
-- **Interactions**: click well → all other panels filter to that well's neighborhood
-- **Tools**: zoom, pan, measure distance, layer visibility toggle
+
+**Library**: `dash-leaflet` with `dl.GeoJSON` — renders GeoPandas GeoJSON natively,
+supports per-feature styling callbacks, click events, and spatial filtering.
+
+#### Wellbore Sticks (trajectories)
+
+Build from the directional survey data (post `filter_after_heel_point()`):
+
+```python
+from shapely.geometry import LineString, Point
+import geopandas as gpd
+import json
+
+def build_trajectory_geodataframe(
+    df_lateral: pd.DataFrame,
+    df_header: pd.DataFrame,
+) -> gpd.GeoDataFrame:
+    """
+    Build a GeoDataFrame of wellbore sticks from directional survey.
+
+    - Each well = one LineString (lat/lon per MD station, sorted by MD)
+    - Last point (max MD) = bottom-hole location
+    - Joined with header: well_name, bench, first_prod_date, operator
+    """
+    rows = []
+    for uwi, group in df_lateral.groupby("uwi"):
+        group = group.sort_values("md")
+        # (longitude, latitude) order — GeoJSON / Leaflet convention
+        coords = list(zip(group["longitude"], group["latitude"]))
+        if len(coords) < 2:
+            continue
+        rows.append({
+            "uwi": uwi,
+            "geometry": LineString(coords),
+            "bh_lon": coords[-1][0],   # bottom-hole longitude
+            "bh_lat": coords[-1][1],   # bottom-hole latitude
+        })
+
+    gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
+
+    # Join header attributes for styling and tooltips
+    keep_cols = ["uwi", "well_name", "bench", "first_prod_date", "operator",
+                 "hole_direction", "spud_date"]
+    gdf = gdf.merge(
+        df_header[[c for c in keep_cols if c in df_header.columns]],
+        on="uwi", how="left"
+    )
+    return gdf
+
+
+def build_bottomhole_geodataframe(gdf_trajectories: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Separate GeoDataFrame of bottom-hole Point markers."""
+    gdf_bh = gdf_trajectories.copy()
+    gdf_bh["geometry"] = gdf_bh.apply(
+        lambda r: Point(r["bh_lon"], r["bh_lat"]), axis=1
+    )
+    return gdf_bh
+
+
+# Convert to GeoJSON for dash-leaflet
+trajectories_geojson = json.loads(gdf_trajectories.to_json())
+bottomholes_geojson  = json.loads(gdf_bottomholes.to_json())
+```
+
+**Why GeoPandas + GeoJSON → dash-leaflet:**
+
+- Already in `requirements.txt` — no new dependency
+- `dl.GeoJSON` renders polylines natively with JS styling callbacks (color by bench)
+- Enables spatial operations later: corridor filter = `gdf.within(polygon)`, distance queries
+- Click on a feature → returns `feature["properties"]["uwi"]` → drives all other panels
+
+#### dash-leaflet Map Layout
+
+```python
+dl.Map(
+    center=[lat_center, lon_center],
+    zoom=10,
+    children=[
+        dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),  # or satellite
+        dl.LayersControl([
+            dl.Overlay(
+                dl.GeoJSON(
+                    id="layer-trajectories",
+                    data=trajectories_geojson,
+                    options={"style": trajectory_style_fn},  # JS colorscale by bench
+                ),
+                name="Well Trajectories", checked=True,
+            ),
+            dl.Overlay(
+                dl.GeoJSON(
+                    id="layer-bottomholes",
+                    data=bottomholes_geojson,
+                    pointToLayer=bottomhole_marker_fn,  # custom marker icon
+                ),
+                name="Bottom-hole Markers", checked=True,
+            ),
+            dl.Overlay(
+                dl.GeoJSON(id="layer-spacing-pairs"),
+                name="Spacing Pairs", checked=False,
+            ),
+            dl.Overlay(
+                dl.GeoJSON(id="layer-corridor"),
+                name="Corridor Filter", checked=True,
+            ),
+        ]),
+        dl.ScaleControl(position="bottomleft"),
+    ],
+    style={"height": "500px"},
+)
+```
+
+#### Bench Color Mapping (JS callback injected into dl.GeoJSON)
+
+```javascript
+// Passed as options={"style": window.dashExtensions.trajectoryStyle}
+window.dashExtensions = window.dashExtensions || {};
+window.dashExtensions.trajectoryStyle = function(feature) {
+    const benchColors = {
+        "WOLFCAMP A":          "#1f77b4",
+        "WOLFCAMP B UPPER":    "#ff7f0e",
+        "WOLFCAMP B LOWER":    "#2ca02c",
+        "3RD BONE SPRING":     "#d62728",
+        "3RD BONE SPRING SAND":"#9467bd",
+        "BARNETT":             "#8c564b",
+        "DEAN":                "#e377c2",
+    };
+    const bench = feature.properties.bench || "Unknown";
+    return {
+        color: benchColors[bench] || "#7f7f7f",
+        weight: 2,
+        opacity: 0.85,
+    };
+};
+```
+
+#### Interaction: Click Well → Filter All Panels
+
+```python
+@app.callback(
+    Output("selected-wells-store", "data"),
+    Input("layer-trajectories", "clickData"),
+    Input("layer-bottomholes", "clickData"),
+)
+def on_well_click(traj_click, bh_click):
+    ctx = dash.callback_context
+    click = traj_click or bh_click
+    if not click:
+        return dash.no_update
+    uwi = click["properties"]["uwi"]
+    # Return selected UWI + its neighborhood (from spacing df)
+    return {"selected_uwi": uwi}
+```
+
+**Layers** (toggle-able via `dl.LayersControl`):
+
+- ☑ Well trajectories — `LineString` per well, color by bench / year / operator
+- ☑ Bottom-hole markers — `Point` at last survey station per well
+- ☐ Spacing pair lines — `LineString` between well_i and well_k midpoints, color by `horizontal_dist`
+- ☐ Parent-child connections — network edges, toggled separately
+- ☑ Corridor filter polygon — `wps_corridor` geometry
+- ☐ Township/range (PLSS) — static GeoJSON overlay
+- ☐ Lease boundaries — user-uploaded shapefile/GeoJSON
+- ☐ Frac hit risk heatmap — `dl.Colorbar` + grid
+
+Basemap selector: OpenStreetMap / Esri Satellite / USGS Topo / CartoDB (dark)
+
+**Tools**: zoom, pan, `dl.ScaleControl`, measure distance (future: `dl.MeasureControl`)
 
 ### Panel 2: Gun Barrel Diagram
 - X: `cum_dist` (ft), Y: `elevation_i` (TVD)

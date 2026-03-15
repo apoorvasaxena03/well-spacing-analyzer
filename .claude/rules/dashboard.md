@@ -5,6 +5,27 @@ paths:
 
 # Rules when editing dashboard code
 
+## Critical: Never Modify src/
+
+The `src/` library is the authoritative backend. The dashboard wraps it — never forks it.
+
+- `dashboard/pipeline.py` calls `WellDataLoader`, `GeoSurveyProcessor`, `WellSpacingCalculator`,
+  `DirectionalBenchNeighbors`, `SpacingNeighborEnricher` exactly as notebooks do
+- If a bug is found in `src/`, fix it in `src/` — not in `dashboard/pipeline.py`
+- If a new feature is needed in the pipeline, add it to `src/` first, then expose it in `pipeline.py`
+- The notebook workflows must continue to work unchanged after any dashboard change
+
+## App Structure (6 steps)
+
+The app is a guided flow: Upload → Column Mapping → Configure → Calculate → Explore → Export.
+Each step is a separate page in `dashboard/pages/`. The `dcc.Store` components pass state between pages:
+
+- `upload-store` → raw file bytes + filenames
+- `column-map-store` → confirmed `{source: canonical}` mappings per file
+- `config-store` → UTM zone, max_distance_miles, cutoff_ft, etc.
+- `pipeline-result-store` → path to cached pipeline output (not the data itself — too large)
+- `selected-wells-store` → currently selected UWI(s) from map click
+
 ## Framework: Dash (Plotly)
 - Use `dash-bootstrap-components` for layout (not raw HTML divs)
 - All callbacks must have `prevent_initial_call=True` unless the initial state is meaningful

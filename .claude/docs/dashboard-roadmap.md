@@ -697,16 +697,21 @@ fig.update_layout(
 #### Data Flow Summary
 
 ```text
-compute_gun_barrel(IK, HeelToe)
+selected-wells-store  (map click → list of UWIs in neighborhood)
+    → filter IK: keep rows where well_i OR well_k in selected UWIs
+    → filter HeelToe: keep rows where uwi in selected UWIs
+
+compute_gun_barrel(IK_filtered, HeelToe_filtered)
     → GB DataFrame (sectionDist, elevation_i, bench, well_name, first_prod_date)
 
-IK spacing pairs (already computed)
+IK_filtered spacing pairs
     → horizontal_dist, vertical_dist, dist3d for zigzag labels
 
 df_formation_tops (optional upload in Step 1)
     → formation top lines per bench/formation
 
 All three → layered go.Figure → dcc.Graph(id="gun-barrel-chart")
+If selected-wells-store is empty or None → show empty figure with placeholder message
 ```
 
 ---
@@ -856,15 +861,30 @@ window.dashExtensions.trajectoryStyle = function(feature) {
     Output("selected-wells-store", "data"),
     Input("layer-trajectories", "clickData"),
     Input("layer-bottomholes", "clickData"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
 )
-def on_well_click(traj_click, bh_click):
-    ctx = dash.callback_context
+def on_well_click(traj_click, bh_click, pipeline_result):
     click = traj_click or bh_click
     if not click:
         return dash.no_update
-    uwi = click["properties"]["uwi"]
-    # Return selected UWI + its neighborhood (from spacing df)
-    return {"selected_uwi": uwi}
+
+    clicked_uwi = click["properties"]["uwi"]
+
+    # Load IK from cached pipeline output to find the full neighborhood
+    IK = load_cached_ik(pipeline_result)  # thin helper; reads parquet/pickle from disk
+    neighborhood = set(
+        IK.loc[
+            (IK["well_i"] == clicked_uwi) | (IK["well_k"] == clicked_uwi),
+            ["well_i", "well_k"]
+        ].values.flatten()
+    )
+    neighborhood.add(clicked_uwi)
+
+    return {
+        "clicked_uwi": clicked_uwi,
+        "neighborhood_uwis": sorted(neighborhood),  # all wells in GB
+    }
 ```
 
 **Layers** (toggle-able via `dl.LayersControl`):
@@ -884,10 +904,40 @@ Basemap selector: OpenStreetMap / Esri Satellite / USGS Topo / CartoDB (dark)
 
 ### Panel 2: Gun Barrel Diagram
 
-- X: `cum_dist` (ft), Y: `elevation_i` (TVD)
-- Scatter + line traces, color by bench
-- Well name + date labels
-- Dynamic: updates when wells are selected on map
+**Input**: `selected-wells-store` → `neighborhood_uwis` list from map click.
+**Never plots all wells** — only the clicked well and its spacing neighbors.
+
+```python
+@app.callback(
+    Output("gun-barrel-chart", "figure"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def update_gun_barrel(selected, pipeline_result):
+    if not selected or not selected.get("neighborhood_uwis"):
+        return empty_figure("Click a well on the map to populate the gun barrel.")
+
+    uwis = selected["neighborhood_uwis"]
+    IK, HeelToe = load_cached_ik_heeltoe(pipeline_result)
+
+    # Filter to only the selected neighborhood
+    IK_filtered = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)]
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
+
+    if IK_filtered.empty:
+        return empty_figure("No spacing pairs found for selected well.")
+
+    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
+    fig = build_gun_barrel_figure(GB, IK_filtered, df_formation_tops)
+    return fig
+```
+
+- X: `sectionDist` (centered) or `cum_dist` — toggled via radio button
+- Y: `elevation_i` (TVD, `autorange="reversed"`)
+- Color by: `bench`
+- Three trace layers: well points, zigzag spacing lines, formation tops (optional)
+- Default state: empty chart with "Click a well on the map" placeholder
 
 ### Panel 3: Cumulative Oil — Normalized Time
 

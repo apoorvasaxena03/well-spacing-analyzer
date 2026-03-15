@@ -36,6 +36,18 @@ Each step is a separate page in `dashboard/pages/`. The `dcc.Store` components p
 - ALL data callbacks must read from this store before processing
 - If mapping is not set, show a warning and disable downstream panels
 
+## Map ↔ Gun Barrel Link (Critical)
+
+The gun barrel **must only show wells selected on the map**. It is never populated on page load.
+
+- The `update_gun_barrel` callback takes `Input("selected-wells-store", "data")` — the store set by `on_well_click`
+- `selected-wells-store` contains `{"clicked_uwi": str, "neighborhood_uwis": [str, ...]}`
+- Filter IK pairs: keep rows where **both** `well_i` AND `well_k` are in `neighborhood_uwis`
+  (this ensures only intra-neighborhood pairs are drawn — no dangling connections to outside wells)
+- Filter HeelToe: keep rows where `uwi` in `neighborhood_uwis`
+- If `selected-wells-store` is empty/None → return `empty_figure("Click a well on the map to populate the gun barrel.")`
+- Never pass the full IK DataFrame to `compute_gun_barrel()` — always pre-filter
+
 ## Gun Barrel Diagram
 - Use `compute_gun_barrel()` from `.claude/docs/dashboard-roadmap.md` as the data foundation
 - Full enhanced design is in the "Enhanced Gun Barrel Chart" section of that file — follow it exactly

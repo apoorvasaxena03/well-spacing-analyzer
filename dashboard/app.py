@@ -43,11 +43,14 @@ cache = Cache(server, config={"CACHE_TYPE": "SimpleCache", "CACHE_DEFAULT_TIMEOU
 # ---------------------------------------------------------------------------
 stores = dbc.Container(
     [
-        dash.dcc.Store(id="upload-store"),          # raw file bytes + filenames
-        dash.dcc.Store(id="column-map-store"),      # {source: canonical} mappings per file
-        dash.dcc.Store(id="config-store"),          # UTM zone, max_distance_miles, cutoff_ft
-        dash.dcc.Store(id="pipeline-result-store"), # path to cached pipeline output on disk
-        dash.dcc.Store(id="selected-wells-store"),  # clicked UWI + neighborhood UWIs from map
+        # storage_type="session" persists data in browser sessionStorage, so a
+        # full-page reload (triggered by dcc.Location with refresh=True) does NOT
+        # wipe these stores.  Data is cleared automatically when the tab is closed.
+        dash.dcc.Store(id="upload-store",          storage_type="session"),
+        dash.dcc.Store(id="column-map-store",      storage_type="session"),
+        dash.dcc.Store(id="config-store",          storage_type="session"),
+        dash.dcc.Store(id="pipeline-result-store", storage_type="session"),
+        dash.dcc.Store(id="selected-wells-store",  storage_type="session"),
     ],
     fluid=True,
 )

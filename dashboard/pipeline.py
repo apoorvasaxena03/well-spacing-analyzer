@@ -31,6 +31,7 @@ from src.utils.custom_logger import get_logger, new_run_id, set_run_id
 # Module-level logger — writes to logs/dashboard.log + terminal
 # ---------------------------------------------------------------------------
 logger = get_logger("dashboard", log_to_console=True)
+logger.info("Dashboard pipeline ready — logging to logs/dashboard.log")
 
 # ---------------------------------------------------------------------------
 # Cache directory for pipeline outputs

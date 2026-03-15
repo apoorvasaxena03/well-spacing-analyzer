@@ -1,0 +1,68 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git add src/*)",
+      "Bash(git add notebooks/*)",
+      "Bash(git add .claude/*)",
+      "Bash(git add dashboard/*)",
+      "Bash(git add tests/*)",
+      "Bash(git add *.md)",
+      "Bash(git add *.txt)",
+      "Bash(git add *.py)",
+      "Bash(git add *.toml)",
+      "Bash(git add *.cfg)",
+      "Bash(git commit*)",
+      "Bash(git branch*)",
+      "Bash(git checkout -b *)",
+      "Bash(git checkout dev)",
+      "Bash(git checkout main)",
+      "Bash(git fetch*)",
+      "Bash(git pull*)",
+      "Bash(git merge dev)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr checkout*)",
+      "Bash(gh issue create*)",
+      "Bash(gh issue list*)",
+      "Bash(gh issue view*)",
+      "Bash(pip install*)",
+      "Bash(pip list*)",
+      "Bash(pip show*)",
+      "Bash(python -m pytest*)",
+      "Bash(pytest*)",
+      "Bash(ruff check*)",
+      "Bash(ruff format*)",
+      "Bash(python -c *)",
+      "Bash(jupyter nbconvert*)",
+      "Bash(tree*)",
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/memory/**)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(rm -rf*)",
+      "Bash(git push origin main*)",
+      "Bash(git push * main*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/verify-before-stop.py",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

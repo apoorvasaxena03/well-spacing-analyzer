@@ -165,5 +165,9 @@ logs/
 # Ignore SpacingStats output folder
 SpacingStats/
 
-# Ignore Claude's internal files
-/.claude/
+# Claude Code configuration — track team-shared files, ignore personal/generated ones
+# Track: CLAUDE.md, commands/, agents/, rules/, docs/, hooks/, workflows.md, settings.json
+# Ignore: personal local settings and generated scratch reports
+.claude/settings.local.json
+.claude/scratch/*
+!.claude/scratch/.gitkeep

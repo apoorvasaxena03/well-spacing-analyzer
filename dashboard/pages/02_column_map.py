@@ -141,6 +141,7 @@ layout = dbc.Container(
                             id="map-table-header",
                             columns=_TABLE_COLUMNS,
                             data=[],
+                            editable=True,
                             dropdown=_dropdown_options(CANONICAL_HEADER),
                             style_cell=_TABLE_STYLE_CELL,
                             style_header=_TABLE_STYLE_HEADER,
@@ -159,6 +160,7 @@ layout = dbc.Container(
                             id="map-table-directional",
                             columns=_TABLE_COLUMNS,
                             data=[],
+                            editable=True,
                             dropdown=_dropdown_options(CANONICAL_DIRECTIONAL),
                             style_cell=_TABLE_STYLE_CELL,
                             style_header=_TABLE_STYLE_HEADER,
@@ -177,6 +179,7 @@ layout = dbc.Container(
                             id="map-table-production",
                             columns=_TABLE_COLUMNS,
                             data=[],
+                            editable=True,
                             dropdown=_dropdown_options(CANONICAL_PRODUCTION),
                             style_cell=_TABLE_STYLE_CELL,
                             style_header=_TABLE_STYLE_HEADER,
@@ -225,10 +228,20 @@ layout = dbc.Container(
 # ---------------------------------------------------------------------------
 
 def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str, str]:
+    """
+    Auto-suggest canonical matches. Score cutoff 75 — high enough to catch
+    obvious matches (well_name→well_name, uwi→uwi) while avoiding false
+    positives (well_status→well_name, permit_date→spud_date).
+    """
     mapping = {}
+    used_canonical: set[str] = set()
     for col in source_cols:
-        match = fuzz_process.extractOne(col, canonical_cols, score_cutoff=60)
-        mapping[col] = match[0] if match else ""
+        match = fuzz_process.extractOne(col, canonical_cols, score_cutoff=75)
+        if match and match[0] not in used_canonical:
+            mapping[col] = match[0]
+            used_canonical.add(match[0])
+        else:
+            mapping[col] = ""
     return mapping
 
 

@@ -126,7 +126,6 @@ def show_summary(upload_store, config_store):
     State("config-store", "data"),
     prevent_initial_call=True,
     background=True,
-    manager=None,  # will be wired to background_callback_manager in app.py
     progress=[Output("calc-progress", "value"), Output("calc-status-text", "children")],
 )
 def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_store):

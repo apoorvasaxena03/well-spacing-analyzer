@@ -5,6 +5,10 @@ Main visualisation page.
 Layout: map panel (left) + tabbed chart panel (right).
 - Click a well on the map → gun barrel updates automatically
 - All chart panels read from pipeline-result-store and selected-wells-store
+
+GeoJSON IDs are static in the layout; their `data` property is updated by
+load_map_layers(). This lets on_well_click reference them without needing
+suppress_callback_exceptions for these specific components.
 """
 
 import dash
@@ -23,6 +27,8 @@ from dashboard.components.map_panel import build_trajectory_geodataframe, build_
 
 dash.register_page(__name__, path="/explore", name="5 Explore", order=5)
 
+_EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -30,7 +36,10 @@ dash.register_page(__name__, path="/explore", name="5 Explore", order=5)
 layout = dbc.Container(
     [
         html.H3("Step 5 — Explore Results", className="mb-1"),
-        html.P("Click any well on the map to populate the gun barrel and production charts.", className="text-muted mb-3"),
+        html.P(
+            "Click any well on the map to populate the gun barrel and production charts.",
+            className="text-muted mb-3",
+        ),
 
         dbc.Row(
             [
@@ -62,10 +71,26 @@ layout = dbc.Container(
                             dbc.CardBody(
                                 dl.Map(
                                     [
-                                        dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),
-                                        dl.LayerGroup(id="layer-trajectories"),
-                                        dl.LayerGroup(id="layer-bottomholes"),
-                                        dl.LayerGroup(id="layer-selected-highlight"),
+                                        dl.TileLayer(
+                                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                                            attribution="© OpenStreetMap contributors",
+                                        ),
+                                        # Static IDs — data updated by load_map_layers callback
+                                        dl.GeoJSON(
+                                            id="geojson-trajectories",
+                                            data=_EMPTY_GEOJSON,
+                                            options={
+                                                "style": {
+                                                    "color": "#3388ff",
+                                                    "weight": 2,
+                                                    "opacity": 0.8,
+                                                }
+                                            },
+                                        ),
+                                        dl.GeoJSON(
+                                            id="geojson-bottomholes",
+                                            data=_EMPTY_GEOJSON,
+                                        ),
                                         dl.ScaleControl(position="bottomleft"),
                                     ],
                                     id="main-map",
@@ -92,7 +117,7 @@ layout = dbc.Container(
                                             dbc.RadioItems(
                                                 id="gb-xaxis-mode",
                                                 options=[
-                                                    {"label": "Centered", "value": "sectionDist"},
+                                                    {"label": "Centered",       "value": "sectionDist"},
                                                     {"label": "From reference", "value": "cum_dist"},
                                                 ],
                                                 value="sectionDist",
@@ -109,17 +134,29 @@ layout = dbc.Container(
                                 dbc.Tabs(
                                     [
                                         dbc.Tab(
-                                            dcc.Graph(id="gun-barrel-chart", style={"height": "60vh"}),
+                                            dcc.Graph(
+                                                id="gun-barrel-chart",
+                                                style={"height": "60vh"},
+                                                figure=empty_figure("Click a well on the map."),
+                                            ),
                                             label="Gun Barrel",
                                             tab_id="tab-gb",
                                         ),
                                         dbc.Tab(
-                                            dcc.Graph(id="cum-oil-chart", style={"height": "60vh"}),
+                                            dcc.Graph(
+                                                id="cum-oil-chart",
+                                                style={"height": "60vh"},
+                                                figure=empty_figure("Click a well on the map."),
+                                            ),
                                             label="Cum Oil",
                                             tab_id="tab-cum-oil",
                                         ),
                                         dbc.Tab(
-                                            dcc.Graph(id="daily-oil-chart", style={"height": "60vh"}),
+                                            dcc.Graph(
+                                                id="daily-oil-chart",
+                                                style={"height": "60vh"},
+                                                figure=empty_figure("Click a well on the map."),
+                                            ),
                                             label="Daily Oil",
                                             tab_id="tab-daily-oil",
                                         ),
@@ -144,16 +181,17 @@ layout = dbc.Container(
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("layer-trajectories", "children"),
-    Output("layer-bottomholes", "children"),
+    Output("geojson-trajectories", "data"),
+    Output("geojson-bottomholes", "data"),
     Output("main-map", "center"),
     Output("main-map", "zoom"),
     Input("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
 def load_map_layers(pipeline_result):
+    """Populate map with wellbore sticks and bottom-hole markers."""
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return [], [], [31.5, -101.9], 10
+        return _EMPTY_GEOJSON, _EMPTY_GEOJSON, [31.5, -101.9], 10
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -162,37 +200,35 @@ def load_map_layers(pipeline_result):
     gdf_traj = build_trajectory_geodataframe(lateral_df, header_df)
     gdf_bh   = build_bottomhole_geodataframe(gdf_traj)
 
-    traj_geojson = dl.GeoJSON(
-        data=gdf_traj.__geo_interface__,
-        id="geojson-trajectories",
-        options={"style": {"color": "#3388ff", "weight": 2, "opacity": 0.8}},
-    )
-    bh_geojson = dl.GeoJSON(
-        data=gdf_bh.__geo_interface__,
-        id="geojson-bottomholes",
-        pointToLayer=None,
-    )
+    traj_data = gdf_traj.__geo_interface__
+    bh_data   = gdf_bh.__geo_interface__
 
-    # Centre map on data
-    lat_centre = header_df["latitude"].mean() if "latitude" in header_df.columns else 31.5
-    lon_centre = header_df["longitude"].mean() if "longitude" in header_df.columns else -101.9
+    # Centre map — header uses surface_lat/surface_lon (canonical name)
+    lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
+    lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
+    lat_centre = float(header_df[lat_col].dropna().mean()) if lat_col in header_df.columns else 31.5
+    lon_centre = float(header_df[lon_col].dropna().mean()) if lon_col in header_df.columns else -101.9
 
-    return [traj_geojson], [bh_geojson], [lat_centre, lon_centre], 11
+    return traj_data, bh_data, [lat_centre, lon_centre], 11
 
 
 @callback(
     Output("selected-wells-store", "data"),
-    Input("geojson-trajectories", "clickData"),
-    Input("geojson-bottomholes", "clickData"),
+    Input("geojson-trajectories", "n_clicks"),
+    Input("geojson-bottomholes", "n_clicks"),
+    State("geojson-trajectories", "clickData"),
+    State("geojson-bottomholes", "clickData"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def on_well_click(traj_click, bh_click, pipeline_result):
-    click = traj_click or bh_click
-    if not click or not pipeline_result:
+def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeline_result):
+    """Capture clicked well UWI and build its spacing neighborhood."""
+    click_data = traj_click_data or bh_click_data
+    if not click_data or not pipeline_result:
         return dash.no_update
 
-    clicked_uwi = click["properties"].get("uwi")
+    props = click_data.get("properties") or {}
+    clicked_uwi = props.get("uwi")
     if not clicked_uwi:
         return dash.no_update
 
@@ -200,6 +236,7 @@ def on_well_click(traj_click, bh_click, pipeline_result):
     if IK.empty:
         return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
 
+    # All wells that share a spacing pair with the clicked well
     neighborhood = set(
         IK.loc[
             (IK["well_i"] == clicked_uwi) | (IK["well_k"] == clicked_uwi),
@@ -231,8 +268,8 @@ def update_gun_barrel(selected, x_col, pipeline_result):
     if IK.empty:
         return empty_figure("Pipeline results not loaded.")
 
-    # Filter to intra-neighborhood pairs only
-    IK_filtered     = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)]
+    # Filter to intra-neighborhood pairs only — never pass full IK to compute_gun_barrel
+    IK_filtered      = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)]
     HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
 
     if IK_filtered.empty:
@@ -264,15 +301,15 @@ def update_cum_oil(selected, pipeline_result):
         return empty_figure("No production data for selected wells.")
 
     prod_sel = prod_sel.sort_values(["uwi", "prod_date"])
-    prod_sel["normalize_time"] = prod_sel.groupby("uwi")["prod_date"].transform(
+    prod_sel["cum_oil"] = prod_sel.groupby("uwi")["oil"].cumsum()
+    prod_sel["months"] = prod_sel.groupby("uwi")["prod_date"].transform(
         lambda s: (s - s.min()).dt.days / 30.44
     )
-    prod_sel["cum_oil"] = prod_sel.groupby("uwi")["oil"].cumsum()
 
     fig = go.Figure()
     for uwi, grp in prod_sel.groupby("uwi"):
         fig.add_trace(go.Scatter(
-            x=grp["normalize_time"], y=grp["cum_oil"],
+            x=grp["months"], y=grp["cum_oil"],
             mode="lines", name=str(uwi),
         ))
     fig.update_layout(
@@ -280,6 +317,7 @@ def update_cum_oil(selected, pipeline_result):
         yaxis_title="Cumulative Oil (BBL)",
         template="plotly_white",
         hovermode="x unified",
+        margin=dict(t=30, b=50, l=60, r=20),
     )
     return fig
 
@@ -305,8 +343,9 @@ def update_daily_oil(selected, pipeline_result):
 
     fig = go.Figure()
     for uwi, grp in prod_sel.groupby("uwi"):
+        oil_col = "daily_oil" if "daily_oil" in grp.columns else "oil"
         fig.add_trace(go.Scatter(
-            x=grp["prod_date"], y=grp.get("daily_oil", grp.get("oil")),
+            x=grp["prod_date"], y=grp[oil_col],
             mode="lines", name=str(uwi),
         ))
     fig.update_layout(
@@ -314,5 +353,6 @@ def update_daily_oil(selected, pipeline_result):
         yaxis_title="Daily Oil (BOPD)",
         template="plotly_white",
         hovermode="x unified",
+        margin=dict(t=30, b=50, l=60, r=20),
     )
     return fig

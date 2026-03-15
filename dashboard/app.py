@@ -11,10 +11,16 @@ Entry point: python dashboard/app.py
   6. Export       — download results as CSV / Excel
 """
 
+from diskcache import Cache as DiskCache
 import dash
 import dash_bootstrap_components as dbc
 from flask_caching import Cache
-from diskcache import Cache as DiskCache
+
+# ---------------------------------------------------------------------------
+# Background job cache — must be created BEFORE dash.Dash()
+# ---------------------------------------------------------------------------
+disk_cache = DiskCache("./dashboard/.cache")
+background_callback_manager = dash.DiskcacheManager(disk_cache)
 
 # ---------------------------------------------------------------------------
 # App initialisation
@@ -25,12 +31,9 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.FLATLY, dbc.icons.BOOTSTRAP],
     suppress_callback_exceptions=True,
     title="Well Spacing Analyzer",
+    background_callback_manager=background_callback_manager,
 )
 server = app.server  # expose Flask server for caching
-
-# Background job cache (local disk — no Redis needed)
-disk_cache = DiskCache("./dashboard/.cache")
-background_callback_manager = dash.DiskcacheManager(disk_cache)
 
 # Flask-caching for memoising expensive reads
 cache = Cache(server, config={"CACHE_TYPE": "SimpleCache", "CACHE_DEFAULT_TIMEOUT": 3600})

@@ -83,8 +83,8 @@ TEMPLATES = {
 
 # Shared DataTable column definitions and style
 _TABLE_COLUMNS = [
-    {"name": "Your Column",          "id": "source_column",    "editable": False},
-    {"name": "Maps To (canonical)",  "id": "canonical_column", "editable": True, "presentation": "dropdown"},
+    {"name": "Your Column",                        "id": "source_column",    "editable": False},
+    {"name": "Maps To (canonical — type or pick)", "id": "canonical_column", "editable": True},
 ]
 _TABLE_STYLE_CELL        = {"fontSize": "0.85rem", "padding": "4px 8px"}
 _TABLE_STYLE_HEADER      = {"fontWeight": "bold", "backgroundColor": "#f8f9fa"}

@@ -6,11 +6,13 @@ User maps their source columns to canonical names required by src/.
 - Fuzzy auto-suggest for unknown column names (rapidfuzz)
 - Separate mapping tables for header, directional, production
 - Confirmed mapping → stored in column-map-store
+
+DataTable components have STATIC IDs in the layout (data updated via callback).
+This avoids Dash 4.x client-side validation errors for dynamically created component IDs.
 """
 
 import dash
 import dash_bootstrap_components as dbc
-import pandas as pd
 from dash import Input, Output, State, callback, dash_table, dcc, html
 from rapidfuzz import process as fuzz_process
 
@@ -28,7 +30,7 @@ CANONICAL_HEADER = [
 ]
 
 CANONICAL_DIRECTIONAL = [
-    "uwi", "md", "tvd", "latitude", "longitude",
+    "uwi", "uwi12", "md", "tvd", "latitude", "longitude",
     "azimuth", "inclination", "deviation_E/W", "deviation_N/S",
 ]
 
@@ -38,7 +40,7 @@ CANONICAL_PRODUCTION = [
     "cum_oil", "cum_gas", "cum_water",
 ]
 
-# Enverus column templates (from well_spacing_RingEnergy_v2.ipynb)
+# Enverus column templates
 ENVERUS_HEADER = {
     "API_UWI_14_Unformatted": "uwi",
     "ENVInterval":             "bench",
@@ -75,75 +77,26 @@ ENVERUS_PRODUCTION = {
 }
 
 TEMPLATES = {
-    "Enverus":  {"header": ENVERUS_HEADER, "directional": ENVERUS_DIRECTIONAL, "production": ENVERUS_PRODUCTION},
-    "Custom":   {"header": {}, "directional": {}, "production": {}},
+    "Enverus": {"header": ENVERUS_HEADER, "directional": ENVERUS_DIRECTIONAL, "production": ENVERUS_PRODUCTION},
+    "Custom":  {"header": {}, "directional": {}, "production": {}},
 }
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str, str]:
-    """Auto-suggest canonical matches using rapidfuzz. Returns {source: canonical}."""
-    mapping = {}
-    for col in source_cols:
-        match = fuzz_process.extractOne(col, canonical_cols, score_cutoff=60)
-        mapping[col] = match[0] if match else ""
-    return mapping
+# Shared DataTable column definitions and style
+_TABLE_COLUMNS = [
+    {"name": "Your Column",          "id": "source_column",    "editable": False},
+    {"name": "Maps To (canonical)",  "id": "canonical_column", "editable": True, "presentation": "dropdown"},
+]
+_TABLE_STYLE_CELL        = {"fontSize": "0.85rem", "padding": "4px 8px"}
+_TABLE_STYLE_HEADER      = {"fontWeight": "bold", "backgroundColor": "#f8f9fa"}
+_TABLE_STYLE_CONDITIONAL = [{"if": {"filter_query": '{canonical_column} = ""'}, "backgroundColor": "#fff3cd"}]
 
 
-def _build_mapping_table(
-    file_key: str,
-    source_cols: list[str],
-    canonical_cols: list[str],
-    prefill: dict[str, str],
-) -> dbc.Card:
-    """Build an editable DataTable for column mapping."""
-    rows = []
-    for src in source_cols:
-        rows.append({
-            "source_column": src,
-            "canonical_column": prefill.get(src, ""),
-        })
-
-    return dbc.Card(
-        dbc.CardBody(
-            [
-                dash_table.DataTable(
-                    id=f"map-table-{file_key}",
-                    columns=[
-                        {"name": "Your Column", "id": "source_column", "editable": False},
-                        {
-                            "name": "Maps To (canonical)",
-                            "id": "canonical_column",
-                            "editable": True,
-                            "presentation": "dropdown",
-                        },
-                    ],
-                    data=rows,
-                    dropdown={
-                        "canonical_column": {
-                            "options": [{"label": c, "value": c} for c in [""] + canonical_cols]
-                        }
-                    },
-                    style_cell={"fontSize": "0.85rem", "padding": "4px 8px"},
-                    style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                    style_data_conditional=[
-                        {
-                            "if": {"filter_query": '{canonical_column} = ""'},
-                            "backgroundColor": "#fff3cd",
-                        }
-                    ],
-                    page_size=20,
-                )
-            ]
-        )
-    )
+def _dropdown_options(canonical_cols: list[str]) -> dict:
+    return {"canonical_column": {"options": [{"label": c, "value": c} for c in [""] + canonical_cols]}}
 
 
 # ---------------------------------------------------------------------------
-# Layout
+# Layout — DataTables have STATIC IDs; data is populated via callback
 # ---------------------------------------------------------------------------
 
 layout = dbc.Container(
@@ -181,9 +134,60 @@ layout = dbc.Container(
 
         dbc.Tabs(
             [
-                dbc.Tab(html.Div(id="map-panel-header"),      label="Header",      tab_id="tab-header"),
-                dbc.Tab(html.Div(id="map-panel-directional"), label="Directional", tab_id="tab-directional"),
-                dbc.Tab(html.Div(id="map-panel-production"),  label="Production",  tab_id="tab-production"),
+                dbc.Tab(
+                    [
+                        html.Div(id="map-panel-header-msg", className="mt-2"),
+                        dash_table.DataTable(
+                            id="map-table-header",
+                            columns=_TABLE_COLUMNS,
+                            data=[],
+                            dropdown=_dropdown_options(CANONICAL_HEADER),
+                            style_cell=_TABLE_STYLE_CELL,
+                            style_header=_TABLE_STYLE_HEADER,
+                            style_data_conditional=_TABLE_STYLE_CONDITIONAL,
+                            page_size=25,
+                        ),
+                    ],
+                    label="Header",
+                    tab_id="tab-header",
+                    className="pt-3",
+                ),
+                dbc.Tab(
+                    [
+                        html.Div(id="map-panel-directional-msg", className="mt-2"),
+                        dash_table.DataTable(
+                            id="map-table-directional",
+                            columns=_TABLE_COLUMNS,
+                            data=[],
+                            dropdown=_dropdown_options(CANONICAL_DIRECTIONAL),
+                            style_cell=_TABLE_STYLE_CELL,
+                            style_header=_TABLE_STYLE_HEADER,
+                            style_data_conditional=_TABLE_STYLE_CONDITIONAL,
+                            page_size=25,
+                        ),
+                    ],
+                    label="Directional",
+                    tab_id="tab-directional",
+                    className="pt-3",
+                ),
+                dbc.Tab(
+                    [
+                        html.Div(id="map-panel-production-msg", className="mt-2"),
+                        dash_table.DataTable(
+                            id="map-table-production",
+                            columns=_TABLE_COLUMNS,
+                            data=[],
+                            dropdown=_dropdown_options(CANONICAL_PRODUCTION),
+                            style_cell=_TABLE_STYLE_CELL,
+                            style_header=_TABLE_STYLE_HEADER,
+                            style_data_conditional=_TABLE_STYLE_CONDITIONAL,
+                            page_size=25,
+                        ),
+                    ],
+                    label="Production",
+                    tab_id="tab-production",
+                    className="pt-3",
+                ),
             ],
             active_tab="tab-header",
         ),
@@ -217,62 +221,83 @@ layout = dbc.Container(
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str, str]:
+    mapping = {}
+    for col in source_cols:
+        match = fuzz_process.extractOne(col, canonical_cols, score_cutoff=60)
+        mapping[col] = match[0] if match else ""
+    return mapping
+
+
+def _build_rows(source_cols: list[str], canonical_cols: list[str], prefill: dict[str, str]) -> list[dict]:
+    return [
+        {"source_column": src, "canonical_column": prefill.get(src, "")}
+        for src in source_cols
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("map-panel-header", "children"),
-    Output("map-panel-directional", "children"),
-    Output("map-panel-production", "children"),
-    Input("upload-store", "data"),
+    Output("map-table-header",       "data"),
+    Output("map-table-directional",  "data"),
+    Output("map-table-production",   "data"),
+    Output("map-panel-header-msg",      "children"),
+    Output("map-panel-directional-msg", "children"),
+    Output("map-panel-production-msg",  "children"),
+    Input("upload-store",    "data"),
     Input("template-select", "value"),
-    prevent_initial_call=True,
+    prevent_initial_call=False,   # must fire on page navigation with existing store
 )
 def build_mapping_tables(store, template_name):
     if not store:
-        msg = dbc.Alert("No data loaded. Go back to Step 1.", color="warning")
-        return msg, msg, msg
+        msg = dbc.Alert("No data loaded — go back to Step 1 and upload your files.", color="warning")
+        return [], [], [], msg, msg, msg
 
     template = TEMPLATES.get(template_name, TEMPLATES["Custom"])
 
-    def _panel(file_key, preview_col_key, canonical_cols, tmpl_map):
-        source_cols = store.get(preview_col_key, [])
+    def _rows(preview_key, canonical_cols, tmpl_map):
+        source_cols = store.get(preview_key, [])
         if not source_cols:
-            return dbc.Alert(f"No {file_key} file uploaded (optional).", color="light")
+            return [], dbc.Alert("No file uploaded for this dataset (optional).", color="light", className="mb-2")
         prefill = {**_fuzzy_match(source_cols, canonical_cols), **tmpl_map}
-        return _build_mapping_table(file_key, source_cols, canonical_cols, prefill)
+        return _build_rows(source_cols, canonical_cols, prefill), None
 
-    return (
-        _panel("header",      "header_preview_cols",      CANONICAL_HEADER,      template["header"]),
-        _panel("directional", "directional_preview_cols", CANONICAL_DIRECTIONAL, template["directional"]),
-        _panel("production",  "production_preview_cols",  CANONICAL_PRODUCTION,  template["production"]),
-    )
+    h_rows,  h_msg  = _rows("header_preview_cols",      CANONICAL_HEADER,      template["header"])
+    d_rows,  d_msg  = _rows("directional_preview_cols", CANONICAL_DIRECTIONAL, template["directional"])
+    p_rows,  p_msg  = _rows("production_preview_cols",  CANONICAL_PRODUCTION,  template["production"])
+
+    return h_rows, d_rows, p_rows, h_msg, d_msg, p_msg
 
 
 @callback(
     Output("btn-confirm-mapping", "disabled"),
-    Input("map-table-header", "data"),
+    Input("map-table-header",      "data"),
     Input("map-table-directional", "data"),
-    prevent_initial_call=True,
+    prevent_initial_call=False,
 )
 def toggle_confirm_button(header_data, dir_data):
     def _has_uwi(rows):
-        if not rows:
-            return False
-        return any(r.get("canonical_column") == "uwi" for r in rows)
-
-    return not (_has_uwi(header_data) and _has_uwi(dir_data))
+        return bool(rows) and any(r.get("canonical_column") == "uwi" for r in rows)
+    def _has_uwi_or_uwi12(rows):
+        return bool(rows) and any(r.get("canonical_column") in ("uwi", "uwi12") for r in rows)
+    return not (_has_uwi(header_data) and _has_uwi_or_uwi12(dir_data))
 
 
 @callback(
-    Output("column-map-store", "data"),
-    Output("colmap-redirect", "href"),
-    Output("column-map-error", "children"),
-    Output("column-map-error", "is_open"),
-    Input("btn-confirm-mapping", "n_clicks"),
-    State("map-table-header", "data"),
-    State("map-table-directional", "data"),
-    State("map-table-production", "data"),
+    Output("column-map-store",      "data"),
+    Output("colmap-redirect",       "href"),
+    Output("column-map-error",      "children"),
+    Output("column-map-error",      "is_open"),
+    Input("btn-confirm-mapping",    "n_clicks"),
+    State("map-table-header",       "data"),
+    State("map-table-directional",  "data"),
+    State("map-table-production",   "data"),
     prevent_initial_call=True,
 )
 def confirm_mapping(n_clicks, header_rows, dir_rows, prod_rows):
@@ -289,7 +314,8 @@ def confirm_mapping(n_clicks, header_rows, dir_rows, prod_rows):
 
     if "uwi" not in mapping["header"].values():
         return dash.no_update, dash.no_update, "Header mapping must include a 'uwi' column.", True
-    if "uwi" not in mapping["directional"].values() and "uwi12" not in mapping["directional"].values():
+    dir_vals = set(mapping["directional"].values())
+    if not dir_vals & {"uwi", "uwi12"}:
         return dash.no_update, dash.no_update, "Directional mapping must include a 'uwi' or 'uwi12' column.", True
 
     return mapping, "/configure", "", False

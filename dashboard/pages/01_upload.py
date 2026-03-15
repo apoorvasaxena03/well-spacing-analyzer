@@ -228,6 +228,15 @@ def _parse_upload(contents: str, filename: str) -> tuple[pd.DataFrame | None, st
         return None, str(exc)
 
 
+def _sample_values(df: pd.DataFrame, n: int = 3) -> dict[str, list[str]]:
+    """Return first *n* non-null values per column as strings (for preview)."""
+    samples: dict[str, list[str]] = {}
+    for col in df.columns:
+        vals = df[col].dropna().head(n).astype(str).tolist()
+        samples[col] = vals
+    return samples
+
+
 @callback(
     Output("upload-header-status", "children"),
     Output("upload-store", "data", allow_duplicate=True),
@@ -244,6 +253,7 @@ def on_header_upload(contents, filename, store):
     store["header_path"] = path
     store["header_filename"] = filename
     store["header_preview_cols"] = list(df.columns)
+    store["header_sample_values"] = _sample_values(df)
     badge = dbc.Badge(f"{filename} ({len(df.columns)} cols)", color="success")
     return badge, store
 
@@ -264,6 +274,7 @@ def on_directional_upload(contents, filename, store):
     store["directional_path"] = path
     store["directional_filename"] = filename
     store["directional_preview_cols"] = list(df.columns)
+    store["directional_sample_values"] = _sample_values(df)
     badge = dbc.Badge(f"{filename} ({len(df.columns)} cols)", color="success")
     return badge, store
 
@@ -284,6 +295,7 @@ def on_production_upload(contents, filename, store):
     store["production_path"] = path
     store["production_filename"] = filename
     store["production_preview_cols"] = list(df.columns)
+    store["production_sample_values"] = _sample_values(df)
     badge = dbc.Badge(f"{filename} ({len(df.columns)} cols)", color="success")
     return badge, store
 

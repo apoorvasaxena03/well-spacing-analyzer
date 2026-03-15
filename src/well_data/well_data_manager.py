@@ -1590,9 +1590,9 @@ class GeoSurveyProcessor:
             df.loc[mask, lon_col] = lon
 
         elapsed = time.time() - start_time
+        rate = f" ({len(df)/elapsed:.0f} rows/sec)" if elapsed > 0 else ""
         self.logger.info(
-            f"✓ UTM → lat/lon conversion complete: {len(df):,} rows in {elapsed:.3f}s "
-            f"({len(df)/elapsed:.0f} rows/sec)"
+            f"✓ UTM → lat/lon conversion complete: {len(df):,} rows in {elapsed:.3f}s{rate}"
         )
 
         return df
@@ -2004,9 +2004,9 @@ class GeoSurveyProcessor:
         df["z"] = -df["tvd"]
 
         elapsed = time.time() - start_time
+        rate = f" ({len(df)/elapsed:.0f} rows/sec)" if elapsed > 0 else ""
         self.logger.info(
-            f"✓ UTM coordinate computation complete: {len(df):,} rows in {elapsed:.2f}s "
-            f"({len(df)/elapsed:.0f} rows/sec)"
+            f"✓ UTM coordinate computation complete: {len(df):,} rows in {elapsed:.2f}s{rate}"
         )
 
         return df

@@ -2,11 +2,16 @@
 Step 2 — Column Mapping
 User maps their source columns to canonical names required by src/.
 
-Uses html.Datalist + dbc.Input per row (pattern-matching callbacks):
-- Autocomplete suggestions from canonical column list (click or type to filter)
-- Free-form text entry allowed (for custom passthrough column names)
-- Backspace, clear, and full keyboard control
+Four-column view per source column:
+  1. Original column name (as-is from file)
+  2. Standardized name (snake_case via convert_to_snake_case)
+  3. Sample data (first 3 values from uploaded file)
+  4. Canonical mapping (datalist + text input — autocomplete + free-form)
+
+Unmapped columns can be excluded or passed through as-is (global toggle).
 """
+
+import re
 
 import dash
 import dash_bootstrap_components as dbc
@@ -14,6 +19,22 @@ from dash import ALL, Input, Output, State, callback, dcc, html
 from rapidfuzz import process as fuzz_process
 
 dash.register_page(__name__, path="/column-map", name="2 Map Columns", order=2)
+
+# ---------------------------------------------------------------------------
+# convert_to_snake_case — mirrors src/utils/utils.py
+# ---------------------------------------------------------------------------
+
+def _to_snake(name: str) -> str:
+    """Convert a column name to snake_case (same logic as utils.standardize_column_names)."""
+    name = name.strip()
+    name = re.sub(r"^ENV", "Env", name)
+    name = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", name)
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    name = name.replace(" ", "_")
+    name = name.lower()
+    name = re.sub(r"_+", "_", name)
+    return name
+
 
 # ---------------------------------------------------------------------------
 # Canonical column lists
@@ -44,7 +65,6 @@ CANONICAL_BY_FILE = {
 }
 
 # Columns that MUST be mapped for the pipeline to run.
-# Header uwi + directional uwi/uwi12 are enforced by toggle_confirm_button / confirm_mapping.
 REQUIRED_CANONICAL = {
     "header":      {"uwi"},
     "directional": {"uwi", "uwi12"},   # one of these is required
@@ -98,8 +118,7 @@ layout = dbc.Container(
     [
         html.H3("Step 2 — Map Columns", className="mb-1"),
         html.P(
-            "Match your file's column names to the canonical names used by the spacing engine. "
-            "Unmapped rows (no selection) are excluded from loading.",
+            "Match your file's column names to the canonical names used by the spacing engine.",
             className="text-muted mb-3",
         ),
 
@@ -121,13 +140,29 @@ layout = dbc.Container(
                     dbc.Alert(
                         [
                             html.Strong("Tip: "),
-                            "Search or type in any dropdown. Leave blank to exclude a column. "
-                            "Type a custom name to pass it through as-is.",
+                            "Select a canonical name from the dropdown suggestions, or type a custom name "
+                            "to pass it through as-is. Leave blank to exclude a column.",
                         ],
                         color="info",
                         className="mb-3 py-2",
                     ),
-                    md=9,
+                    md=5,
+                ),
+                dbc.Col(
+                    [
+                        html.Label("Unmapped columns:", className="fw-semibold"),
+                        dbc.RadioItems(
+                            id="unmapped-mode",
+                            options=[
+                                {"label": "Exclude (don't load)", "value": "exclude"},
+                                {"label": "Read as-is (keep original name)", "value": "as-is"},
+                            ],
+                            value="exclude",
+                            inline=True,
+                            className="mb-3",
+                        ),
+                    ],
+                    md=4,
                 ),
             ]
         ),
@@ -171,37 +206,85 @@ layout = dbc.Container(
 # ---------------------------------------------------------------------------
 
 def _fuzzy_match(source_cols: list[str], canonical_cols: list[str]) -> dict[str, str]:
+    """Fuzzy-match source columns to canonical names using standardized forms."""
     mapping: dict[str, str] = {}
     used: set[str] = set()
     for col in source_cols:
-        match = fuzz_process.extractOne(col, canonical_cols, score_cutoff=75)
+        # Try matching on the snake_case form — much better for CamelCase source names
+        snake = _to_snake(col)
+        match = fuzz_process.extractOne(snake, canonical_cols, score_cutoff=75)
         if match and match[0] not in used:
             mapping[col] = match[0]
             used.add(match[0])
     return mapping
 
 
-def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) -> list:
-    """Build one row per source column: datalist + text input for free-form canonical entry."""
+def _build_rows(
+    file_key: str,
+    source_cols: list[str],
+    prefill: dict[str, str],
+    sample_values: dict[str, list[str]],
+) -> list:
+    """Build one row per source column with 4 visual columns:
+    Original | Standardized | Sample Values | Canonical Mapping
+    """
     canonical = CANONICAL_BY_FILE[file_key]
+    required = REQUIRED_CANONICAL[file_key]
     rows = []
+
     for idx, src in enumerate(source_cols):
         value = prefill.get(src) or ""
         mapped = bool(value)
+        snake = _to_snake(src)
+        samples = sample_values.get(src, [])
+        sample_text = ", ".join(samples) if samples else "—"
         datalist_id = f"dl-{file_key}-{idx}"
+
+        # Mark canonical options — required ones get a star prefix in label
+        options = []
+        for c in canonical:
+            options.append(html.Option(value=c))
+
         rows.append(
             dbc.Row(
                 [
+                    # Col 1: Original name
                     dbc.Col(
-                        html.Code(src, style={"fontSize": "0.85rem"}),
-                        width=5,
+                        html.Code(src, style={"fontSize": "0.82rem"}),
+                        width=3,
                         className="d-flex align-items-center",
                     ),
+                    # Col 2: Standardized (snake_case)
+                    dbc.Col(
+                        html.Span(
+                            snake,
+                            style={
+                                "fontSize": "0.8rem",
+                                "color": "#0d6efd" if snake in canonical else "#6c757d",
+                                "fontFamily": "monospace",
+                            },
+                        ),
+                        width=2,
+                        className="d-flex align-items-center",
+                    ),
+                    # Col 3: Sample data
+                    dbc.Col(
+                        html.Small(
+                            sample_text,
+                            style={"fontSize": "0.75rem", "color": "#888"},
+                            className="text-truncate d-block",
+                            title=sample_text,  # full text on hover
+                        ),
+                        width=3,
+                        className="d-flex align-items-center",
+                        style={"overflow": "hidden"},
+                    ),
+                    # Col 4: Canonical mapping (datalist + input)
                     dbc.Col(
                         [
                             html.Datalist(
                                 id=datalist_id,
-                                children=[html.Option(value=c) for c in canonical],
+                                children=options,
                             ),
                             dbc.Input(
                                 id={"type": "map-input", "file": file_key, "src": src},
@@ -211,15 +294,17 @@ def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) 
                                 placeholder="— leave blank to exclude —",
                                 debounce=False,
                                 size="sm",
-                                style={"fontSize": "0.85rem"},
+                                style={"fontSize": "0.82rem"},
                             ),
                         ],
-                        width=7,
+                        width=4,
                     ),
                 ],
-                className="mb-1 align-items-center py-1",
-                style={"backgroundColor": "#f0fff0" if mapped else "#fffbe6",
-                       "borderRadius": "4px"},
+                className="mb-1 align-items-center py-1 gx-2",
+                style={
+                    "backgroundColor": "#f0fff0" if mapped else "#fffbe6",
+                    "borderRadius": "4px",
+                },
             )
         )
     return rows
@@ -232,8 +317,12 @@ def _build_rows(file_key: str, source_cols: list[str], prefill: dict[str, str]) 
 def _panel(file_key: str, store: dict, template_name: str) -> list:
     template = TEMPLATES.get(template_name, TEMPLATES["Custom"])
     source_cols = store.get(f"{file_key}_preview_cols", [])
+    sample_values = store.get(f"{file_key}_sample_values", {})
+
     if not source_cols:
         return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
+
+    # Build prefill: template overrides fuzzy matches
     prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
 
     required = REQUIRED_CANONICAL[file_key]
@@ -252,13 +341,15 @@ def _panel(file_key: str, store: dict, template_name: str) -> list:
 
     col_header = dbc.Row(
         [
-            dbc.Col(html.Strong("Your Column", style={"fontSize": "0.8rem"}), width=5),
-            dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.8rem"}), width=7),
+            dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=3),
+            dbc.Col(html.Strong("Standardized", style={"fontSize": "0.78rem"}), width=2),
+            dbc.Col(html.Strong("Sample Data", style={"fontSize": "0.78rem"}), width=3),
+            dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.78rem"}), width=4),
         ],
-        className="mb-2 text-muted",
+        className="mb-2 text-muted gx-2",
     )
     children = [required_note, col_header] if required_note else [col_header]
-    return children + _build_rows(file_key, source_cols, prefill)
+    return children + _build_rows(file_key, source_cols, prefill, sample_values)
 
 
 @callback(
@@ -300,13 +391,22 @@ def toggle_confirm_button(header_vals, dir_vals):
     Input("btn-confirm-mapping", "n_clicks"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "value"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "id"),
+    State("unmapped-mode", "value"),
     prevent_initial_call=True,
 )
-def confirm_mapping(n_clicks, values, ids):
+def confirm_mapping(n_clicks, values, ids, unmapped_mode):
     mapping: dict[str, dict] = {"header": {}, "directional": {}, "production": {}}
+
     for val, id_ in zip(values, ids):
+        file_key = id_["file"]
+        src_col = id_["src"]
         if val:
-            mapping[id_["file"]][id_["src"]] = val
+            # Explicitly mapped
+            mapping[file_key][src_col] = val
+        elif unmapped_mode == "as-is":
+            # Not mapped → keep original name as-is
+            mapping[file_key][src_col] = src_col
+        # else: exclude — don't add to mapping
 
     if "uwi" not in mapping["header"].values():
         return dash.no_update, dash.no_update, "Header mapping must include a 'uwi' column.", True

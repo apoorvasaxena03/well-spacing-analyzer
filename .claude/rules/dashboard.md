@@ -37,11 +37,15 @@ Each step is a separate page in `dashboard/pages/`. The `dcc.Store` components p
 - If mapping is not set, show a warning and disable downstream panels
 
 ## Gun Barrel Diagram
-- Use `compute_gun_barrel()` from the GB function reference in `.claude/docs/dashboard-roadmap.md`
-- X-axis label: "Cumulative Distance (ft)"
-- Y-axis label: "Depth TVD (ft)" — note: values are negative
+- Use `compute_gun_barrel()` from `.claude/docs/dashboard-roadmap.md` as the data foundation
+- Full enhanced design is in the "Enhanced Gun Barrel Chart" section of that file — follow it exactly
+- Three mandatory trace layers: (1) well points, (2) spacing zigzag lines, (3) formation tops (optional)
+- X-axis: togglable — "Cumulative Distance (ft)" (`cum_dist`) or "Section Distance (ft)" (`sectionDist`)
+- `sectionDist` = `cum_dist - cum_dist.max() / 2` (centered at 0)
+- Y-axis label: "Depth TVD (ft)" — use `autorange="reversed"` (deeper = lower on plot)
 - Color by: `bench` column
-- Hover template must include: well_name, first_prod_date, elevation_i, cum_dist
+- Spacing labels (horizontal_dist, vertical_dist, dist3d) come from the IK spacing DataFrame — never recompute them
+- Formation tops are optional input; hide the trace layer gracefully when `df_formation_tops` is None
 
 ## Map Panel
 - Use `dash-leaflet` for the interactive map (not `dcc.Graph` with Mapbox — requires token)

@@ -52,25 +52,39 @@ The existing Spotfire dashboard (`C:\Users\ApoorvaSaxen_ct6z7vh\Downloads\A&D_GB
 - Bottom-hole markers
 - Filter: wps_corridor (spatial corridor filter)
 
-### Panel 2: Gun Barrel Diagram (GB)
-- X-axis: `cum_dist` (cumulative horizontal distance from reference well, ft)
-- Y-axis: `elevation_i` (TVD, negative = depth)
-- Color by: bench
-- Labels: `well_name + first_prod_date`
-- Logic: wells sorted W→E (NS drills) or S→N (EW drills) by mid_lat/mid_lon
-- Cumulative distance: sequential spacing between adjacent wells in the sorted order
+### Panel 2: Gun Barrel Diagram (GB) — Next-Gen
 
-### GB Python Function (from Spotfire data function)
+**Full design spec**: `.claude/docs/dashboard-roadmap.md` → "Enhanced Gun Barrel Chart" section.
+
+Data foundation — `compute_gun_barrel(IK, HeelToe)`:
+
+- Sort wells W→E (NS) or S→N (EW) by `mid_lon` / `mid_lat`
+- `cum_dist` = cumulative `horizontal_dist` between adjacent pairs
+- `sectionDist` = `cum_dist - cum_dist.max() / 2` (centered; toggled by radio button)
+
+Three layered `go.Scatter` traces:
+
+1. **Well points** — `markers+text`, colored by `bench`, hover shows `well_name + first_prod_date + TVD`
+2. **Spacing zigzag lines** — right-triangle connectors between adjacent pairs; annotated with
+   `horizontal_dist`, `vertical_dist`, `dist3d` at midpoint (all from IK spacing DataFrame — no
+   new computation needed)
+3. **Formation top horizons** (optional) — dashed `go.Scatter` lines per formation; requires
+   `df_formation_tops` with columns `uwi`, `formation`, `top_tvd`; gracefully hidden when not provided
+
+Y-axis: `elevation_i` (TVD ft, `autorange="reversed"` so deeper = lower).
+X-axis label switches between "Cumulative Distance (ft)" and "Section Distance (ft)" based on toggle.
+
+### GB Python Logic (from Spotfire data function)
+
 ```python
-# Key logic — replicate this in Dash:
 # 1. Get unique well_i from IK pairs (selected wells)
 # 2. Get elevation_i, drill_direction_i from IK
 # 3. Merge with HeelToe (uwi, mid_lat, mid_lon)
 # 4. If NS wells: sort by mid_Lon (west→east), assign E_to_W_Rank
 # 5. If EW wells: sort by mid_Lat (south→north), assign N_to_S_Rank
-# 6. Merge adjacent pairs from spacing df to get horizontal_dist
+# 6. Merge adjacent pairs from spacing df to get horizontal_dist, vertical_dist, dist3d
 # 7. cum_dist = horizontal_dist.shift(1, fill_value=0).cumsum()
-# 8. Plot: scatter(x=cum_dist, y=elevation_i, color=bench, label=well_name+date)
+# 8. sectionDist = cum_dist - cum_dist.max() / 2
 ```
 
 ### Panel 3: Cum Oil – Normalize Time

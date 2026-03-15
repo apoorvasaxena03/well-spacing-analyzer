@@ -509,13 +509,205 @@ def compute_gun_barrel(IK: pd.DataFrame, HeelToe: pd.DataFrame) -> pd.DataFrame:
     return GB
 ```
 
-**Gun barrel chart**:
+### Enhanced Gun Barrel Chart (Next-Gen)
 
-- X-axis: `cum_dist` (ft from reference well)
-- Y-axis: `elevation_i` (TVD, negative = deeper)
-- Color by: `bench`
-- Hover labels: `well_name + first_prod_date`
-- Annotations: well name labels on points
+The chart is a `go.Figure` built from multiple `go.Scatter` traces layered on top of each other.
+It keeps full Spotfire parity (the `compute_gun_barrel()` function above is the data foundation)
+and adds three upgrades: spacing zigzag lines, formation top horizons, and a centered x-axis option.
+
+#### X-Axis Options
+
+| Mode | Formula | Description |
+|------|---------|-------------|
+| `cum_dist` | as computed | First well at 0, increases East or North |
+| `sectionDist` | `cum_dist - cum_dist.max() / 2` | Centered at 0; negatives = left, positives = right |
+
+Toggle via a `dcc.RadioItems` ("From reference well" / "Centered"). Store choice in `config-store`.
+
+#### Layer 1 — Well Points (Spotfire baseline)
+
+```python
+for bench, group in GB.groupby("bench"):
+    fig.add_trace(go.Scatter(
+        x=group["sectionDist"],   # or cum_dist
+        y=group["elevation_i"],
+        mode="markers+text",
+        name=bench,
+        text=group["well_name"] + "<br>" + group["first_prod_date"].astype(str),
+        textposition="top center",
+        marker=dict(size=12, color=bench_colormap[bench]),
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "TVD: %{y:,.0f} ft<br>"
+            "Position: %{x:,.0f} ft<extra></extra>"
+        ),
+    ))
+```
+
+#### Layer 2 — Spacing Zigzag Lines
+
+For each adjacent pair `(well_i, well_k)` in the sorted GB order, draw three line segments
+connecting the two well points — forming a right-triangle "zigzag":
+
+```
+well_i point ──── horizontal line ──── corner point
+                                           │
+                                           │ vertical line
+                                           │
+                                       well_k point
+```
+
+The spacing values (`horizontal_dist`, `vertical_dist`, `dist3d`) come directly from the
+IK spacing pairs DataFrame — they are already computed by `WellSpacingCalculator`.
+
+```python
+def add_spacing_zigzag_traces(fig, GB: pd.DataFrame, IK: pd.DataFrame, x_col: str = "sectionDist"):
+    """
+    Add connecting zigzag lines between adjacent well pairs in GB order.
+    IK must contain: well_i, well_k, horizontal_dist, vertical_dist, dist3d
+    """
+    for idx in range(len(GB) - 1):
+        wi = GB.iloc[idx]
+        wk = GB.iloc[idx + 1]
+
+        # Midpoint for annotation placement
+        mid_x = (wi[x_col] + wk[x_col]) / 2
+        corner_x = wk[x_col]
+        corner_y = wi["elevation_i"]
+
+        # Horizontal segment (wi → corner)
+        fig.add_trace(go.Scatter(
+            x=[wi[x_col], corner_x],
+            y=[wi["elevation_i"], corner_y],
+            mode="lines",
+            line=dict(color="gray", dash="dot", width=1),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        # Vertical segment (corner → wk)
+        fig.add_trace(go.Scatter(
+            x=[corner_x, wk[x_col]],
+            y=[corner_y, wk["elevation_i"]],
+            mode="lines",
+            line=dict(color="gray", dash="dot", width=1),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+        # Hypotenuse (direct line wi → wk)
+        fig.add_trace(go.Scatter(
+            x=[wi[x_col], wk[x_col]],
+            y=[wi["elevation_i"], wk["elevation_i"]],
+            mode="lines",
+            line=dict(color="lightgray", dash="dash", width=1),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
+        # Look up spacing values from IK pairs
+        pair = IK[
+            (IK["well_i"] == wi["well_i"]) & (IK["well_k"] == wk["well_i"])
+        ]
+        if not pair.empty:
+            h_dist = pair["horizontal_dist"].iloc[0]
+            v_dist = pair["vertical_dist"].iloc[0]
+            d3d   = pair["dist3d"].iloc[0]
+            # Label at midpoint of hypotenuse
+            fig.add_annotation(
+                x=mid_x,
+                y=(wi["elevation_i"] + wk["elevation_i"]) / 2,
+                text=(
+                    f"H: {h_dist:,.0f} ft<br>"
+                    f"V: {v_dist:,.0f} ft<br>"
+                    f"3D: {d3d:,.0f} ft"
+                ),
+                showarrow=False,
+                font=dict(size=9, color="dimgray"),
+                bgcolor="rgba(255,255,255,0.7)",
+            )
+```
+
+#### Layer 3 — Formation Top Horizons (optional)
+
+Formation tops are an optional input (the GB calculation does not require them).
+When provided, draw one dashed horizontal-ish line per formation spanning the full x range.
+
+**Input**: `df_formation_tops` — columns: `uwi`, `formation`, `top_tvd` (ft, negative convention).
+
+```python
+def add_formation_tops(fig, df_formation_tops: pd.DataFrame, GB: pd.DataFrame, x_col: str):
+    """
+    Draw formation top lines across the gun barrel x range.
+    Interpolates TVD from per-well tops; falls back to mean when not per-well.
+    """
+    x_range = [GB[x_col].min(), GB[x_col].max()]
+    formation_colors = {
+        "Form A1": "#e41a1c",
+        "Form B1": "#377eb8",
+        "Form C1": "#4daf4a",
+    }
+
+    for formation, grp in df_formation_tops.groupby("formation"):
+        # Merge tops TVD with well x-positions for a sloped line
+        merged = grp.merge(GB[["well_i", x_col]], left_on="uwi", right_on="well_i", how="inner")
+        merged = merged.sort_values(x_col)
+
+        if merged.empty:
+            # Fallback: flat line at mean TVD
+            mean_tvd = grp["top_tvd"].mean()
+            xs = x_range
+            ys = [mean_tvd, mean_tvd]
+        else:
+            xs = list(merged[x_col]) + [x_range[0], x_range[-1]]
+            ys = list(merged["top_tvd"]) + [merged["top_tvd"].iloc[0], merged["top_tvd"].iloc[-1]]
+            # Sort by x for clean line
+            pairs = sorted(zip(xs, ys))
+            xs = [p[0] for p in pairs]
+            ys = [p[1] for p in pairs]
+
+        color = formation_colors.get(formation, "#888888")
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys,
+            mode="lines",
+            name=formation,
+            line=dict(color=color, width=1.5, dash="longdash"),
+            hovertemplate=f"{formation}: %{{y:,.0f}} ft TVD<extra></extra>",
+        ))
+```
+
+#### Final Figure Layout
+
+```python
+fig.update_layout(
+    title="Gun Barrel — Cross-Section View",
+    xaxis=dict(
+        title="Section Distance (ft)" if centered else "Cumulative Distance (ft)",
+        zeroline=True, zerolinecolor="black", zerolinewidth=1,
+    ),
+    yaxis=dict(
+        title="Depth TVD (ft)",
+        autorange="reversed",          # deeper = lower on chart
+    ),
+    legend=dict(title="Bench / Formation"),
+    hovermode="closest",
+    template="plotly_white",
+    height=550,
+)
+```
+
+#### Data Flow Summary
+
+```text
+compute_gun_barrel(IK, HeelToe)
+    → GB DataFrame (sectionDist, elevation_i, bench, well_name, first_prod_date)
+
+IK spacing pairs (already computed)
+    → horizontal_dist, vertical_dist, dist3d for zigzag labels
+
+df_formation_tops (optional upload in Step 1)
+    → formation top lines per bench/formation
+
+All three → layered go.Figure → dcc.Graph(id="gun-barrel-chart")
+```
 
 ---
 

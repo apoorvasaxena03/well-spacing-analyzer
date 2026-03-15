@@ -39,7 +39,8 @@
       "Bash(python -c *)",
       "Bash(jupyter nbconvert*)",
       "Bash(tree*)",
-      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/memory/**)"
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/memory/**)",
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/13f00065-bc12-478c-8332-5477f5a93f8f/tool-results/**)"
     ],
     "deny": [
       "Bash(git push --force*)",

@@ -60,42 +60,227 @@ Both produce identical results from the same underlying code.
 The app is organized as a **guided multi-step flow** with a persistent sidebar showing progress.
 Each step unlocks the next. A layman user can complete the full analysis without reading any docs.
 
-### Step 1 — Upload Files
+### Step 1 — Load Data
 
-Three upload zones (drag-and-drop or browse), all optional except header + survey:
+Each dataset (Header, Directional Survey, Production) has **two input modes** — the user
+picks whichever fits their workflow. Both modes feed the same column mapper in Step 2.
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│  📂 Well Header        [Drop CSV/Excel here]  ✅ Loaded  │
-│  📂 Directional Survey [Drop CSV/Excel here]  ✅ Loaded  │
-│  📂 Production Data    [Drop CSV/Excel here]  ⬜ Optional │
-└─────────────────────────────────────────────────────────┘
+┌─ Well Header ───────────────────────────────────────────────────────────┐
+│  [📂 File Upload]  [🗄 Database Query]  ← tabs                          │
+│                                                                          │
+│  ▌FILE UPLOAD tab:                                                       │
+│  ┌──────────────────────────────────────────────┐                       │
+│  │  Drag & drop CSV / Excel here                │                       │
+│  │  — or —  [Browse Files]                      │                       │
+│  └──────────────────────────────────────────────┘                       │
+│  ✅ Loaded: well_header.csv  │  1,247 rows  │  18 columns  [Preview ▾]  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ Directional Survey ────────────────────────────────────────────────────┐
+│  [📂 File Upload]  [🗄 Database Query]  ← tabs                          │
+│                                                                          │
+│  ▌DATABASE QUERY tab:                                                    │
+│                                                                          │
+│  Backend:  [Databricks  ▼]                                               │
+│                                                                          │
+│  Server hostname:  [adb-3250236208859616.16.azuredatabricks.net     ]   │
+│  HTTP path:        [/sql/1.0/warehouses/0cf5fe590cb7b313            ]   │
+│  Access token:     [••••••••••••••••••••  (from env: DATABRICKS_TOKEN)] │
+│  Catalog:          [bronze    ]   Schema: [enverus   ]                  │
+│                                                    [Test Connection ▶]  │
+│  ✅ Connection OK                                                        │
+│                                                                          │
+│  SQL Query:                                                              │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ SELECT                                                           │   │
+│  │     API_UWI_12_Unformatted  AS uwi,                              │   │
+│  │     MeasuredDepth_FT        AS md,                               │   │
+│  │     TVD_FT                  AS tvd,                              │   │
+│  │     Inclination_DEG         AS inclination,                      │   │
+│  │     Azimuth_DEG             AS azimuth,                          │   │
+│  │     Latitude                AS latitude,                         │   │
+│  │     Longitude               AS longitude                         │   │
+│  │ FROM bronze.enverus.fulldirectionalsurvey                        │   │
+│  │ WHERE API_UWI_12_Unformatted IN :uwis                            │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  Bind Parameters (optional JSON):                                        │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ {"uwis": ["42227350890000", "42227350900000", ...]}              │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│  ℹ Large IN-lists auto-chunked (2,000/batch) — no action needed          │
+│                                                                          │
+│                                           [Run Query ▶]                 │
+│  ✅ Loaded: 48,312 rows  │  7 columns  [Preview ▾]                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─ Production Data ───────────────────────────────────────────────────────┐
+│  [📂 File Upload]  [🗄 Database Query]        ⬜ Optional                │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each file shows: row count, column count, preview of first 5 rows.
+**Supported DB backends** (matches `database_manager.py` exactly):
+
+| Backend    | Config Fields                                             |
+| ---------- | --------------------------------------------------------- |
+| Databricks | server_hostname, http_path, access_token, catalog, schema |
+| SQL Server | host, database, username, password (or DSN)               |
+| PostgreSQL | host, port, database, username, password                  |
+| Snowflake  | account, database, schema, warehouse, username, password  |
+| Oracle     | host, port, service_name, username, password              |
+| MySQL      | host, port, database, username, password                  |
+| SQLite     | file path                                                 |
+
+**Credential security in the UI:**
+
+- Password / token fields always masked (`type="password"`)
+- Option to load from environment variable: user types `$DATABRICKS_TOKEN` → app reads `os.environ`
+- Credentials stored only in server-side session, never in `dcc.Store` (client-visible)
+- Connection is tested with `client.test_connection()` before any query runs
+
+**SQL editor features:**
+
+- Syntax highlighting via `dash-ace` or `dbc.Textarea` with monospace font
+- Canonical column name hints shown as a collapsible reference panel beside the editor:
+
+```text
+  ℹ Required canonical names for Header:
+     uwi, well_name, bench, latitude, longitude, first_prod_date
+  ℹ Required canonical names for Directional:
+     uwi (or uwi12), md, tvd, latitude, longitude, azimuth
+```
+
+- Alias hint: "Use `AS canonical_name` in your SELECT, or map columns in Step 2"
+- Bind parameters: `:param_name` syntax, user provides JSON dict — large lists auto-chunked
+  via `execute_query_chunked()` in `database_manager.py` (transparent, no UI change needed)
+
+**How it maps to `WellDataLoader`:**
+
+```python
+# File upload path → source= argument
+df = loader.get_header_data(source="uploaded_file.csv", column_map=user_map)
+
+# Database query path → header_query= / directional_query= arguments
+df = loader.get_header_data(header_query=user_sql)
+df = loader.get_directional_data(
+    directional_query=user_sql,
+    directional_params=user_bind_params,   # auto-chunked if IN-list > 1000
+)
+```
+
+Each dataset shows after load: row count, column count, **Preview** (first 5 rows in a `DataTable`).
 
 ### Step 2 — Map Columns
 
-For each uploaded file, show a two-column mapping table.
-Auto-suggest matches using fuzzy string matching (`thefuzz`).
-User corrects any wrong suggestions, then clicks **Confirm Mapping**.
+For each dataset, the user picks a **source template** (pre-fills the entire mapping instantly)
+or manually maps columns. This is the key feature for layman users — if they're on Enverus,
+they click one button and the mapping is done.
 
 ```text
-Your File Column          →    Canonical Name         Status
-──────────────────────────────────────────────────────────
-"API 14"                  →    [uwi            ▼]     ✅
-"Well Name"               →    [well_name      ▼]     ✅
-"Bench/Zone"              →    [bench          ▼]     ✅
-"Surface Latitude"        →    [latitude       ▼]     ✅
-"Surface Longitude"       →    [longitude      ▼]     ✅
-"First Production Date"   →    [first_prod_date▼]     ✅
-"Operator Name"           →    [operator       ▼]     ⚪ optional
-──────────────────────────────────────────────────────────
-                          Required: 6/6 ✅   [Confirm →]
+┌─ Well Header — Column Mapping ──────────────────────────────────────────┐
+│                                                                          │
+│  Source template:  [Enverus (Databricks) ▼]   [Apply Template ✨]       │
+│                     Enverus (Databricks)                                 │
+│                     Enverus (CSV export)                                 │
+│                     IHS / Enerdeq                                        │
+│                     DrillingInfo / Enverus Legacy                        │
+│                     Custom / Manual                                      │
+│                                                                          │
+│  Your Column                  →   Canonical Name          Status        │
+│  ────────────────────────────────────────────────────────────────────   │
+│  API_UWI_14_Unformatted       →   [uwi              ▼]    ✅ required   │
+│  API_UWI_12_Unformatted       →   [uwi12            ▼]    ✅            │
+│  LeaseName                    →   [lease_name       ▼]    ✅            │
+│  WellName                     →   [well_name        ▼]    ✅ required   │
+│  ENVOperator                  →   [operator         ▼]    ✅            │
+│  ENVInterval                  →   [bench            ▼]    ✅ required   │
+│  SpudDate                     →   [spud_date        ▼]    ✅            │
+│  CompletionDate               →   [completion_date  ▼]    ✅            │
+│  FirstProdDate                →   [first_prod_date  ▼]    ✅ required   │
+│  LastProducingMonth           →   [last_prod_date   ▼]    ✅            │
+│  Trajectory                   →   [hole_direction   ▼]    ✅            │
+│  ENVWellStatus                →   [well_status      ▼]    ✅            │
+│  LateralLength_FT             →   [lateral_length_ft▼]    ✅            │
+│  Latitude                     →   [surface_lat      ▼]    ✅ required   │
+│  Longitude                    →   [surface_lon      ▼]    ✅ required   │
+│  FluidIntensity_BBLPerFT      →   [— skip —         ▼]    ⚪ optional   │
+│  ProppantIntensity_LBSPerFT   →   [— skip —         ▼]    ⚪ optional   │
+│  ────────────────────────────────────────────────────────────────────   │
+│  Required: 6/6 ✅   Optional: 9 mapped                   [Confirm →]   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-Required canonical columns clearly marked. Optional columns greyed out.
-Unmapped required columns shown in red — cannot proceed until resolved.
+**Pre-populated templates** (stored in `dashboard/templates/column_maps.py`):
+
+```python
+# Exact column maps from well_spacing_RingEnergy_v2.ipynb — the reference notebook
+
+ENVERUS_HEADER = {
+    "API_UWI_14_Unformatted":       "uwi",
+    "API_UWI_12_Unformatted":       "uwi12",
+    "LeaseName":                    "lease_name",
+    "WellName":                     "well_name",
+    "ENVOperator":                  "operator",
+    "ENVInterval":                  "bench",
+    "PermitApprovedDate":           "permit_date",
+    "SpudDate":                     "spud_date",
+    "CompletionDate":               "completion_date",
+    "FirstProdDate":                "first_prod_date",
+    "LastProducingMonth":           "last_prod_date",
+    "Trajectory":                   "hole_direction",
+    "ENVWellStatus":                "well_status",
+    "LateralLength_FT":             "lateral_length_ft",
+    "Latitude":                     "surface_lat",
+    "Longitude":                    "surface_lon",
+    "FluidIntensity_BBLPerFT":      "fluid_intensity_bbl_per_ft",
+    "ProppantIntensity_LBSPerFT":   "proppant_intensity_lbs_per_ft",
+}
+
+ENVERUS_DIRECTIONAL = {
+    "API_UWI_12_Unformatted":       "uwi12",
+    "MeasuredDepth_FT":             "md",
+    "TVD_FT":                       "tvd",
+    "Inclination_DEG":              "inclination",
+    "Azimuth_DEG":                  "azimuth",
+    "Latitude":                     "latitude",
+    "Longitude":                    "longitude",
+    "E_W":                          "deviation_E/W",
+    "N_S":                          "deviation_N/S",
+}
+
+ENVERUS_PRODUCTION = {
+    "API_UWI_14_Unformatted":       "uwi",
+    "API_UWI_Unformatted":          "uwi_10",
+    "ProducingMonth":               "prod_date",
+    "Prod_OilBBL":                  "monthly_oil_bbl",
+    "GasProd_MCF":                  "monthly_gas_mcf",
+    "WaterProd_BBL":                "monthly_water_bbl",
+}
+
+# Add more templates as new data sources are onboarded:
+# IHS_HEADER = { ... }
+# DRILLINGINFO_HEADER = { ... }
+```
+
+**How it works for a layman user on Enverus:**
+
+1. Load data (file or DB query)
+2. Select template: **"Enverus (Databricks)"**
+3. Click **Apply Template** — all rows fill in instantly
+4. Unrecognized columns auto-set to "— skip —"
+5. Review, correct if any are wrong, click **Confirm**
+6. Done — no manual typing required
+
+**How it works for a custom source:**
+
+1. Load data
+2. Select **"Custom / Manual"** — all rows start blank
+3. Fuzzy auto-suggest fills in best guesses (e.g., `"API_14"` → suggests `uwi`)
+4. User confirms/corrects each row
+5. Optionally: **Save as new template** for reuse → stored in `dashboard/templates/column_maps.py`
+
+Required canonical columns shown in red if unmapped. Cannot proceed until all required columns resolved.
 
 ### Step 3 — Configure Parameters
 
@@ -233,10 +418,12 @@ def run_full_pipeline(
 ## Reference: Existing Spotfire Dashboard
 
 **File locations**:
+
 - Full dashboard: `C:\Users\ApoorvaSaxen_ct6z7vh\Downloads\A&D_GB_v2_To_Matt.dxp`
 - Gun barrel mod: `C:\Users\ApoorvaSaxen_ct6z7vh\Downloads\Well spacing (gun barrel) diagram.mod`
 
 **Spotfire Data Tables**:
+
 - `header_standardized_spacing_o...` — well header
 - `shapefiles_well_lateral` — well trajectory polylines
 - `ik_pairs` — spacing pairs (well_i, well_k, horizontal_dist, elevation_i, drill_direction_i, mid_lat, mid_lon)
@@ -323,6 +510,7 @@ def compute_gun_barrel(IK: pd.DataFrame, HeelToe: pd.DataFrame) -> pd.DataFrame:
 ```
 
 **Gun barrel chart**:
+
 - X-axis: `cum_dist` (ft from reference well)
 - Y-axis: `elevation_i` (TVD, negative = deeper)
 - Color by: `bench`
@@ -503,25 +691,30 @@ Basemap selector: OpenStreetMap / Esri Satellite / USGS Topo / CartoDB (dark)
 **Tools**: zoom, pan, `dl.ScaleControl`, measure distance (future: `dl.MeasureControl`)
 
 ### Panel 2: Gun Barrel Diagram
+
 - X: `cum_dist` (ft), Y: `elevation_i` (TVD)
 - Scatter + line traces, color by bench
 - Well name + date labels
 - Dynamic: updates when wells are selected on map
 
 ### Panel 3: Cumulative Oil — Normalized Time
+
 - X: `normalize_time_months`, Y: `cum_oil`
 - Line per well, color by well
 - Linked to map selection
 
 ### Panel 4: Daily Oil — Production Date
+
 - X: `prod_date`, Y: daily_oil
 - Time series lines per well
 
 ### Panel 5: PPF / GPF / Lateral Length by Well
+
 - Grouped bar chart (dual Y-axis: production per ft + lateral length)
 - X: well_name
 
 ### Panel 6: Box Plot
+
 - `cum_oil_180d_per_ft` and `cum_oil_365d_per_ft` distributions
 - Grouped by corridor/bench
 
@@ -531,11 +724,13 @@ Basemap selector: OpenStreetMap / Esri Satellite / USGS Topo / CartoDB (dark)
 
 Users have files with any column naming convention. The dashboard needs a mapping step:
 
-### Flow:
+### Flow
+
 1. User uploads CSV or Excel (header or survey)
 2. Dashboard reads headers from uploaded file
 3. Shows two-column UI:
-   ```
+
+   ```text
    Your File Columns    →    Canonical Names
    ─────────────────────────────────────────
    "API 14"             →    [uwi          ▼]
@@ -544,11 +739,13 @@ Users have files with any column naming convention. The dashboard needs a mappin
    "Measured Depth FT"  →    [md           ▼]
    "True Vert Depth"    →    [tvd          ▼]
    ```
+
 4. Auto-suggest with fuzzy matching (e.g., "API" → suggests "uwi")
 5. User confirms/adjusts → stored in `dcc.Store`
 6. All downstream calculations use the confirmed mapping
 
-### Required Canonical Columns:
+### Required Canonical Columns
+
 - **Header**: `uwi`, `well_name`, `bench`, `latitude`, `longitude`, `first_prod_date`
 - **Survey**: `uwi`, `md`, `tvd`, `latitude`, `longitude`, `azimuth`
 - **Optional**: `operator`, `spud_date`, `hole_direction`, `rsv_cat`, `inclination`
@@ -557,7 +754,7 @@ Users have files with any column naming convention. The dashboard needs a mappin
 
 ## Tech Stack
 
-```
+```text
 dash>=2.14.0
 plotly>=5.18.0
 dash-leaflet>=1.0.0           # QGIS-like interactive map
@@ -575,7 +772,7 @@ openpyxl>=3.1.0               # Excel upload support
 
 `dashboard/app.py` (to be created at project root)
 
-```
+```text
 well-spacing-analyzer/
 ├── src/                     (existing)
 ├── notebooks/               (existing)

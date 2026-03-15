@@ -517,12 +517,23 @@ and adds three upgrades: spacing zigzag lines, formation top horizons, and a cen
 
 #### X-Axis Options
 
-| Mode | Formula | Description |
-|------|---------|-------------|
-| `cum_dist` | as computed | First well at 0, increases East or North |
-| `sectionDist` | `cum_dist - cum_dist.max() / 2` | Centered at 0; negatives = left, positives = right |
+`cum_dist` is computed directly from the GB Python function:
 
-Toggle via a `dcc.RadioItems` ("From reference well" / "Centered"). Store choice in `config-store`.
+```python
+# Adjacent horizontal_dist values from IK, in sorted well order
+GB['cum_dist'] = GB['horizontal_dist'].shift(1, fill_value=0).cumsum()
+```
+
+- First well (westernmost for NS, southernmost for EW) is always at **x = 0**
+- Each subsequent well's x position = sum of `horizontal_dist` values between all preceding adjacent pairs
+- `horizontal_dist` comes from the IK spacing DataFrame (already computed by `WellSpacingCalculator`)
+
+| Mode          | Formula                          | Description                                        |
+|---------------|----------------------------------|----------------------------------------------------|
+| `cum_dist`    | from GB function above           | First well at 0, increases East (NS) or North (EW) |
+| `sectionDist` | `cum_dist - cum_dist.max() / 2`  | Centered at 0; left-most well is most negative     |
+
+Toggle via a `dcc.RadioItems` ("From west/south reference" / "Centered"). Store choice in `config-store`.
 
 #### Layer 1 — Well Points (Spotfire baseline)
 

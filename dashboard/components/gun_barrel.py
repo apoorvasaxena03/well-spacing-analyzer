@@ -54,6 +54,9 @@ def _bench_color(bench: str) -> str:
 
 def _add_well_points(fig: go.Figure, GB: pd.DataFrame, x_col: str) -> None:
     """Layer 1 — scatter points per bench, labeled with well name + date."""
+    if "bench" not in GB.columns:
+        GB = GB.copy()
+        GB["bench"] = "Unknown"
     for bench, grp in GB.groupby("bench", dropna=False):
         color = _bench_color(str(bench))
         labels = (

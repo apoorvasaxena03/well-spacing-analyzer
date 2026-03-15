@@ -22,7 +22,7 @@ from src.well_data.well_data_manager import WellDataLoader, GeoSurveyProcessor
 from src.well_data.well_spacing_stats import (
     WellSpacingCalculator,
     DirectionalBenchNeighbors,
-    SpacingNeighborEnricher,
+    AvgSpacingCalculator,
 )
 
 # ---------------------------------------------------------------------------
@@ -43,6 +43,7 @@ def load_from_files(
     column_map_directional: dict[str, str],
     production_path: str | None = None,
     column_map_production: dict[str, str] | None = None,
+    directional_source: str = "IHS",
 ) -> dict[str, pd.DataFrame]:
     """
     Load well data from uploaded CSV/Excel files using src/ WellDataLoader.
@@ -54,25 +55,28 @@ def load_from_files(
         column_map_directional: {source_col: canonical_col} mapping for directional.
         production_path: Optional path to production CSV/Excel file.
         column_map_production: Optional mapping for production file.
+        directional_source: 'IHS' or 'enverus' — controls validation schema.
 
     Returns:
         dict with keys: 'header_df', 'directional_df', 'production_df' (or None)
     """
-    loader = WellDataLoader(
+    loader = WellDataLoader(directional_source=directional_source)
+    header_df = loader.get_header_data(
         source=header_path,
-        header_column_map=column_map_header,
-        directional_source=directional_path,
-        directional_column_map=column_map_directional,
+        column_map=column_map_header or None,
     )
-    header_df, directional_df = loader.load()
+    directional_df = loader.get_directional_data(
+        source=directional_path,
+        column_map=column_map_directional or None,
+    )
 
     production_df = None
-    if production_path and column_map_production:
-        prod_loader = WellDataLoader(
+    if production_path:
+        prod_loader = WellDataLoader()
+        production_df = prod_loader.get_header_data(
             source=production_path,
-            header_column_map=column_map_production,
+            column_map=column_map_production or None,
         )
-        production_df, _ = prod_loader.load()
 
     return {
         "header_df": header_df,
@@ -138,28 +142,44 @@ def project_and_extract_laterals(
     header_df: pd.DataFrame,
     directional_df: pd.DataFrame,
     crs_to: str | None = None,
+    inclination_filter: float = 30.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """
     Project lat/lon to UTM and extract lateral (horizontal) sections only.
 
+    Uses GeoSurveyProcessor.prepare_lateral_trajectory_data() which:
+      1. Computes UTM (x, y, z) in feet per survey station
+      2. Filters to lateral section only (inclination > inclination_filter)
+      3. Cross-aligns header and directional to the shared well set
+
     UTM zone is auto-detected from the centroid of surface locations when
-    crs_to is None — no user input needed.
+    crs_to is None — layman users never need to know EPSG codes.
 
     Returns:
-        (header_df, lateral_df, crs_used)
+        (header_aligned, lateral_df, crs_used)
     """
-    if crs_to is None:
-        crs_to = _auto_detect_utm(header_df)
-
-    processor = GeoSurveyProcessor(crs_to=crs_to)
-    header_df, lateral_df = processor.process(header_df, directional_df)
-    return header_df, lateral_df, crs_to
+    crs_used = crs_to or _auto_detect_utm(header_df)
+    processor = GeoSurveyProcessor(
+        header_df=header_df,
+        directional_df=directional_df,
+        directional_source="ihs",   # use full uwi (not uwi12) for cross-filtering
+    )
+    lateral_df, header_aligned = processor.prepare_lateral_trajectory_data(
+        inclination_filter=inclination_filter,
+    )
+    return header_aligned, lateral_df, crs_used
 
 
 def _auto_detect_utm(header_df: pd.DataFrame) -> str:
-    """Detect UTM zone from centroid of surface lat/lon."""
-    lat = header_df["latitude"].dropna().mean()
-    lon = header_df["longitude"].dropna().mean()
+    """Detect UTM zone from centroid of surface lat/lon.
+
+    Checks for canonical column names in order of preference:
+    surface_lat/surface_lon (header canonical) → latitude/longitude (directional).
+    """
+    lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
+    lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
+    lat = header_df[lat_col].dropna().mean()
+    lon = header_df[lon_col].dropna().mean()
     zone = int((lon + 180) / 6) + 1
     hemisphere = "326" if lat >= 0 else "327"
     return f"EPSG:{hemisphere}{zone:02d}"
@@ -196,8 +216,8 @@ def run_spacing_calculation(
         Path to cached pipeline output (pickle file).
     """
     calculator = WellSpacingCalculator(
+        trajectories=lateral_df,
         header_df=header_df,
-        directional_df=lateral_df,
     )
     df_spacing = calculator._calculate_spacing_statistics(
         batch_size=batch_size,
@@ -205,18 +225,12 @@ def run_spacing_calculation(
         cutoff_ft=cutoff_ft,
     )
 
-    neighbors = DirectionalBenchNeighbors(
-        df_spacing=df_spacing,
+    neighbors = DirectionalBenchNeighbors()
+    df_enriched = neighbors.summarize(
+        spacing_df=df_spacing,
         header_df=header_df,
+        cutoff_ft=cutoff_ft,
     )
-    df_neighbors = neighbors.identify()
-
-    enricher = SpacingNeighborEnricher(
-        df_spacing=df_spacing,
-        df_neighbors=df_neighbors,
-        header_df=header_df,
-    )
-    df_enriched = enricher.enrich()
 
     # Cache to disk
     cache_key = PIPELINE_CACHE_DIR / f"pipeline_{run_id or 'latest'}.pkl"
@@ -302,10 +316,12 @@ def compute_gun_barrel(
     HeelToe["mid_Lat"] = np.round(HeelToe["mid_Lat"], 9)
     HeelToe["mid_Lon"] = np.round(HeelToe["mid_Lon"], 9)
 
-    # Unique well_i entries
+    # Unique well_i entries — carry bench column if present (set by enrichment step)
+    base_cols = ["well_i", "elevation_i", "drill_direction_i"]
+    optional_cols = [c for c in ["bench", "well_name", "first_prod_date"] if c in IK.columns]
     GB = (
         IK.drop_duplicates(subset=["well_i"])
-        [["well_i", "elevation_i", "drill_direction_i"]]
+        [base_cols + optional_cols]
         .copy()
     )
 

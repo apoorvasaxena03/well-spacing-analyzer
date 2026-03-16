@@ -143,14 +143,23 @@ def read_csv_with_mapper(
     if col_map:
         df = df.rename(columns=col_map)
 
-    # Cast dtypes using the *current* column names
+    # Cast dtypes using the *current* column names.
+    # "datetime" is not a valid pandas dtype string — handle it separately
+    # with pd.to_datetime() instead of df.astype().
     if dtype_map:
-        cast_map = {
-            col: dtype for col, dtype in dtype_map.items()
-            if col in df.columns
-        }
+        cast_map = {}
+        date_cols = []
+        for col, dtype in dtype_map.items():
+            if col not in df.columns:
+                continue
+            if dtype in ("datetime", "datetime64", "datetime64[ns]"):
+                date_cols.append(col)
+            else:
+                cast_map[col] = dtype
         if cast_map:
             df = df.astype(cast_map)
+        for col in date_cols:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
 
     return df
 
@@ -216,14 +225,23 @@ def read_excel_with_mapper(
     if col_map:
         df = df.rename(columns=col_map)
 
-    # Cast dtypes using the *current* column names
+    # Cast dtypes using the *current* column names.
+    # "datetime" is not a valid pandas dtype string — handle it separately
+    # with pd.to_datetime() instead of df.astype().
     if dtype_map:
-        cast_map = {
-            col: dtype for col, dtype in dtype_map.items()
-            if col in df.columns
-        }
+        cast_map = {}
+        date_cols = []
+        for col, dtype in dtype_map.items():
+            if col not in df.columns:
+                continue
+            if dtype in ("datetime", "datetime64", "datetime64[ns]"):
+                date_cols.append(col)
+            else:
+                cast_map[col] = dtype
         if cast_map:
             df = df.astype(cast_map)
+        for col in date_cols:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
 
     return df
 

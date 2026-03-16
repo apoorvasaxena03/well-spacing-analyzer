@@ -313,8 +313,9 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-trajectories",
                                                         data=_EMPTY_GEOJSON,
-                                                        style="dashExtensions.trajectoryStyle",
-                                                        onEachFeature="dashExtensions.trajectoryOnEach",
+                                                        options={
+                                                            "style": {"color": "#3388ff", "weight": 3, "opacity": 0.9},
+                                                        },
                                                         hoverStyle={"weight": 6, "color": "#ff7800"},
                                                         hideout={
                                                             "colorMap": {},
@@ -331,8 +332,6 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
-                                                        pointToLayer="dashExtensions.bottomholePointToLayer",
-                                                        onEachFeature="dashExtensions.bottomholeOnEach",
                                                         hideout={
                                                             "colorMap": {},
                                                             "colorProp": "bench",
@@ -596,9 +595,14 @@ def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
 )
 def load_map_layers(pipeline_result):
     """Populate map with wellbore sticks and bottom-hole markers."""
+    import logging
+    logger = logging.getLogger("dashboard")
+
     if not pipeline_result or not pipeline_result.get("cache_path"):
+        logger.warning("load_map_layers: no pipeline result — returning empty GeoJSON")
         return _EMPTY_GEOJSON, _EMPTY_GEOJSON, [31.5, -101.9], 10
 
+    logger.info("load_map_layers: loading from %s", pipeline_result["cache_path"])
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
     lateral_df = data["lateral_df"]
@@ -608,6 +612,7 @@ def load_map_layers(pipeline_result):
 
     traj_data = gdf_traj.__geo_interface__
     bh_data   = gdf_bh.__geo_interface__
+    logger.info("load_map_layers: %d trajectories, %d bottomholes", len(gdf_traj), len(gdf_bh))
 
     # Centre map — header uses surface_lat/surface_lon (canonical name)
     lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"

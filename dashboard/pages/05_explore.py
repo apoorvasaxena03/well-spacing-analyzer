@@ -358,14 +358,14 @@ layout = dbc.Container(
                                             activeColor="#ff7800",
                                             completedColor="#00C853",
                                         ),
-                                        # ── Draw tools (polygon / rectangle selection) ──
+                                        # ── Draw tools (line / polygon / rectangle / circle selection) ──
                                         dl.FeatureGroup(
                                             dl.EditControl(
                                                 id="draw-control",
                                                 position="topleft",
                                                 draw={
-                                                    "polyline": False,
-                                                    "circle": False,
+                                                    "polyline": {"shapeOptions": {"color": "#ff7800", "weight": 3}},
+                                                    "circle": {"shapeOptions": {"color": "#ff7800"}},
                                                     "circlemarker": False,
                                                     "marker": False,
                                                     "polygon": {"shapeOptions": {"color": "#ff7800"}},
@@ -847,7 +847,13 @@ def update_daily_oil(selected, pipeline_result):
     prevent_initial_call=True,
 )
 def select_wells_by_shape(geojson, pipeline_result):
-    """Select all wells whose bottom-hole falls within a drawn polygon/rectangle."""
+    """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer).
+
+    For polylines: buffers the line by ~0.5 miles (~0.008 degrees) and selects
+    all wells whose surface location falls within the buffer corridor.
+    For circles: uses the radius from the drawn feature properties.
+    For polygons/rectangles: standard containment check.
+    """
     if not geojson or not pipeline_result:
         return dash.no_update
 
@@ -859,17 +865,28 @@ def select_wells_by_shape(geojson, pipeline_result):
     drawn = features[-1]
     drawn_geom = shape(drawn["geometry"])
 
+    # For polylines: buffer to create a corridor (~0.5 mile ≈ 0.008 degrees)
+    if drawn_geom.geom_type in ("LineString", "MultiLineString"):
+        BUFFER_DEG = 0.008  # ~0.5 miles at Texas latitudes
+        drawn_geom = drawn_geom.buffer(BUFFER_DEG)
+
+    # For circles: Leaflet stores radius in meters in properties
+    if drawn_geom.geom_type == "Point" and "radius" in drawn.get("properties", {}):
+        radius_m = drawn["properties"]["radius"]
+        # Convert meters to degrees (approximate)
+        radius_deg = radius_m / 111_320
+        drawn_geom = drawn_geom.buffer(radius_deg)
+
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
 
-    # Find the lat/lon columns
     lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
     lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
 
     if lat_col not in header_df.columns or lon_col not in header_df.columns:
         return dash.no_update
 
-    # Find wells within the drawn shape
+    # Find wells within the shape/buffer
     selected_uwis = []
     for _, row in header_df.iterrows():
         try:

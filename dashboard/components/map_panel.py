@@ -66,6 +66,17 @@ def build_trajectory_geodataframe(
         except Exception:
             gdf["spud_year"] = "Unknown"
 
+    # Convert all date/timestamp columns to strings for JSON serialization.
+    # GeoJSON properties must be JSON-serializable; Timestamp objects are not.
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        if hasattr(gdf[col].dtype, "tz") or pd.api.types.is_datetime64_any_dtype(gdf[col]):
+            gdf[col] = gdf[col].astype(str).replace("NaT", "")
+        elif gdf[col].dtype == "object":
+            # Clean up any remaining non-string objects (e.g. Timestamp stored as object)
+            gdf[col] = gdf[col].apply(lambda v: str(v) if not pd.isna(v) else "")
+
     return gdf
 
 

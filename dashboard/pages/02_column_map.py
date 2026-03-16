@@ -179,6 +179,42 @@ TEMPLATES = {
 
 
 # ---------------------------------------------------------------------------
+# Layout helpers (must be defined before layout)
+# ---------------------------------------------------------------------------
+
+_UNMAPPED_OPTIONS = [
+    {"label": "Exclude", "value": "exclude"},
+    {"label": "Keep original name", "value": "as-is"},
+    {"label": "Use standardized (snake_case)", "value": "standardize"},
+]
+
+
+def _unmapped_radio(file_key: str) -> dbc.Row:
+    """Static per-tab radio for unmapped column handling."""
+    return dbc.Row(
+        [
+            dbc.Col(
+                html.Small("Unmapped columns:", className="fw-semibold text-muted"),
+                width="auto",
+                className="d-flex align-items-center",
+            ),
+            dbc.Col(
+                dbc.RadioItems(
+                    id=f"unmapped-mode-{file_key}",
+                    options=_UNMAPPED_OPTIONS,
+                    value="exclude",
+                    inline=True,
+                    input_class_name="me-1",
+                    label_class_name="me-3",
+                    style={"fontSize": "0.82rem"},
+                ),
+            ),
+        ],
+        className="mt-2 mb-2 align-items-center",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
 
@@ -221,9 +257,18 @@ layout = dbc.Container(
 
         dbc.Tabs(
             [
-                dbc.Tab(html.Div(id="map-rows-header"),      label="Header",      tab_id="tab-header"),
-                dbc.Tab(html.Div(id="map-rows-directional"), label="Directional", tab_id="tab-directional"),
-                dbc.Tab(html.Div(id="map-rows-production"),  label="Production",  tab_id="tab-production"),
+                dbc.Tab(
+                    [_unmapped_radio("header"), html.Div(id="map-rows-header")],
+                    label="Header", tab_id="tab-header",
+                ),
+                dbc.Tab(
+                    [_unmapped_radio("directional"), html.Div(id="map-rows-directional")],
+                    label="Directional", tab_id="tab-directional",
+                ),
+                dbc.Tab(
+                    [_unmapped_radio("production"), html.Div(id="map-rows-production")],
+                    label="Production", tab_id="tab-production",
+                ),
             ],
             active_tab="tab-header",
         ),
@@ -367,26 +412,13 @@ def _build_rows(
 # ---------------------------------------------------------------------------
 
 def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict | None = None) -> list:
+    """Build the mapping rows for one file tab. Radio lives in the static layout."""
     template = TEMPLATES.get(template_name, TEMPLATES["Custom"])
     source_cols = store.get(f"{file_key}_preview_cols", [])
     sample_values = store.get(f"{file_key}_sample_values", {})
 
     if not source_cols:
-        return [
-            # Always render the radio so the callback State can find it
-            dbc.RadioItems(
-                id=f"unmapped-mode-{file_key}",
-                options=[
-                    {"label": "Exclude", "value": "exclude"},
-                    {"label": "Keep original name", "value": "as-is"},
-                    {"label": "Use standardized (snake_case)", "value": "standardize"},
-                ],
-                value="exclude",
-                inline=True,
-                style={"display": "none"},
-            ),
-            dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2"),
-        ]
+        return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
 
     # If user already confirmed a mapping, restore it; otherwise use template + fuzzy
     if saved_mapping and saved_mapping.get(file_key):
@@ -395,59 +427,31 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
         prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
 
     required = REQUIRED_CANONICAL[file_key]
+    children = []
     if required:
-        required_note = dbc.Alert(
-            [
-                html.Strong("★ Required: "),
-                html.Span(", ".join(sorted(required))),
-                html.Span(" — the pipeline cannot run without these mappings.", className="text-muted"),
-            ],
-            color="warning",
-            className="py-2 mb-2",
+        children.append(
+            dbc.Alert(
+                [
+                    html.Strong("★ Required: "),
+                    html.Span(", ".join(sorted(required))),
+                    html.Span(" — the pipeline cannot run without these mappings.", className="text-muted"),
+                ],
+                color="warning",
+                className="py-2 mb-2",
+            )
         )
-    else:
-        required_note = None
 
-    # Per-tab unmapped column mode
-    unmapped_radio = dbc.Row(
-        [
-            dbc.Col(
-                html.Small("Unmapped columns:", className="fw-semibold text-muted"),
-                width="auto",
-                className="d-flex align-items-center",
-            ),
-            dbc.Col(
-                dbc.RadioItems(
-                    id=f"unmapped-mode-{file_key}",
-                    options=[
-                        {"label": "Exclude", "value": "exclude"},
-                        {"label": "Keep original name", "value": "as-is"},
-                        {"label": "Use standardized (snake_case)", "value": "standardize"},
-                    ],
-                    value="exclude",
-                    inline=True,
-                    input_class_name="me-1",
-                    label_class_name="me-3",
-                    style={"fontSize": "0.82rem"},
-                ),
-            ),
-        ],
-        className="mb-2 align-items-center",
+    children.append(
+        dbc.Row(
+            [
+                dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=3),
+                dbc.Col(html.Strong("Standardized", style={"fontSize": "0.78rem"}), width=2),
+                dbc.Col(html.Strong("Sample Data", style={"fontSize": "0.78rem"}), width=3),
+                dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.78rem"}), width=4),
+            ],
+            className="mb-2 text-muted gx-2",
+        )
     )
-
-    col_header = dbc.Row(
-        [
-            dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=3),
-            dbc.Col(html.Strong("Standardized", style={"fontSize": "0.78rem"}), width=2),
-            dbc.Col(html.Strong("Sample Data", style={"fontSize": "0.78rem"}), width=3),
-            dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.78rem"}), width=4),
-        ],
-        className="mb-2 text-muted gx-2",
-    )
-    children = [unmapped_radio]
-    if required_note:
-        children.append(required_note)
-    children.append(col_header)
     return children + _build_rows(file_key, source_cols, prefill, sample_values)
 
 
@@ -462,15 +466,8 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
 )
 def build_mapping_rows(store, template_name, saved_mapping):
     if not store:
-        # Must still render the per-tab radio IDs so confirm_mapping's State can find them
-        def _empty(fk):
-            return [
-                dbc.RadioItems(id=f"unmapped-mode-{fk}", value="exclude",
-                               options=[{"label": "x", "value": "exclude"}],
-                               style={"display": "none"}),
-                dbc.Alert("No data loaded — go back to Step 1.", color="warning"),
-            ]
-        return _empty("header"), _empty("directional"), _empty("production")
+        msg = [dbc.Alert("No data loaded — go back to Step 1.", color="warning")]
+        return msg, msg, msg
     return (
         _panel("header",      store, template_name, saved_mapping),
         _panel("directional", store, template_name, saved_mapping),

@@ -935,7 +935,8 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
                   year_range, ll_range, pipeline_result):
     """Filter header data and update map GeoJSON to show only matching wells."""
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return None, "", _EMPTY_GEOJSON, _EMPTY_GEOJSON
+        # Don't overwrite map data if pipeline hasn't loaded yet
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]

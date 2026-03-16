@@ -221,7 +221,12 @@ def show_summary(upload_store, config_store, col_map_store):
 def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_store):
     """Background spacing calculation job."""
     no_show = {"display": "none"}
-    empty_return = (no_show, 0, "", "", False, None, "", False, dash.no_update, True, False)
+
+    # Hard guard: NEVER run without an explicit button click.
+    # background=True callbacks with DiskcacheManager can spuriously re-trigger
+    # on page load even with prevent_initial_call=True.
+    if not n_clicks:
+        return (no_show, 0, "", "", False, None, "", False, dash.no_update, True, False)
 
     if not upload_store or not col_map_store or not config_store:
         return (no_show, 0, "", "Missing data — complete Steps 1–3 first.", True,

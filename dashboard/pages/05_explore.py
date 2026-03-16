@@ -398,25 +398,61 @@ layout = dbc.Container(
                     dbc.Card(
                         [
                             dbc.CardHeader(
-                                dbc.Row(
-                                    [
-                                        dbc.Col(html.Strong("Charts"), width="auto"),
-                                        dbc.Col(
-                                            dbc.RadioItems(
-                                                id="gb-xaxis-mode",
-                                                options=[
-                                                    {"label": "Centered",       "value": "sectionDist"},
-                                                    {"label": "From reference", "value": "cum_dist"},
-                                                ],
-                                                value="sectionDist",
-                                                inline=True,
-                                                className="small",
+                                [
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(html.Strong("Charts"), width="auto"),
+                                            dbc.Col(
+                                                dbc.RadioItems(
+                                                    id="gb-xaxis-mode",
+                                                    options=[
+                                                        {"label": "Centered",       "value": "sectionDist"},
+                                                        {"label": "From reference", "value": "cum_dist"},
+                                                    ],
+                                                    value="sectionDist",
+                                                    inline=True,
+                                                    className="small",
+                                                ),
+                                                width="auto",
                                             ),
-                                            width="auto",
-                                        ),
-                                    ],
-                                    align="center",
-                                )
+                                        ],
+                                        align="center",
+                                    ),
+                                    # GB controls row
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(
+                                                dbc.Select(
+                                                    id="gb-color-by",
+                                                    options=[
+                                                        {"label": "Bench",    "value": "bench"},
+                                                        {"label": "Operator", "value": "operator"},
+                                                        {"label": "Year",     "value": "spud_year"},
+                                                    ],
+                                                    value="bench",
+                                                    size="sm",
+                                                ),
+                                                width=3,
+                                            ),
+                                            dbc.Col(
+                                                dbc.Checklist(
+                                                    id="gb-toggles",
+                                                    options=[
+                                                        {"label": "Lines", "value": "lines"},
+                                                        {"label": "Labels", "value": "labels"},
+                                                    ],
+                                                    value=["lines", "labels"],
+                                                    inline=True,
+                                                    input_class_name="me-1",
+                                                    label_class_name="small me-3",
+                                                ),
+                                                width="auto",
+                                            ),
+                                        ],
+                                        align="center",
+                                        className="mt-1",
+                                    ),
+                                ]
                             ),
                             dbc.CardBody(
                                 dbc.Tabs(
@@ -681,10 +717,12 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     Output("gun-barrel-chart", "figure"),
     Input("selected-wells-store", "data"),
     Input("gb-xaxis-mode", "value"),
+    Input("gb-color-by", "value"),
+    Input("gb-toggles", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_gun_barrel(selected, x_col, pipeline_result):
+def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -708,7 +746,15 @@ def update_gun_barrel(selected, x_col, pipeline_result):
         IK_filtered["elevation_k"] = IK_filtered["tvd_k"] * -1
 
     GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
-    return build_gun_barrel_figure(GB, IK_filtered, x_col=x_col)
+    show_lines = "lines" in (toggles or [])
+    show_labels = "labels" in (toggles or [])
+    return build_gun_barrel_figure(
+        GB, IK_filtered,
+        x_col=x_col,
+        color_by=color_by or "bench",
+        show_lines=show_lines,
+        show_labels=show_labels,
+    )
 
 
 @callback(

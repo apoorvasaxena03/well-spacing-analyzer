@@ -322,16 +322,10 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-trajectories",
                                                         data=_EMPTY_GEOJSON,
-                                                        style="dashExtensions.trajectoryStyle",
-                                                        onEachFeature="dashExtensions.trajectoryOnEach",
-                                                        hoverStyle={"weight": 6, "color": "#ff7800"},
-                                                        hideout={
-                                                            "colorMap": {},
-                                                            "colorProp": "bench",
-                                                            "weight": 3,
-                                                            "opacity": 0.9,
-                                                            "defaultColor": "#3388ff",
+                                                        options={
+                                                            "style": {"weight": 3, "opacity": 0.9},
                                                         },
+                                                        hoverStyle={"weight": 6, "color": "#ff7800"},
                                                     ),
                                                     name="Trajectories",
                                                     checked=True,
@@ -340,15 +334,6 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
-                                                        pointToLayer="dashExtensions.bottomholePointToLayer",
-                                                        onEachFeature="dashExtensions.bottomholeOnEach",
-                                                        hideout={
-                                                            "colorMap": {},
-                                                            "colorProp": "bench",
-                                                            "radius": 4,
-                                                            "opacity": 0.8,
-                                                            "defaultColor": "#e74c3c",
-                                                        },
                                                     ),
                                                     name="Bottom Holes",
                                                     checked=True,

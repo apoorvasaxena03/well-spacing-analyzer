@@ -80,6 +80,27 @@ def build_trajectory_geodataframe(
     return gdf
 
 
+def inject_feature_colors(
+    geojson: dict,
+    color_by: str,
+    color_map: dict[str, str],
+    default_color: str = "#3388ff",
+) -> dict:
+    """Inject a '_color' property into each GeoJSON feature based on color_by column.
+
+    This avoids JS function references — Leaflet's GeoJSON style function
+    can read feature.properties.style.color directly via the 'style' key
+    in each feature's properties.
+    """
+    for feat in geojson.get("features", []):
+        props = feat.get("properties", {})
+        val = str(props.get(color_by, "")) if color_by else ""
+        color = color_map.get(val, default_color)
+        # Embed style directly in the feature for Leaflet to pick up
+        props["_color"] = color
+    return geojson
+
+
 def build_bottomhole_geodataframe(gdf_trajectories: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """
     Separate GeoDataFrame of bottom-hole Point markers.

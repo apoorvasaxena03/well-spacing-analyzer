@@ -16,6 +16,7 @@ import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, dcc, html
 import dash_leaflet as dl
 import plotly.graph_objects as go
+from shapely.geometry import shape, Point
 
 from dashboard.pipeline import (
     compute_gun_barrel,
@@ -71,27 +72,85 @@ layout = dbc.Container(
                             dbc.CardBody(
                                 dl.Map(
                                     [
-                                        dl.TileLayer(
-                                            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                                            attribution="© OpenStreetMap contributors",
+                                        # ── Base layers (radio toggle) ──
+                                        dl.LayersControl(
+                                            [
+                                                dl.BaseLayer(
+                                                    dl.TileLayer(
+                                                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                                                        attribution="© OpenStreetMap contributors",
+                                                    ),
+                                                    name="Street",
+                                                    checked=True,
+                                                ),
+                                                dl.BaseLayer(
+                                                    dl.TileLayer(
+                                                        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                                                        attribution="© Esri",
+                                                    ),
+                                                    name="Satellite",
+                                                ),
+                                                dl.BaseLayer(
+                                                    dl.TileLayer(
+                                                        url="https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+                                                        attribution="© OpenTopoMap",
+                                                    ),
+                                                    name="Topo",
+                                                ),
+                                                # ── Overlay layers (checkbox toggle) ──
+                                                dl.Overlay(
+                                                    dl.GeoJSON(
+                                                        id="geojson-trajectories",
+                                                        data=_EMPTY_GEOJSON,
+                                                        options={
+                                                            "style": {
+                                                                "color": "#3388ff",
+                                                                "weight": 2,
+                                                                "opacity": 0.8,
+                                                            }
+                                                        },
+                                                    ),
+                                                    name="Trajectories",
+                                                    checked=True,
+                                                ),
+                                                dl.Overlay(
+                                                    dl.GeoJSON(
+                                                        id="geojson-bottomholes",
+                                                        data=_EMPTY_GEOJSON,
+                                                    ),
+                                                    name="Bottom Holes",
+                                                    checked=True,
+                                                ),
+                                            ],
+                                            position="topright",
                                         ),
-                                        # Static IDs — data updated by load_map_layers callback
-                                        dl.GeoJSON(
-                                            id="geojson-trajectories",
-                                            data=_EMPTY_GEOJSON,
-                                            options={
-                                                "style": {
-                                                    "color": "#3388ff",
-                                                    "weight": 2,
-                                                    "opacity": 0.8,
-                                                }
-                                            },
-                                        ),
-                                        dl.GeoJSON(
-                                            id="geojson-bottomholes",
-                                            data=_EMPTY_GEOJSON,
-                                        ),
+                                        # ── Tools ──
+                                        dl.FullScreenControl(position="topleft"),
                                         dl.ScaleControl(position="bottomleft"),
+                                        dl.MeasureControl(
+                                            position="topleft",
+                                            primaryLengthUnit="feet",
+                                            secondaryLengthUnit="miles",
+                                            primaryAreaUnit="acres",
+                                            activeColor="#ff7800",
+                                            completedColor="#00C853",
+                                        ),
+                                        # ── Draw tools (polygon / rectangle selection) ──
+                                        dl.FeatureGroup(
+                                            dl.EditControl(
+                                                id="draw-control",
+                                                position="topleft",
+                                                draw={
+                                                    "polyline": False,
+                                                    "circle": False,
+                                                    "circlemarker": False,
+                                                    "marker": False,
+                                                    "polygon": {"shapeOptions": {"color": "#ff7800"}},
+                                                    "rectangle": {"shapeOptions": {"color": "#ff7800"}},
+                                                },
+                                                edit={"edit": False},
+                                            ),
+                                        ),
                                     ],
                                     id="main-map",
                                     center=[31.5, -101.9],
@@ -186,7 +245,7 @@ layout = dbc.Container(
     Output("main-map", "center"),
     Output("main-map", "zoom"),
     Input("pipeline-result-store", "data"),
-    prevent_initial_call=True,
+    prevent_initial_call=False,
 )
 def load_map_layers(pipeline_result):
     """Populate map with wellbore sticks and bottom-hole markers."""
@@ -356,3 +415,55 @@ def update_daily_oil(selected, pipeline_result):
         margin=dict(t=30, b=50, l=60, r=20),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Draw / Lasso selection — select wells within drawn polygon or rectangle
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("selected-wells-store", "data", allow_duplicate=True),
+    Input("draw-control", "geojson"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def select_wells_by_shape(geojson, pipeline_result):
+    """Select all wells whose bottom-hole falls within a drawn polygon/rectangle."""
+    if not geojson or not pipeline_result:
+        return dash.no_update
+
+    features = geojson.get("features", [])
+    if not features:
+        return dash.no_update
+
+    # Use the last drawn shape
+    drawn = features[-1]
+    drawn_geom = shape(drawn["geometry"])
+
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+
+    # Find the lat/lon columns
+    lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
+    lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
+
+    if lat_col not in header_df.columns or lon_col not in header_df.columns:
+        return dash.no_update
+
+    # Find wells within the drawn shape
+    selected_uwis = []
+    for _, row in header_df.iterrows():
+        try:
+            pt = Point(float(row[lon_col]), float(row[lat_col]))
+            if drawn_geom.contains(pt):
+                selected_uwis.append(str(row["uwi"]))
+        except (ValueError, TypeError):
+            continue
+
+    if not selected_uwis:
+        return dash.no_update
+
+    return {
+        "clicked_uwi": selected_uwis[0],
+        "neighborhood_uwis": sorted(selected_uwis),
+    }

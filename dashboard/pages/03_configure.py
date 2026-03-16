@@ -147,6 +147,32 @@ layout = dbc.Container(
         html.H3("Step 3 — Configure", className="mb-1"),
         html.P("Adjust spacing engine parameters. Defaults work for most Midland Basin datasets.", className="text-muted mb-4"),
 
+        # ---- UTM Zone Detection ----
+        dbc.Card(
+            dbc.CardBody([
+                html.H6("UTM Zone", className="mb-3"),
+                html.Div(id="cfg-utm-detection"),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                dbc.Label("UTM Zone to use"),
+                                dbc.Input(
+                                    id="cfg-utm-zone",
+                                    placeholder="auto-detected (leave blank)",
+                                    value="",
+                                ),
+                                dbc.FormText("Leave blank to use majority zone. Or type e.g. EPSG:32613 to override."),
+                            ],
+                            md=4,
+                        ),
+                    ],
+                    className="mt-2",
+                ),
+            ]),
+            className="mb-3",
+        ),
+
         # ---- Card 1: Spacing Engine Parameters ----
         dbc.Card(
             dbc.CardBody(
@@ -154,25 +180,6 @@ layout = dbc.Container(
                     html.H6("Spacing Engine Parameters", className="mb-3"),
                     dbc.Row(
                         [
-                            dbc.Col(
-                                [
-                                    dbc.Label("UTM Zone (auto-detected)"),
-                                    dbc.Input(
-                                        id="cfg-utm-zone",
-                                        placeholder="e.g. EPSG:32613",
-                                        value="",
-                                        disabled=True,
-                                    ),
-                                    dbc.FormText("Leave blank to auto-detect from data centroid."),
-                                    dbc.Checklist(
-                                        id="cfg-utm-override",
-                                        options=[{"label": "Override UTM zone", "value": "override"}],
-                                        value=[],
-                                        className="mt-1",
-                                    ),
-                                ],
-                                md=4,
-                            ),
                             dbc.Col(
                                 [
                                     dbc.Label("Max search radius (miles)"),
@@ -386,16 +393,145 @@ layout = dbc.Container(
 
 
 # ---------------------------------------------------------------------------
+# UTM zone basin reference (from GeoSurveyProcessor docstring)
+# ---------------------------------------------------------------------------
+_BASIN_UTM_ZONES = [
+    ("Permian — Delaware Basin",     13, "-105°", "Loving, Winkler, Ward, Reeves, Culberson, Pecos"),
+    ("Permian — Midland Basin",      13, "-105°", "Midland, Martin, Howard, Glasscock, Reagan, Upton"),
+    ("Permian — Central Basin Plat.", 13, "-105°", "Andrews, Ector, Crane"),
+    ("Eagle Ford Shale",             14, "-99°",  "South TX (Karnes, DeWitt, Gonzales, La Salle)"),
+    ("Haynesville Shale",            15, "-93°",  "East TX, NW Louisiana"),
+    ("Anadarko (STACK/SCOOP)",       14, "-99°",  "Oklahoma, TX Panhandle"),
+    ("Williston / Bakken",           13, "-105°", "North Dakota, Montana"),
+    ("DJ Basin / Niobrara",          13, "-105°", "Colorado (Weld County), Wyoming"),
+    ("Powder River Basin",           13, "-105°", "Wyoming, Montana"),
+    ("Uinta Basin",                  12, "-111°", "Utah (Duchesne, Uintah)"),
+    ("San Juan Basin",               12, "-111°", "New Mexico, Colorado"),
+    ("Marcellus Shale",              17, "-81°",  "Pennsylvania, West Virginia, Ohio"),
+    ("Utica Shale",                  17, "-81°",  "Ohio, Pennsylvania, West Virginia"),
+    ("Fort Worth / Barnett",         14, "-99°",  "North-Central Texas"),
+    ("Gulf Coast Basin",             15, "-93°",  "Texas, Louisiana Coast"),
+    ("Austin Chalk",                 14, "-99°",  "South-Central Texas"),
+    ("San Joaquin Basin",            10, "-123°", "California (Kern County)"),
+    ("Cook Inlet / North Slope",      6, "-147°", "Alaska"),
+]
+
+
+def _utm_basin_table() -> dbc.Accordion:
+    """Collapsible basin reference table for UTM zone selection."""
+    header = html.Thead(html.Tr([
+        html.Th("Basin / Play", style={"fontSize": "0.78rem"}),
+        html.Th("Zone", style={"fontSize": "0.78rem", "width": "8%"}),
+        html.Th("EPSG", style={"fontSize": "0.78rem", "width": "12%"}),
+        html.Th("Central Meridian", style={"fontSize": "0.78rem", "width": "12%"}),
+        html.Th("Region / Counties", style={"fontSize": "0.78rem"}),
+    ]))
+    rows = [
+        html.Tr([
+            html.Td(b[0], style={"fontSize": "0.76rem"}),
+            html.Td(str(b[1]), style={"fontSize": "0.76rem", "fontWeight": "bold"}),
+            html.Td(f"EPSG:326{b[1]:02d}", style={"fontSize": "0.76rem", "fontFamily": "monospace"}),
+            html.Td(b[2], style={"fontSize": "0.76rem"}),
+            html.Td(b[3], style={"fontSize": "0.74rem", "color": "#555"}),
+        ])
+        for b in _BASIN_UTM_ZONES
+    ]
+    return dbc.Accordion(
+        dbc.AccordionItem(
+            dbc.Table([header, html.Tbody(rows)], bordered=True, size="sm", hover=True, striped=True, className="mb-0"),
+            title="UTM Zone by Basin Reference Table",
+        ),
+        start_collapsed=True,
+        className="mt-2",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("cfg-utm-zone", "disabled"),
-    Input("cfg-utm-override", "value"),
+    Output("cfg-utm-detection", "children"),
+    Input("upload-store", "data"),
     prevent_initial_call=False,
 )
-def toggle_utm_input(override):
-    return "override" not in (override or [])
+def detect_utm_zones(upload_store):
+    """Analyze well longitudes to detect UTM zones and show distribution."""
+    if not upload_store:
+        return dbc.Alert("Upload data first (Step 1) to auto-detect UTM zones.", color="light")
+
+    # Get preview columns to find the lon column
+    header_cols = upload_store.get("header_preview_cols", [])
+    sample_vals = upload_store.get("header_sample_values", {})
+
+    # Find longitude column from sample values
+    lon_col = None
+    for candidate in ["surface_lon", "longitude", "Longitude", "surface_longitude"]:
+        if candidate in sample_vals:
+            lon_col = candidate
+            break
+
+    if not lon_col:
+        return dbc.Alert(
+            "Cannot detect UTM zone — no longitude column found in header preview. "
+            "Type the EPSG code manually (e.g. EPSG:32613 for Permian Basin).",
+            color="info", className="py-2",
+        )
+
+    # Parse sample lons to estimate zone(s)
+    try:
+        lons = [float(v) for v in sample_vals[lon_col] if v and str(v).strip()]
+    except (ValueError, TypeError):
+        return dbc.Alert("Could not parse longitude samples for UTM detection.", color="info", className="py-2")
+
+    if not lons:
+        return dbc.Alert("No longitude values found in sample data.", color="info", className="py-2")
+
+    # Compute zones from samples (limited preview — full analysis would need the actual file)
+    zones = {}
+    for lon in lons:
+        z = int((lon + 180) / 6) + 1
+        zones[z] = zones.get(z, 0) + 1
+
+    total = sum(zones.values())
+    majority_zone = max(zones, key=zones.get)
+    majority_epsg = f"EPSG:326{majority_zone:02d}"
+
+    if len(zones) == 1:
+        # Single zone — all good
+        return dbc.Alert(
+            [
+                html.Strong(f"UTM Zone {majority_zone} "),
+                html.Span(f"({majority_epsg}) — all sample wells are in this zone."),
+            ],
+            color="success", className="py-2",
+        )
+    else:
+        # Multiple zones — warn and show distribution
+        dist_parts = []
+        for z in sorted(zones, key=zones.get, reverse=True):
+            pct = zones[z] / total * 100
+            epsg = f"EPSG:326{z:02d}"
+            dist_parts.append(html.Li(
+                f"Zone {z} ({epsg}): {zones[z]} samples ({pct:.0f}%)",
+                style={"fontSize": "0.82rem"},
+            ))
+
+        return html.Div([
+            dbc.Alert(
+                [
+                    html.Strong("Multiple UTM zones detected in your data. "),
+                    html.Span(
+                        f"Majority zone: {majority_zone} ({majority_epsg}). "
+                        "Leave the override field blank to use the majority zone, "
+                        "or consult the basin table below and type an EPSG code to override."
+                    ),
+                ],
+                color="warning", className="py-2 mb-2",
+            ),
+            html.Ul(dist_parts, className="mb-1"),
+            _utm_basin_table(),
+        ])
 
 
 @callback(
@@ -405,7 +541,6 @@ def toggle_utm_input(override):
     Output("btn-go-calculate", "disabled"),
     Input("btn-save-config", "n_clicks"),
     State("cfg-utm-zone", "value"),
-    State("cfg-utm-override", "value"),
     State("cfg-max-distance", "value"),
     State("cfg-cutoff-ft", "value"),
     State("cfg-batch-size", "value"),
@@ -419,12 +554,14 @@ def toggle_utm_input(override):
     prevent_initial_call=True,
 )
 def save_config(
-    n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size,
+    n_clicks, utm_zone, max_dist, cutoff_ft, batch_size,
     dir_source, bench_filter, rsv_cats, prod_cutoff, duc_age, permit_window,
     col_map_store,
 ):
+    # utm_zone: blank = auto-detect, or user-typed EPSG override
+    utm = utm_zone.strip() if utm_zone and utm_zone.strip() else None
     cfg = {
-        "utm_zone": utm_zone if "override" in (utm_override or []) else None,
+        "utm_zone": utm,
         "max_distance_miles": float(max_dist or 4.0),
         "cutoff_ft": float(cutoff_ft or 5280),
         "batch_size": int(batch_size or 200_000),

@@ -674,27 +674,46 @@ def load_map_layers(pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data"),
+    Output("gun-barrel-chart", "figure", allow_duplicate=True),
+    Output("cum-oil-chart", "figure", allow_duplicate=True),
+    Output("daily-oil-chart", "figure", allow_duplicate=True),
     Input("geojson-trajectories", "n_clicks"),
     Input("geojson-bottomholes", "n_clicks"),
+    Input("main-map", "click_lat_lng"),
     State("geojson-trajectories", "clickData"),
     State("geojson-bottomholes", "clickData"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeline_result):
-    """Capture clicked well UWI and build its spacing neighborhood."""
+def on_well_click(traj_clicks, bh_clicks, map_click, traj_click_data, bh_click_data, pipeline_result):
+    """Capture clicked well UWI, or clear selection if empty map space clicked."""
+    triggered = dash.ctx.triggered_id
+    no_change = dash.no_update
+
+    # Click on empty map background → clear selection
+    if triggered == "main-map":
+        return (
+            None,
+            empty_figure("Click a well on the map."),
+            empty_figure("Click a well on the map."),
+            empty_figure("Click a well on the map."),
+        )
+
     click_data = traj_click_data or bh_click_data
     if not click_data or not pipeline_result:
-        return dash.no_update
+        return no_change, no_change, no_change, no_change
 
     props = click_data.get("properties") or {}
     clicked_uwi = props.get("uwi")
     if not clicked_uwi:
-        return dash.no_update
+        return no_change, no_change, no_change, no_change
 
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
-        return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
+        return (
+            {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]},
+            no_change, no_change, no_change,
+        )
 
     # All wells that share a spacing pair with the clicked well
     # Raw IK pairs have well_i/well_k; enriched summary has well_i + uwi_same/near columns
@@ -716,10 +735,11 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
                     neighborhood.update(str(v) for v in vals if v)
     neighborhood.add(clicked_uwi)
 
-    return {
-        "clicked_uwi": clicked_uwi,
-        "neighborhood_uwis": sorted(neighborhood),
-    }
+    # Return selection; charts will update via their own callbacks
+    return (
+        {"clicked_uwi": clicked_uwi, "neighborhood_uwis": sorted(neighborhood)},
+        no_change, no_change, no_change,
+    )
 
 
 @callback(

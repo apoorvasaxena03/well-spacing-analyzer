@@ -54,7 +54,9 @@ def build_trajectory_geodataframe(
     gdf = gdf.merge(df_header[header_cols], on="uwi", how="left")
 
     # Ensure uwi is string for proper GeoJSON serialization / tooltip display
-    gdf["uwi"] = gdf["uwi"].astype(str)
+    # (should already be str if loaded via WellDataLoader, but defensive)
+    if gdf["uwi"].dtype != object:
+        gdf["uwi"] = gdf["uwi"].astype(str)
 
     # Add spud_year for color-by-year support
     if "spud_date" in gdf.columns:

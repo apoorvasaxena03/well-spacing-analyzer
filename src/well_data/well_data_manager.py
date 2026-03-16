@@ -558,6 +558,21 @@ class WellDataLoader:
             read_kwargs["usecols"] = list(column_map.keys())
             self.logger.debug(f"  Reading only {len(column_map)} specified columns")
 
+        # Force UWI/API columns to be read as string — prevents pandas from
+        # interpreting 14-digit identifiers as int64/float64 (which loses
+        # leading zeros and adds decimal artifacts on str conversion).
+        _UWI_CANONICAL = {"uwi", "uwi12", "uwi10", "api", "api_uwi", "api_uwi_14"}
+        uwi_source_cols = {
+            src for src, canon in column_map.items()
+            if canon.lower() in _UWI_CANONICAL or "uwi" in src.lower() or "api" in src.lower()
+        }
+        if uwi_source_cols:
+            existing_dtype = read_kwargs.get("dtype", {})
+            if isinstance(existing_dtype, dict):
+                for col in uwi_source_cols:
+                    existing_dtype.setdefault(col, str)
+                read_kwargs["dtype"] = existing_dtype
+
         start_time = time.time()
 
         try:

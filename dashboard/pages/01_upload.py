@@ -219,10 +219,15 @@ def _parse_upload(contents: str, filename: str) -> tuple[pd.DataFrame | None, st
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(decoded)
             tmp_path = tmp.name
+        # Read first 5 rows for preview; force UWI-like columns to string
+        # so 14-digit identifiers aren't read as float/int
         if suffix == ".csv":
-            df = pd.read_csv(tmp_path, nrows=5)
+            # Peek at header to find UWI columns
+            header = pd.read_csv(tmp_path, nrows=0).columns
+            uwi_dtypes = {c: str for c in header if "uwi" in c.lower() or "api" in c.lower()}
+            df = pd.read_csv(tmp_path, nrows=5, dtype=uwi_dtypes or None)
         else:
-            df = pd.read_excel(tmp_path, nrows=5)
+            df = pd.read_excel(tmp_path, nrows=5, dtype=str)
         return df, tmp_path
     except Exception as exc:
         return None, str(exc)

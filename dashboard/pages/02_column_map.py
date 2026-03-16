@@ -214,24 +214,7 @@ layout = dbc.Container(
                         color="info",
                         className="mb-3 py-2",
                     ),
-                    md=5,
-                ),
-                dbc.Col(
-                    [
-                        html.Label("Unmapped columns:", className="fw-semibold"),
-                        dbc.RadioItems(
-                            id="unmapped-mode",
-                            options=[
-                                {"label": "Exclude (don't load)", "value": "exclude"},
-                                {"label": "Keep original name", "value": "as-is"},
-                                {"label": "Use standardized name (snake_case)", "value": "standardize"},
-                            ],
-                            value="exclude",
-                            inline=True,
-                            className="mb-3",
-                        ),
-                    ],
-                    md=4,
+                    md=9,
                 ),
             ]
         ),
@@ -389,7 +372,21 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
     sample_values = store.get(f"{file_key}_sample_values", {})
 
     if not source_cols:
-        return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
+        return [
+            # Always render the radio so the callback State can find it
+            dbc.RadioItems(
+                id=f"unmapped-mode-{file_key}",
+                options=[
+                    {"label": "Exclude", "value": "exclude"},
+                    {"label": "Keep original name", "value": "as-is"},
+                    {"label": "Use standardized (snake_case)", "value": "standardize"},
+                ],
+                value="exclude",
+                inline=True,
+                style={"display": "none"},
+            ),
+            dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2"),
+        ]
 
     # If user already confirmed a mapping, restore it; otherwise use template + fuzzy
     if saved_mapping and saved_mapping.get(file_key):
@@ -411,6 +408,33 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
     else:
         required_note = None
 
+    # Per-tab unmapped column mode
+    unmapped_radio = dbc.Row(
+        [
+            dbc.Col(
+                html.Small("Unmapped columns:", className="fw-semibold text-muted"),
+                width="auto",
+                className="d-flex align-items-center",
+            ),
+            dbc.Col(
+                dbc.RadioItems(
+                    id=f"unmapped-mode-{file_key}",
+                    options=[
+                        {"label": "Exclude", "value": "exclude"},
+                        {"label": "Keep original name", "value": "as-is"},
+                        {"label": "Use standardized (snake_case)", "value": "standardize"},
+                    ],
+                    value="exclude",
+                    inline=True,
+                    input_class_name="me-1",
+                    label_class_name="me-3",
+                    style={"fontSize": "0.82rem"},
+                ),
+            ),
+        ],
+        className="mb-2 align-items-center",
+    )
+
     col_header = dbc.Row(
         [
             dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=3),
@@ -420,7 +444,10 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
         ],
         className="mb-2 text-muted gx-2",
     )
-    children = [required_note, col_header] if required_note else [col_header]
+    children = [unmapped_radio]
+    if required_note:
+        children.append(required_note)
+    children.append(col_header)
     return children + _build_rows(file_key, source_cols, prefill, sample_values)
 
 
@@ -435,8 +462,15 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
 )
 def build_mapping_rows(store, template_name, saved_mapping):
     if not store:
-        msg = [dbc.Alert("No data loaded — go back to Step 1.", color="warning")]
-        return msg, msg, msg
+        # Must still render the per-tab radio IDs so confirm_mapping's State can find them
+        def _empty(fk):
+            return [
+                dbc.RadioItems(id=f"unmapped-mode-{fk}", value="exclude",
+                               options=[{"label": "x", "value": "exclude"}],
+                               style={"display": "none"}),
+                dbc.Alert("No data loaded — go back to Step 1.", color="warning"),
+            ]
+        return _empty("header"), _empty("directional"), _empty("production")
     return (
         _panel("header",      store, template_name, saved_mapping),
         _panel("directional", store, template_name, saved_mapping),
@@ -464,22 +498,26 @@ def toggle_confirm_button(header_vals, dir_vals):
     Input("btn-confirm-mapping", "n_clicks"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "value"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "id"),
-    State("unmapped-mode", "value"),
+    State("unmapped-mode-header",      "value"),
+    State("unmapped-mode-directional", "value"),
+    State("unmapped-mode-production",  "value"),
     prevent_initial_call=True,
 )
-def confirm_mapping(n_clicks, values, ids, unmapped_mode):
+def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
+    modes = {"header": mode_header, "directional": mode_dir, "production": mode_prod}
     mapping: dict[str, dict] = {"header": {}, "directional": {}, "production": {}}
 
     for val, id_ in zip(values, ids):
         file_key = id_["file"]
         src_col = id_["src"]
+        mode = modes.get(file_key, "exclude")
         if val:
             # Explicitly mapped
             mapping[file_key][src_col] = val
-        elif unmapped_mode == "as-is":
+        elif mode == "as-is":
             # Not mapped → keep original column name
             mapping[file_key][src_col] = src_col
-        elif unmapped_mode == "standardize":
+        elif mode == "standardize":
             # Not mapped → use snake_case version of original name
             mapping[file_key][src_col] = _to_snake(src_col)
         # else: exclude — don't add to mapping

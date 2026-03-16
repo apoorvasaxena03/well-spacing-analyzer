@@ -1,6 +1,7 @@
 """
 Step 6 — Export
-Download filtered pipeline results as CSV or Excel.
+Download pipeline results as CSV or Excel.
+Offers multiple datasets: raw IK pairs, valid IK pairs, neighbor summary, header, production.
 """
 
 import io
@@ -30,29 +31,37 @@ layout = dbc.Container(
                                     dbc.RadioItems(
                                         id="export-format",
                                         options=[
-                                            {"label": "CSV",   "value": "csv"},
-                                            {"label": "Excel", "value": "xlsx"},
+                                            {"label": "CSV (one file per dataset)",  "value": "csv"},
+                                            {"label": "Excel (all in one workbook)", "value": "xlsx"},
                                         ],
-                                        value="csv",
+                                        value="xlsx",
                                         inline=True,
                                     ),
                                 ],
-                                md=4,
+                                md=6,
                             ),
+                        ],
+                        className="mb-3",
+                    ),
+                    dbc.Row(
+                        [
                             dbc.Col(
                                 [
-                                    dbc.Label("Include"),
+                                    dbc.Label("Datasets to include"),
                                     dbc.Checklist(
                                         id="export-include",
                                         options=[
-                                            {"label": "Spacing pairs (IK)",  "value": "spacing"},
-                                            {"label": "Well header",          "value": "header"},
-                                            {"label": "Production data",      "value": "production"},
+                                            {"label": "Valid IK pairs (reject-filtered)",  "value": "ik_valid"},
+                                            {"label": "Neighbor summary (1 row/well)",     "value": "neighbor_summary"},
+                                            {"label": "Well header (processed)",           "value": "header"},
+                                            {"label": "Production data",                   "value": "production"},
                                         ],
-                                        value=["spacing", "header"],
+                                        value=["ik_valid", "neighbor_summary", "header"],
+                                        input_class_name="me-1",
+                                        label_class_name="small",
                                     ),
                                 ],
-                                md=4,
+                                md=6,
                             ),
                             dbc.Col(
                                 dbc.Button(
@@ -67,6 +76,8 @@ layout = dbc.Container(
                             ),
                         ]
                     ),
+                    html.Hr(className="my-3"),
+                    html.Div(id="export-preview", className="small text-muted"),
                 ]
             )
         ),
@@ -82,6 +93,40 @@ layout = dbc.Container(
     fluid=True,
     className="py-4",
 )
+
+
+@callback(
+    Output("export-preview", "children"),
+    Input("pipeline-result-store", "data"),
+    prevent_initial_call=False,
+)
+def show_preview(pipeline_result):
+    """Show row counts for each available dataset."""
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return "No pipeline results available. Run Step 4 first."
+
+    try:
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+    except Exception:
+        return "Could not load cached results."
+
+    lines = []
+    ik = data.get("df_ik_pairs")
+    if ik is not None:
+        lines.append(f"Valid IK pairs: {len(ik):,} rows × {len(ik.columns)} columns")
+    summary = data.get("df_spacing")
+    if summary is not None:
+        lines.append(f"Neighbor summary: {len(summary):,} rows × {len(summary.columns)} columns")
+    header = data.get("header_df")
+    if header is not None:
+        lines.append(f"Header: {len(header):,} wells × {len(header.columns)} columns")
+    prod = data.get("production_df")
+    if prod is not None:
+        lines.append(f"Production: {len(prod):,} rows × {len(prod.columns)} columns")
+    else:
+        lines.append("Production: not loaded")
+
+    return html.Ul([html.Li(l) for l in lines])
 
 
 @callback(
@@ -103,31 +148,37 @@ def do_export(n_clicks, pipeline_result, fmt, include):
     except Exception as exc:
         return dash.no_update, str(exc), True
 
-    sheets = {}
-    if "spacing" in include:
-        sheets["spacing"] = data.get("df_spacing", pd.DataFrame())
-    if "header" in include:
-        sheets["header"] = data.get("header_df", pd.DataFrame())
+    # Build dict of selected datasets
+    sheets: dict[str, pd.DataFrame] = {}
+    if "ik_valid" in include and data.get("df_ik_pairs") is not None:
+        sheets["IK_Pairs_Valid"] = data["df_ik_pairs"]
+    if "neighbor_summary" in include and data.get("df_spacing") is not None:
+        sheets["Neighbor_Summary"] = data["df_spacing"]
+    if "header" in include and data.get("header_df") is not None:
+        sheets["Header"] = data["header_df"]
     if "production" in include and data.get("production_df") is not None:
-        sheets["production"] = data["production_df"]
+        sheets["Production"] = data["production_df"]
+
+    if not sheets:
+        return dash.no_update, "No datasets selected.", True
 
     run_id = pipeline_result.get("run_id", "export")
 
     if fmt == "csv":
-        # Export spacing pairs as primary CSV
-        df = sheets.get("spacing", pd.DataFrame())
-        return (
-            dcc.send_data_frame(df.to_csv, f"spacing_{run_id}.csv", index=False),
-            "", False,
-        )
+        # For CSV: export the first selected dataset (most important)
+        # For multi-dataset CSV export, use Excel instead
+        name = list(sheets.keys())[0]
+        df = sheets[name]
+        filename = f"{name}_{run_id}.csv"
+        return dcc.send_data_frame(df.to_csv, filename, index=False), "", False
+
     else:
+        # Excel: all selected datasets as separate sheets
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             for sheet_name, df in sheets.items():
                 if not df.empty:
                     df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
         buf.seek(0)
-        return (
-            dcc.send_bytes(buf.read, f"spacing_{run_id}.xlsx"),
-            "", False,
-        )
+        filename = f"spacing_results_{run_id}.xlsx"
+        return dcc.send_bytes(buf.read, filename), "", False

@@ -8,31 +8,45 @@ The project root must be on sys.path so both `dashboard` and `src` are importabl
 This file lives at the project root, which is exactly what ensures that.
 """
 
-import atexit
 import os
 import signal
+import subprocess
 import sys
 
-from dashboard.app import app
 
+def _kill_process_tree():
+    """Kill the entire process tree (this process + all children).
 
-def _cleanup_children():
-    """Kill child processes (DiskcacheManager workers) on exit.
-
-    On Windows, Ctrl+C only stops the main process — background callback
-    workers spawned by DiskcacheManager keep running and hold the cache
-    DB open.  This handler terminates the entire process tree.
+    On Windows, Ctrl+C only stops the main Flask process — background
+    callback workers spawned by DiskcacheManager keep running and hold
+    the cache DB open.  This kills everything.
     """
+    pid = os.getpid()
     if sys.platform == "win32":
-        # taskkill /T = kill process tree, /F = force, /PID = this process
-        os.system(f"taskkill /F /T /PID {os.getpid()} >nul 2>&1")
+        # /T = kill process tree, /F = force
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     else:
-        # On Unix, kill the process group
-        os.killpg(os.getpid(), signal.SIGTERM)
+        os.killpg(pid, signal.SIGTERM)
+
+
+def _sigint_handler(signum, frame):
+    """Handle Ctrl+C: print message, then kill entire process tree."""
+    print("\nShutting down dashboard (killing all child processes)...")
+    _kill_process_tree()
+    # If taskkill didn't terminate us, force exit
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    atexit.register(_cleanup_children)
+    # Register Ctrl+C handler BEFORE importing/starting the app
+    signal.signal(signal.SIGINT, _sigint_handler)
+    signal.signal(signal.SIGTERM, _sigint_handler)
+
+    from dashboard.app import app
 
     # use_reloader=False prevents Werkzeug from spawning a second watcher process,
     # which would cause duplicate log entries in dashboard.log.

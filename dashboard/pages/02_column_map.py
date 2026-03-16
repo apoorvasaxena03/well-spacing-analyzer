@@ -527,19 +527,36 @@ def build_mapping_rows(store, template_name, saved_mapping):
     Output("column-map-error", "is_open", allow_duplicate=True),
     Input({"type": "map-input", "file": "header",      "src": ALL}, "value"),
     Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
+    State({"type": "map-input", "file": "header",      "src": ALL}, "id"),
+    State({"type": "map-input", "file": "directional", "src": ALL}, "id"),
+    State("unmapped-mode-header",      "value"),
+    State("unmapped-mode-directional", "value"),
     prevent_initial_call="initial_duplicate",
 )
-def toggle_confirm_button(header_vals, dir_vals):
-    h = set(v for v in (header_vals or []) if v)
-    d = set(v for v in (dir_vals or []) if v)
+def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mode_d):
+    # Build effective canonical sets: explicit values + what unmapped mode will produce
+    def _effective(vals, ids, mode):
+        result = set()
+        for val, id_ in zip(vals or [], ids or []):
+            if val:
+                result.add(val)
+            elif mode == "as-is":
+                result.add(id_["src"])
+            elif mode == "standardize":
+                result.add(_to_snake(id_["src"]))
+        return result
+
+    h = _effective(header_vals, header_ids, mode_h)
+    d = _effective(dir_vals, dir_ids, mode_d)
+
     has_uwi_header = "uwi" in h
     has_uwi_dir = bool({"uwi", "uwi12"} & d)
 
     # Enverus check: if directional uses uwi12, header MUST have both uwi and uwi12
     is_enverus = "uwi12" in d and "uwi" not in d
-    if is_enverus and not ("uwi" in h and "uwi12" in h):
+    if is_enverus and "uwi12" not in h:
         return True, (
-            "Enverus directional uses uwi12 — header must map BOTH 'uwi' and 'uwi12' "
+            "Enverus directional uses uwi12 — header must also include 'uwi12' "
             "so the pipeline can link 14-digit UWIs to directional surveys."
         ), True
 

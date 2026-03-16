@@ -587,7 +587,7 @@ def compute_gun_barrel(
 
     # Sort wells for gun barrel positioning
     drill_dir = GB["drill_direction_i"].mode()
-    if not drill_dir.empty and drill_dir.item() == "NS":
+    if not drill_dir.empty and drill_dir.iloc[0] == "NS":
         GB["mid_Lon"] = np.round(GB["mid_Lon"], 9)
         GB = GB.sort_values("mid_Lon").reset_index(drop=True)
         GB["E_to_W_Rank"] = GB.index + 1

@@ -88,13 +88,21 @@ layout = dbc.Container(
 
 @callback(
     Output("calc-summary", "children"),
+    Output("btn-calculate", "disabled", allow_duplicate=True),
     Input("upload-store", "data"),
     Input("config-store", "data"),
-    prevent_initial_call=False,
+    prevent_initial_call="initial_duplicate",
 )
 def show_summary(upload_store, config_store):
     if not upload_store or not config_store:
-        return dbc.Alert("Complete Steps 1–3 before calculating.", color="warning")
+        return (
+            dbc.Alert(
+                "Complete Steps 1–3 before calculating. "
+                "Go to Configure (Step 3) and click 'Save & Next →'.",
+                color="warning",
+            ),
+            True,  # disable Calculate button
+        )
 
     items = [
         f"Header: {upload_store.get('header_filename', 'n/a')}",
@@ -106,7 +114,7 @@ def show_summary(upload_store, config_store):
     if config_store.get("bench_filter"):
         items.append(f"Benches: {', '.join(config_store['bench_filter'])}")
 
-    return html.Ul([html.Li(i, className="small") for i in items])
+    return html.Ul([html.Li(i, className="small") for i in items]), False
 
 
 @callback(

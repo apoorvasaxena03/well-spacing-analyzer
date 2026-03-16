@@ -2115,7 +2115,7 @@ class GeoSurveyProcessor:
             all_uwis = set(df['uwi'].unique())
             wells_missing_heel = sorted(all_uwis - set(start_idx_map.keys()))
             uwi_lines = "\n".join(
-                ", ".join(wells_missing_heel[i:i + 5])
+                ", ".join(str(u) for u in wells_missing_heel[i:i + 5])
                 for i in range(0, len(wells_missing_heel), 5)
             )
             self.logger.debug(

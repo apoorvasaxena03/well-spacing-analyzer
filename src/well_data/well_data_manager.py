@@ -2306,9 +2306,10 @@ class GeoSurveyProcessor:
         # Step 2: Filter to lateral section (after heel point)
         self.logger.info("Step 2/3: Filtering to lateral section (after heel point)...")
         step2_start = time.time()
-        wells_before_filter = df_utm["uwi"].nunique()
+        _uwi_col = "uwi" if "uwi" in df_utm.columns else "uwi12"
+        wells_before_filter = df_utm[_uwi_col].nunique()
         df_utm_lateral = self.filter_after_heel_point(df_utm, inclination_filter=inclination_filter)
-        wells_after_filter = df_utm_lateral["uwi"].nunique()
+        wells_after_filter = df_utm_lateral[_uwi_col].nunique()
         step2_elapsed = time.time() - step2_start
         self.logger.info(
             f"✓ Step 2 complete: Lateral section extracted - {len(df_utm_lateral):,} points "
@@ -2334,7 +2335,7 @@ class GeoSurveyProcessor:
 
             # Keep header records for wells that have directional surveys
             header_aligned = self.df_header[
-                self.df_header["uwi"].isin(directional_lateral["uwi"].unique())
+                self.df_header["uwi12"].isin(directional_lateral["uwi12"].unique())
             ].reset_index(drop=True)
 
         elif self.directional_source == "ihs":
@@ -2359,7 +2360,7 @@ class GeoSurveyProcessor:
 
         # Log synchronization results
         step3_elapsed = time.time() - step3_start
-        final_wells = directional_lateral["uwi"].nunique()
+        final_wells = directional_lateral[_uwi_col].nunique()
         final_survey_points = len(directional_lateral)
         final_header_wells = len(header_aligned)
 

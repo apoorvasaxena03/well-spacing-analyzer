@@ -110,6 +110,9 @@ def load_from_files(
     column_map_production: dict[str, str] | None = None,
     directional_source: str | None = None,
     rsv_categories: list[str] | None = None,
+    prod_cutoff_months: int = 6,
+    duc_age_years: int = 3,
+    permit_window_years: int = 2,
     stats: PipelineStats | None = None,
 ) -> dict[str, Any]:
     """
@@ -169,8 +172,16 @@ def load_from_files(
     )
     if has_rsv_cols:
         if "rsv_cat" not in header_df.columns:
-            header_df["rsv_cat"] = compute_rsv_cat(header_df, col_map=_RSV_COL_MAP)
-            logger.info("RSV categorization computed: %s", header_df["rsv_cat"].value_counts().to_dict())
+            header_df["rsv_cat"] = compute_rsv_cat(
+                header_df,
+                col_map=_RSV_COL_MAP,
+                prod_cutoff_months=prod_cutoff_months,
+                duc_age_years=duc_age_years,
+                permit_window_years=permit_window_years,
+            )
+            logger.info("RSV categorization computed (cutoffs: prod=%d mo, DUC=%d yr, permit=%d yr): %s",
+                        prod_cutoff_months, duc_age_years, permit_window_years,
+                        header_df["rsv_cat"].value_counts().to_dict())
         else:
             logger.info("RSV category already present: %s", header_df["rsv_cat"].value_counts().to_dict())
     else:

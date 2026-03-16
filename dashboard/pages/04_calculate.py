@@ -217,6 +217,9 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             column_map_production=col_map_store.get("production"),
             directional_source=config_store.get("directional_source"),
             rsv_categories=config_store.get("rsv_categories"),
+            prod_cutoff_months=config_store.get("prod_cutoff_months", 6),
+            duc_age_years=config_store.get("duc_age_years", 3),
+            permit_window_years=config_store.get("permit_window_years", 2),
             stats=stats,
         )
     except Exception as exc:

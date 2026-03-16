@@ -104,9 +104,77 @@ ENVERUS_PRODUCTION = {
     "GasMCF":                  "gas",
     "WaterBBL":                "water",
 }
+# IHS templates (typical IHS Enerdeq / PIDM export column names)
+IHS_HEADER = {
+    "API 14":              "uwi",
+    "Lease Name":          "lease_name",
+    "Well Name":           "well_name",
+    "Operator":            "operator",
+    "Formation":           "bench",
+    "First Prod Date":     "first_prod_date",
+    "Spud Date":           "spud_date",
+    "Hole Direction":      "hole_direction",
+    "Final Status":        "well_status",
+    "Surface Latitude":    "surface_lat",
+    "Surface Longitude":   "surface_lon",
+    "Lateral Length":      "lateral_length_ft",
+}
+IHS_DIRECTIONAL = {
+    "UWI":              "uwi",
+    "MD":               "md",
+    "TVD":              "tvd",
+    "Inclination":      "inclination",
+    "Azimuth":          "azimuth",
+    "Latitude":         "latitude",
+    "Longitude":        "longitude",
+    "Deviation E/W":    "deviation_E/W",
+    "Deviation N/S":    "deviation_N/S",
+}
+IHS_PRODUCTION = {
+    "UWI":              "uwi",
+    "Production Date":  "prod_date",
+    "Monthly Oil":      "oil",
+    "Monthly Gas":      "gas",
+    "Monthly Water":    "water",
+}
+
+# DrillingInfo templates (typical DI Desktop export column names)
+DI_HEADER = {
+    "API/UWI":                          "uwi",
+    "Well Name":                        "well_name",
+    "Operator Name":                    "operator",
+    "Producing Formation":              "bench",
+    "First Production Date":            "first_prod_date",
+    "Spud Date":                        "spud_date",
+    "Well Type":                        "hole_direction",
+    "Surface Hole Latitude (WGS84)":    "surface_lat",
+    "Surface Hole Longitude (WGS84)":   "surface_lon",
+    "Lateral Length (ft)":              "lateral_length_ft",
+    "Peak Oil (BOPD)":                  "peak_oil_bopd",
+    "Peak Gas (MCFD)":                  "peak_gas_mcfd",
+}
+DI_DIRECTIONAL = {
+    "API/UWI":          "uwi",
+    "Measured Depth":   "md",
+    "True Vertical Depth": "tvd",
+    "Inclination":      "inclination",
+    "Azimuth":          "azimuth",
+    "Latitude":         "latitude",
+    "Longitude":        "longitude",
+}
+DI_PRODUCTION = {
+    "API/UWI":          "uwi",
+    "Production Date":  "prod_date",
+    "Oil (BBL)":        "oil",
+    "Gas (MCF)":        "gas",
+    "Water (BBL)":      "water",
+}
+
 TEMPLATES = {
-    "Enverus": {"header": ENVERUS_HEADER, "directional": ENVERUS_DIRECTIONAL, "production": ENVERUS_PRODUCTION},
-    "Custom":  {"header": {}, "directional": {}, "production": {}},
+    "Enverus":       {"header": ENVERUS_HEADER, "directional": ENVERUS_DIRECTIONAL, "production": ENVERUS_PRODUCTION},
+    "IHS":           {"header": IHS_HEADER, "directional": IHS_DIRECTIONAL, "production": IHS_PRODUCTION},
+    "DrillingInfo":  {"header": DI_HEADER, "directional": DI_DIRECTIONAL, "production": DI_PRODUCTION},
+    "Custom":        {"header": {}, "directional": {}, "production": {}},
 }
 
 

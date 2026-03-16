@@ -147,9 +147,10 @@ def _build_funnel_report(steps: list[dict]) -> dbc.Card:
     Output("btn-calculate", "disabled", allow_duplicate=True),
     Input("upload-store", "data"),
     Input("config-store", "data"),
+    Input("column-map-store", "data"),
     prevent_initial_call="initial_duplicate",
 )
-def show_summary(upload_store, config_store):
+def show_summary(upload_store, config_store, col_map_store):
     if not upload_store or not config_store:
         return (
             dbc.Alert(
@@ -157,7 +158,20 @@ def show_summary(upload_store, config_store):
                 "Go to Configure (Step 3) and click 'Save & Next →'.",
                 color="warning",
             ),
-            True,  # disable Calculate button
+            True,
+        )
+
+    # Check version: if mapping was re-confirmed after config was saved, force re-configure
+    map_version = (col_map_store or {}).get("_version")
+    cfg_version = config_store.get("_mapping_version")
+    if map_version and cfg_version != map_version:
+        return (
+            dbc.Alert(
+                "Column mapping was updated — go to Configure (Step 3) and click 'Save & Next →' "
+                "to apply the new mapping before calculating.",
+                color="warning",
+            ),
+            True,
         )
 
     items = [

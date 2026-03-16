@@ -403,11 +403,13 @@ def toggle_utm_input(override):
     State("cfg-prod-cutoff-months", "value"),
     State("cfg-duc-age-years", "value"),
     State("cfg-permit-window-years", "value"),
+    State("column-map-store", "data"),
     prevent_initial_call=True,
 )
 def save_config(
     n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size,
     dir_source, bench_filter, rsv_cats, prod_cutoff, duc_age, permit_window,
+    col_map_store,
 ):
     cfg = {
         "utm_zone": utm_zone if "override" in (utm_override or []) else None,
@@ -420,5 +422,7 @@ def save_config(
         "prod_cutoff_months": int(prod_cutoff or 6),
         "duc_age_years": int(duc_age or 3),
         "permit_window_years": int(permit_window or 2),
+        # Copy version from column-map-store so Calculate can verify config is current
+        "_mapping_version": (col_map_store or {}).get("_version"),
     }
     return cfg, "/calculate"

@@ -12,6 +12,7 @@ Unmapped columns can be excluded or passed through as-is (global toggle).
 """
 
 import re
+import time
 
 import dash
 import dash_bootstrap_components as dbc
@@ -566,7 +567,6 @@ def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mo
 
 @callback(
     Output("column-map-store",   "data"),
-    Output("config-store",       "data", allow_duplicate=True),
     Output("colmap-redirect",    "href"),
     Output("column-map-error",   "children"),
     Output("column-map-error",   "is_open"),
@@ -598,13 +598,14 @@ def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
         # else: exclude — don't add to mapping
 
     if "uwi" not in mapping["header"].values():
-        return dash.no_update, dash.no_update, dash.no_update, "Header mapping must include a 'uwi' column.", True
+        return dash.no_update, dash.no_update, "Header mapping must include a 'uwi' column.", True
     dir_vals = set(mapping["directional"].values())
     if not dir_vals & {"uwi", "uwi12"}:
-        return dash.no_update, dash.no_update, dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True
+        return dash.no_update, dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True
 
-    # Clear config-store to force user through Step 3 (Configure) again
-    return mapping, None, "/configure", "", False
+    # Stamp a version so Calculate page knows config is stale
+    mapping["_version"] = int(time.time())
+    return mapping, "/configure", "", False
 
 
 # ---------------------------------------------------------------------------

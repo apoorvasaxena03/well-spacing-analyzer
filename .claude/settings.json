@@ -41,7 +41,13 @@
       "Bash(tree*)",
       "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/memory/**)",
       "Read(//c/Users/ApoorvaSaxen_ct6z7vh/.claude/projects/c--Users-ApoorvaSaxen-ct6z7vh-OneDrive---Bandera-Group-Desktop-Project-AP-02-Python-well-spacing-analyzer/13f00065-bc12-478c-8332-5477f5a93f8f/tool-results/**)",
-      "Bash(venv/Scripts/pip install:*)"
+      "Bash(venv/Scripts/pip install:*)",
+      "Bash(jq \".cells[] | select\\(.source | join\\(\"\"\"\"\\) | contains\\(\"\"column_map\"\"\\)\\) | .source | join\\(\"\"\"\"\\)\")",
+      "Bash(xargs grep:*)",
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/05. Spacing Study/03. Ring Energy/01. Well Header/v2/**)",
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/05. Spacing Study/03. Ring Energy/02. Directional Surveys/v2/**)",
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/05. Spacing Study/03. Ring Energy/03. Production/**)",
+      "Bash(grep -l \"uwi12\\\\|merge.*uwi\\\\|join.*uwi\" \"c:\\\\Users\\\\ApoorvaSaxen_ct6z7vh\\\\OneDrive - Bandera Group\\\\Desktop\\\\Project AP\\\\02.Python\\\\well-spacing-analyzer\\\\notebooks\"/**/*.ipynb)"
     ],
     "deny": [
       "Bash(git push --force*)",

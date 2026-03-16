@@ -19,24 +19,31 @@ CACHE_DIR = Path("./dashboard/.cache")
 
 
 def _clear_cache():
-    """Clear DiskcacheManager cache files (not the directory itself).
+    """Remove stale cache subdirectories from previous runs.
 
-    Removes stale background job state so the next run starts clean.
-    On Windows, shutil.rmtree fails if the directory is recreated
-    immediately by the DiskcacheManager import, so we delete individual
-    DB files instead.
+    Each app run creates a unique subdirectory under CACHE_DIR (via uuid).
+    On startup, we remove ALL old subdirectories.  Locked files from
+    orphaned processes are skipped silently — they become harmless since
+    the new run uses a fresh subdirectory and will never replay them.
     """
     if not CACHE_DIR.exists():
         return
-    cleared = False
-    for f in CACHE_DIR.iterdir():
-        try:
-            f.unlink()
-            cleared = True
-        except Exception:
-            pass  # file locked or already gone
+    cleared = 0
+    for child in CACHE_DIR.iterdir():
+        if child.is_dir():
+            try:
+                shutil.rmtree(child)
+                cleared += 1
+            except Exception:
+                pass  # locked by orphaned process — harmless
+        elif child.is_file():
+            try:
+                child.unlink()
+                cleared += 1
+            except Exception:
+                pass
     if cleared:
-        print(f"  Cleared cache: {CACHE_DIR}")
+        print(f"  Cleared {cleared} stale cache entries")
 
 
 def _kill_process_tree():

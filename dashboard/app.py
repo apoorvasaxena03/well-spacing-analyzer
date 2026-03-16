@@ -11,6 +11,8 @@ Entry point: python dashboard/app.py
   6. Export       — download results as CSV / Excel
 """
 
+import uuid
+
 from diskcache import Cache as DiskCache
 import dash
 import dash_bootstrap_components as dbc
@@ -19,7 +21,12 @@ from flask_caching import Cache
 # ---------------------------------------------------------------------------
 # Background job cache — must be created BEFORE dash.Dash()
 # ---------------------------------------------------------------------------
-disk_cache = DiskCache("./dashboard/.cache")
+# Use a unique cache directory per run so stale background jobs from previous
+# sessions can NEVER replay.  The run_dashboard.py launcher cleans up old
+# cache dirs on startup via _clear_cache().
+_cache_id = uuid.uuid4().hex[:8]
+CACHE_DIR = f"./dashboard/.cache/{_cache_id}"
+disk_cache = DiskCache(CACHE_DIR)
 background_callback_manager = dash.DiskcacheManager(disk_cache)
 
 # ---------------------------------------------------------------------------

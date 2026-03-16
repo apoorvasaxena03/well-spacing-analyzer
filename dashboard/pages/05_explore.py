@@ -939,9 +939,14 @@ def populate_filter_options(pipeline_result):
 def apply_filters(search, benches, operators, rsv_cats, statuses,
                   year_range, ll_range, pipeline_result):
     """Filter header data and update map GeoJSON to show only matching wells."""
+    import logging
+    logger = logging.getLogger("dashboard")
+
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        # Don't overwrite map data if pipeline hasn't loaded yet
+        logger.warning("apply_filters: no pipeline result — skipping")
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    logger.info("apply_filters: search=%s benches=%s operators=%s rsv=%s statuses=%s",
+                search, benches, operators, rsv_cats, statuses)
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -989,11 +994,13 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
     filtered_uwis = filtered["uwi"].astype(str).tolist()
     total = len(header_df)
     shown = len(filtered)
+    logger.info("apply_filters: %d/%d wells pass filters", shown, total)
 
     # Rebuild GeoJSON with only filtered wells
     filtered_lateral = lateral_df[lateral_df["uwi"].isin(filtered["uwi"])]
     gdf_traj = build_trajectory_geodataframe(filtered_lateral, filtered)
     gdf_bh = build_bottomhole_geodataframe(gdf_traj)
+    logger.info("apply_filters: %d trajectories, %d bottomholes rebuilt", len(gdf_traj), len(gdf_bh))
 
     count_text = f"Showing {shown:,} of {total:,} wells"
 

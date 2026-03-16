@@ -161,14 +161,13 @@ def show_summary(upload_store, config_store, col_map_store):
             True,
         )
 
-    # Check version: if mapping was re-confirmed after config was saved, force re-configure
+    # Check version: config must have been saved AFTER the current mapping was confirmed
     map_version = (col_map_store or {}).get("_version")
     cfg_version = config_store.get("_mapping_version")
-    if map_version and cfg_version != map_version:
+    if cfg_version is None or (map_version and cfg_version != map_version):
         return (
             dbc.Alert(
-                "Column mapping was updated — go to Configure (Step 3) and click 'Save & Next →' "
-                "to apply the new mapping before calculating.",
+                "Go to Configure (Step 3) and click 'Save & Next →' before calculating.",
                 color="warning",
             ),
             True,

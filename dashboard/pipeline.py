@@ -429,7 +429,6 @@ def run_spacing_calculation(
     df_spacing = calculator._calculate_spacing_statistics(
         batch_size=batch_size,
         max_distance_miles=max_distance_miles,
-        cutoff_ft=cutoff_ft,
     )
     total_pairs = len(df_spacing)
     stats.record_independent("Spacing pairs computed (raw)", total_pairs, unit="pairs")

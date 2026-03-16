@@ -9,9 +9,26 @@ This file lives at the project root, which is exactly what ensures that.
 """
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
+
+CACHE_DIR = Path("./dashboard/.cache")
+
+
+def _clear_cache():
+    """Delete the DiskcacheManager cache directory.
+
+    Removes stale background job state so the next run starts clean.
+    """
+    if CACHE_DIR.exists():
+        try:
+            shutil.rmtree(CACHE_DIR)
+            print(f"  Cleared cache: {CACHE_DIR}")
+        except Exception as exc:
+            print(f"  Warning: could not clear cache: {exc}")
 
 
 def _kill_process_tree():
@@ -23,7 +40,6 @@ def _kill_process_tree():
     """
     pid = os.getpid()
     if sys.platform == "win32":
-        # /T = kill process tree, /F = force
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             stdout=subprocess.DEVNULL,
@@ -34,15 +50,18 @@ def _kill_process_tree():
 
 
 def _sigint_handler(signum, frame):
-    """Handle Ctrl+C: print message, then kill entire process tree."""
-    print("\nShutting down dashboard (killing all child processes)...")
+    """Handle Ctrl+C: clear cache, kill child processes, exit."""
+    print("\nShutting down dashboard...")
+    _clear_cache()
+    print("  Killing child processes...")
     _kill_process_tree()
-    # If taskkill didn't terminate us, force exit
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    # Register Ctrl+C handler BEFORE importing/starting the app
+    # Clear any stale cache from previous runs BEFORE starting
+    _clear_cache()
+
     signal.signal(signal.SIGINT, _sigint_handler)
     signal.signal(signal.SIGTERM, _sigint_handler)
 

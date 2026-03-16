@@ -60,14 +60,23 @@ layout = dbc.Container(
                 ),
             ),
             dbc.Col(
-                dbc.Button(
-                    "Filters",
-                    id="btn-toggle-filters",
-                    color="outline-primary",
-                    size="sm",
-                    className="float-end",
-                ),
+                [
+                    dbc.Button(
+                        "Clear Selection",
+                        id="btn-clear-selection",
+                        color="outline-danger",
+                        size="sm",
+                        className="me-2",
+                    ),
+                    dbc.Button(
+                        "Filters",
+                        id="btn-toggle-filters",
+                        color="outline-primary",
+                        size="sm",
+                    ),
+                ],
                 width="auto",
+                className="d-flex",
             ),
         ], align="center", className="mb-2"),
 
@@ -903,6 +912,27 @@ def select_wells_by_shape(geojson, pipeline_result):
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
     }
+
+
+# ---------------------------------------------------------------------------
+# Clear selection
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("selected-wells-store", "data", allow_duplicate=True),
+    Output("gun-barrel-chart", "figure", allow_duplicate=True),
+    Output("cum-oil-chart", "figure", allow_duplicate=True),
+    Output("daily-oil-chart", "figure", allow_duplicate=True),
+    Input("btn-clear-selection", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_selection(n):
+    return (
+        None,
+        empty_figure("Click a well on the map."),
+        empty_figure("Click a well on the map."),
+        empty_figure("Click a well on the map."),
+    )
 
 
 # ---------------------------------------------------------------------------

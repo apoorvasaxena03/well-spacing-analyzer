@@ -96,14 +96,16 @@ def load_from_files(
                 len(directional_df), directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else -1)
 
     production_df = None
-    if production_path:
+    if production_path and column_map_production:
         logger.info("Loading production from: %s", Path(production_path).name)
-        prod_loader = WellDataLoader()
-        production_df = prod_loader.get_header_data(
-            source=production_path,
-            column_map=column_map_production or None,
-        )
-        logger.info("Production loaded: %d rows", len(production_df))
+        suffix = Path(production_path).suffix.lower()
+        if suffix == ".csv":
+            raw = pd.read_csv(production_path, usecols=list(column_map_production.keys()))
+        else:
+            raw = pd.read_excel(production_path, usecols=list(column_map_production.keys()))
+        production_df = raw.rename(columns=column_map_production)
+        logger.info("Production loaded: %d rows, %d wells",
+                    len(production_df), production_df["uwi"].nunique() if "uwi" in production_df.columns else -1)
 
     return {
         "header_df": header_df,

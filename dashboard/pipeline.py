@@ -108,6 +108,9 @@ def load_from_files(
     column_map_directional: dict[str, str],
     production_path: str | None = None,
     column_map_production: dict[str, str] | None = None,
+    dtype_map_header: dict[str, str] | None = None,
+    dtype_map_directional: dict[str, str] | None = None,
+    dtype_map_production: dict[str, str] | None = None,
     directional_source: str | None = None,
     rsv_categories: list[str] | None = None,
     prod_cutoff_months: int = 6,
@@ -148,6 +151,7 @@ def load_from_files(
     header_df = loader.get_header_data(
         source=header_path,
         column_map=column_map_header or None,
+        dtype_map=dtype_map_header or None,
     )
     stats.record("Header loaded (raw)", len(header_df))
     logger.info("Header loaded: %d wells", len(header_df))
@@ -204,6 +208,7 @@ def load_from_files(
     directional_df = loader.get_directional_data(
         source=directional_path,
         column_map=column_map_directional or None,
+        dtype_map=dtype_map_directional or None,
     )
 
     # Enverus merge: directional has uwi12 but not uwi
@@ -237,11 +242,20 @@ def load_from_files(
     production_df = None
     if production_path and column_map_production:
         logger.info("Loading production from: %s", Path(production_path).name)
+        # Build dtype dict for UWI columns (always string)
+        prod_dtypes = {}
+        if dtype_map_production:
+            prod_dtypes.update(dtype_map_production)
+        for src, canon in column_map_production.items():
+            if "uwi" in src.lower() or "api" in src.lower() or "uwi" in canon.lower():
+                prod_dtypes.setdefault(src, str)
         suffix = Path(production_path).suffix.lower()
         if suffix == ".csv":
-            raw = pd.read_csv(production_path, usecols=list(column_map_production.keys()))
+            raw = pd.read_csv(production_path, usecols=list(column_map_production.keys()),
+                              dtype=prod_dtypes or None)
         else:
-            raw = pd.read_excel(production_path, usecols=list(column_map_production.keys()))
+            raw = pd.read_excel(production_path, usecols=list(column_map_production.keys()),
+                                dtype=prod_dtypes or None)
         production_df = raw.rename(columns=column_map_production)
         prod_wells = production_df["uwi"].nunique() if "uwi" in production_df.columns else 0
         stats.record_independent("Production data loaded", prod_wells)

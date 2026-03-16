@@ -231,6 +231,7 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
 
     set_progress((5, "Loading and pre-processing data..."))
     try:
+        dtypes = col_map_store.get("_dtypes", {})
         data = load_from_files(
             header_path=upload_store["header_path"],
             directional_path=upload_store["directional_path"],
@@ -238,6 +239,9 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             column_map_directional=col_map_store["directional"],
             production_path=upload_store.get("production_path"),
             column_map_production=col_map_store.get("production"),
+            dtype_map_header=dtypes.get("header"),
+            dtype_map_directional=dtypes.get("directional"),
+            dtype_map_production=dtypes.get("production"),
             directional_source=config_store.get("directional_source"),
             rsv_categories=config_store.get("rsv_categories"),
             prod_cutoff_months=config_store.get("prod_cutoff_months", 6),

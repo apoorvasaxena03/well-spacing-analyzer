@@ -2,11 +2,12 @@
 Step 2 — Column Mapping
 User maps their source columns to canonical names required by src/.
 
-Four-column view per source column:
+Five-column view per source column:
   1. Original column name (as-is from file)
   2. Standardized name (snake_case via convert_to_snake_case)
   3. Sample data (first 3 values from uploaded file)
   4. Canonical mapping (datalist + text input — autocomplete + free-form)
+  5. Data type (auto-detected with override)
 
 Unmapped columns can be excluded or passed through as-is (global toggle).
 """
@@ -35,6 +36,73 @@ def _to_snake(name: str) -> str:
     name = name.lower()
     name = re.sub(r"_+", "_", name)
     return name
+
+
+# ---------------------------------------------------------------------------
+# Dtype auto-detection from canonical name
+# ---------------------------------------------------------------------------
+
+_DTYPE_OPTIONS = [
+    {"label": "String",   "value": "str"},
+    {"label": "Float",    "value": "float64"},
+    {"label": "Integer",  "value": "int64"},
+    {"label": "Date",     "value": "datetime"},
+    {"label": "Boolean",  "value": "bool"},
+    {"label": "Auto",     "value": "auto"},
+]
+
+# Canonical name → expected dtype
+_CANONICAL_DTYPES: dict[str, str] = {
+    # String identifiers
+    "uwi": "str", "uwi12": "str", "uwi10": "str",
+    "well_name": "str", "lease_name": "str", "operator": "str",
+    "bench": "str", "hole_direction": "str", "well_status": "str",
+    "rsv_cat": "str",
+    # Dates
+    "spud_date": "datetime", "first_prod_date": "datetime",
+    "last_prod_date": "datetime", "comp_date": "datetime",
+    "permit_date": "datetime", "prod_date": "datetime",
+    # Floats — coordinates
+    "latitude": "float64", "longitude": "float64",
+    "surface_lat": "float64", "surface_lon": "float64",
+    "md": "float64", "tvd": "float64",
+    "azimuth": "float64", "inclination": "float64",
+    "deviation_E/W": "float64", "deviation_N/S": "float64",
+    # Floats — metrics
+    "lateral_length_ft": "float64",
+    "oil": "float64", "gas": "float64", "water": "float64",
+    "daily_oil": "float64", "daily_gas": "float64", "daily_water": "float64",
+    "cum_oil": "float64", "cum_gas": "float64", "cum_water": "float64",
+    "peak_oil_bopd": "float64", "peak_gas_mcfd": "float64",
+    "fluid_intensity_bbl_per_ft": "float64",
+    "proppant_intensity_lbs_per_ft": "float64",
+}
+
+
+def _infer_dtype(canonical_name: str, sample_values: list[str] | None = None) -> str:
+    """Infer the best dtype for a column based on its canonical name or sample data."""
+    if canonical_name in _CANONICAL_DTYPES:
+        return _CANONICAL_DTYPES[canonical_name]
+    # Heuristic fallbacks based on name patterns
+    name_lower = canonical_name.lower()
+    if "uwi" in name_lower or "api" in name_lower:
+        return "str"
+    if "date" in name_lower or "time" in name_lower:
+        return "datetime"
+    if any(kw in name_lower for kw in ("_ft", "_bbl", "_mcf", "_lbs", "lat", "lon", "length")):
+        return "float64"
+    return "auto"
+
+
+_DTYPE_LABELS = {
+    "str": "String", "float64": "Float", "int64": "Integer",
+    "datetime": "Date", "bool": "Boolean", "auto": "Auto",
+}
+
+_DTYPE_COLORS = {
+    "str": "#0d6efd", "float64": "#198754", "int64": "#6f42c1",
+    "datetime": "#fd7e14", "bool": "#dc3545", "auto": "#6c757d",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -355,11 +423,13 @@ def _build_rows(
     source_cols: list[str],
     prefill: dict[str, str],
     sample_values: dict[str, list[str]],
+    dtype_overrides: dict[str, str] | None = None,
 ) -> list:
-    """Build one row per source column with 4 visual columns:
-    Original | Standardized | Sample Values | Canonical Mapping
+    """Build one row per source column with 5 visual columns:
+    Original | Standardized | Sample Values | Canonical Mapping | Dtype
     """
     canonical = CANONICAL_BY_FILE[file_key]
+    dtype_overrides = dtype_overrides or {}
     rows = []
 
     for idx, src in enumerate(source_cols):
@@ -370,10 +440,13 @@ def _build_rows(
         sample_text = ", ".join(samples) if samples else "—"
         datalist_id = f"dl-{file_key}-{idx}"
 
-        # Mark canonical options — required ones get a star prefix in label
-        options = []
-        for c in canonical:
-            options.append(html.Option(value=c))
+        # Auto-detect dtype from canonical mapping (or source name)
+        detect_from = value if value else snake
+        auto_dtype = _infer_dtype(detect_from, samples)
+        current_dtype = dtype_overrides.get(src, auto_dtype)
+
+        # Mark canonical options
+        options = [html.Option(value=c) for c in canonical]
 
         rows.append(
             dbc.Row(
@@ -381,7 +454,7 @@ def _build_rows(
                     # Col 1: Original name
                     dbc.Col(
                         html.Code(src, style={"fontSize": "0.82rem"}),
-                        width=3,
+                        width=2,
                         className="d-flex align-items-center",
                     ),
                     # Col 2: Standardized (snake_case)
@@ -389,7 +462,7 @@ def _build_rows(
                         html.Span(
                             snake,
                             style={
-                                "fontSize": "0.8rem",
+                                "fontSize": "0.78rem",
                                 "color": "#0d6efd" if snake in canonical else "#6c757d",
                                 "fontFamily": "monospace",
                             },
@@ -401,9 +474,9 @@ def _build_rows(
                     dbc.Col(
                         html.Small(
                             sample_text,
-                            style={"fontSize": "0.75rem", "color": "#888"},
+                            style={"fontSize": "0.72rem", "color": "#888"},
                             className="text-truncate d-block",
-                            title=sample_text,  # full text on hover
+                            title=sample_text,
                         ),
                         width=3,
                         className="d-flex align-items-center",
@@ -412,10 +485,7 @@ def _build_rows(
                     # Col 4: Canonical mapping (datalist + input)
                     dbc.Col(
                         [
-                            html.Datalist(
-                                id=datalist_id,
-                                children=options,
-                            ),
+                            html.Datalist(id=datalist_id, children=options),
                             dbc.Input(
                                 id={"type": "map-input", "file": file_key, "src": src},
                                 type="text",
@@ -427,7 +497,22 @@ def _build_rows(
                                 style={"fontSize": "0.82rem"},
                             ),
                         ],
-                        width=4,
+                        width=3,
+                    ),
+                    # Col 5: Dtype (auto-detected, overridable)
+                    dbc.Col(
+                        dbc.Select(
+                            id={"type": "dtype-select", "file": file_key, "src": src},
+                            options=_DTYPE_OPTIONS,
+                            value=current_dtype,
+                            size="sm",
+                            style={
+                                "fontSize": "0.75rem",
+                                "color": _DTYPE_COLORS.get(current_dtype, "#6c757d"),
+                                "padding": "2px 4px",
+                            },
+                        ),
+                        width=2,
                     ),
                 ],
                 className="mb-1 align-items-center py-1 gx-2",
@@ -501,10 +586,11 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
     children.append(
         dbc.Row(
             [
-                dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=3),
+                dbc.Col(html.Strong("Your Column", style={"fontSize": "0.78rem"}), width=2),
                 dbc.Col(html.Strong("Standardized", style={"fontSize": "0.78rem"}), width=2),
                 dbc.Col(html.Strong("Sample Data", style={"fontSize": "0.78rem"}), width=3),
-                dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.78rem"}), width=4),
+                dbc.Col(html.Strong("Maps To (canonical)", style={"fontSize": "0.78rem"}), width=3),
+                dbc.Col(html.Strong("Dtype", style={"fontSize": "0.78rem"}), width=2),
             ],
             className="mb-2 text-muted gx-2",
         )
@@ -586,12 +672,15 @@ def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mo
     Input("btn-confirm-mapping", "n_clicks"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "value"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "id"),
+    State({"type": "dtype-select", "file": ALL, "src": ALL}, "value"),
+    State({"type": "dtype-select", "file": ALL, "src": ALL}, "id"),
     State("unmapped-mode-header",      "value"),
     State("unmapped-mode-directional", "value"),
     State("unmapped-mode-production",  "value"),
     prevent_initial_call=True,
 )
-def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
+def confirm_mapping(n_clicks, values, ids, dtype_values, dtype_ids,
+                    mode_header, mode_dir, mode_prod):
     modes = {"header": mode_header, "directional": mode_dir, "production": mode_prod}
     mapping: dict[str, dict] = {"header": {}, "directional": {}, "production": {}}
 
@@ -606,6 +695,12 @@ def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
         elif mode == "standardize":
             mapping[file_key][src_col] = _to_snake(src_col)
 
+    # Collect dtype overrides (skip "auto" — only store explicit choices)
+    dtype_map: dict[str, dict[str, str]] = {"header": {}, "directional": {}, "production": {}}
+    for dt_val, dt_id in zip(dtype_values, dtype_ids):
+        if dt_val and dt_val != "auto":
+            dtype_map[dt_id["file"]][dt_id["src"]] = dt_val
+
     if "uwi" not in mapping["header"].values():
         return dash.no_update, "Header mapping must include a 'uwi' column.", True, "", False, True, False
     dir_vals = set(mapping["directional"].values())
@@ -613,6 +708,7 @@ def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
         return dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True, "", False, True, False
 
     mapping["_version"] = int(time.time())
+    mapping["_dtypes"] = dtype_map
     n_h = len(mapping["header"])
     n_d = len(mapping["directional"])
     n_p = len(mapping.get("production", {}))

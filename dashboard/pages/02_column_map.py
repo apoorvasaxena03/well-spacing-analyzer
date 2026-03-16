@@ -526,3 +526,33 @@ def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
         return dash.no_update, dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True
 
     return mapping, "/configure", "", False
+
+
+# ---------------------------------------------------------------------------
+# Dynamic placeholder updates when unmapped-mode radio changes
+# ---------------------------------------------------------------------------
+
+def _make_placeholder(mode: str, src_col: str) -> str:
+    """Return the placeholder text for an unmapped input based on radio mode."""
+    if mode == "as-is":
+        return f"\u2192 will keep: {src_col}"
+    elif mode == "standardize":
+        return f"\u2192 will use: {_to_snake(src_col)}"
+    return "\u2014 leave blank to exclude \u2014"
+
+
+# One callback per file tab — updates only placeholder, never wipes user values
+for _fk in ("header", "directional", "production"):
+
+    @callback(
+        Output({"type": "map-input", "file": _fk, "src": ALL}, "placeholder"),
+        Input(f"unmapped-mode-{_fk}", "value"),
+        State({"type": "map-input", "file": _fk, "src": ALL}, "value"),
+        State({"type": "map-input", "file": _fk, "src": ALL}, "id"),
+        prevent_initial_call=True,
+    )
+    def _update_placeholders(mode, values, ids, _file_key=_fk):
+        return [
+            _make_placeholder(mode, id_["src"]) if not val else "\u2014 leave blank to exclude \u2014"
+            for val, id_ in zip(values, ids)
+        ]

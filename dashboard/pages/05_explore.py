@@ -18,9 +18,21 @@ import pandas as pd
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, dcc, html
 import dash_leaflet as dl
+from dash_extensions.javascript import assign
 import plotly.graph_objects as go
 import plotly.express as px
 from shapely.geometry import shape, Point
+
+# JS function for rendering bottomhole Points as filled circle markers
+_point_to_circle = assign("""function(feature, latlng){
+    return L.circleMarker(latlng, {
+        radius: 5,
+        fillColor: '#e74c3c',
+        color: '#333',
+        weight: 1,
+        fillOpacity: 0.9
+    });
+}""")
 
 from dashboard.pipeline import (
     compute_gun_barrel,
@@ -334,6 +346,7 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
+                                                        pointToLayer=_point_to_circle,
                                                     ),
                                                     name="Bottom Holes",
                                                     checked=True,
@@ -628,12 +641,12 @@ def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
     prevent_initial_call=False,
 )
 def load_map_layers(pipeline_result):
-    """Populate map with wellbore sticks and bottom-hole markers."""
+    """Populate map with wellbore trajectory lines and bottomhole circle markers."""
     import logging
     logger = logging.getLogger("dashboard")
 
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        logger.warning("load_map_layers: no pipeline result — returning empty GeoJSON")
+        logger.warning("load_map_layers: no pipeline result")
         return _EMPTY_GEOJSON, _EMPTY_GEOJSON, [31.5, -101.9], 10
 
     logger.info("load_map_layers: loading from %s", pipeline_result["cache_path"])
@@ -642,13 +655,12 @@ def load_map_layers(pipeline_result):
     lateral_df = data["lateral_df"]
 
     gdf_traj = build_trajectory_geodataframe(lateral_df, header_df)
-    gdf_bh   = build_bottomhole_geodataframe(gdf_traj)
+    gdf_bh = build_bottomhole_geodataframe(gdf_traj)
 
     traj_data = gdf_traj.__geo_interface__
-    bh_data   = gdf_bh.__geo_interface__
+    bh_data = gdf_bh.__geo_interface__
     logger.info("load_map_layers: %d trajectories, %d bottomholes", len(gdf_traj), len(gdf_bh))
 
-    # Centre map — header uses surface_lat/surface_lon (canonical name)
     lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
     lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
     lat_centre = float(header_df[lat_col].dropna().mean()) if lat_col in header_df.columns else 31.5

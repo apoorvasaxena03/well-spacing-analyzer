@@ -19,16 +19,24 @@ CACHE_DIR = Path("./dashboard/.cache")
 
 
 def _clear_cache():
-    """Delete the DiskcacheManager cache directory.
+    """Clear DiskcacheManager cache files (not the directory itself).
 
     Removes stale background job state so the next run starts clean.
+    On Windows, shutil.rmtree fails if the directory is recreated
+    immediately by the DiskcacheManager import, so we delete individual
+    DB files instead.
     """
-    if CACHE_DIR.exists():
+    if not CACHE_DIR.exists():
+        return
+    cleared = False
+    for f in CACHE_DIR.iterdir():
         try:
-            shutil.rmtree(CACHE_DIR)
-            print(f"  Cleared cache: {CACHE_DIR}")
-        except Exception as exc:
-            print(f"  Warning: could not clear cache: {exc}")
+            f.unlink()
+            cleared = True
+        except Exception:
+            pass  # file locked or already gone
+    if cleared:
+        print(f"  Cleared cache: {CACHE_DIR}")
 
 
 def _kill_process_tree():

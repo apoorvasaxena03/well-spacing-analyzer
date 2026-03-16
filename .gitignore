@@ -43,6 +43,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.pipeline_cache/
+dashboard/.cache/
+dashboard/.pipeline_cache/
 nosetests.xml
 coverage.xml
 *.cover

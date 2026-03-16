@@ -105,10 +105,11 @@ layout = dbc.Container(
                                                         options={
                                                             "style": {
                                                                 "color": "#3388ff",
-                                                                "weight": 2,
-                                                                "opacity": 0.8,
+                                                                "weight": 3,
+                                                                "opacity": 0.9,
                                                             }
                                                         },
+                                                        hoverStyle={"weight": 5, "color": "#ff7800"},
                                                     ),
                                                     name="Trajectories",
                                                     checked=True,
@@ -117,6 +118,7 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
+                                                        pointToLayer="dashExtensions.bottomholePointToLayer",
                                                     ),
                                                     name="Bottom Holes",
                                                     checked=True,

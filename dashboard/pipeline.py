@@ -242,10 +242,15 @@ def load_from_files(
     production_df = None
     if production_path and column_map_production:
         logger.info("Loading production from: %s", Path(production_path).name)
-        # Build dtype dict for UWI columns (always string)
+        # Build dtype dict — separate datetime columns (pd.read_csv dtype doesn't accept "datetime")
         prod_dtypes = {}
+        prod_date_cols = []
         if dtype_map_production:
-            prod_dtypes.update(dtype_map_production)
+            for col, dt in dtype_map_production.items():
+                if dt in ("datetime", "datetime64", "datetime64[ns]"):
+                    prod_date_cols.append(col)
+                else:
+                    prod_dtypes[col] = dt
         for src, canon in column_map_production.items():
             if "uwi" in src.lower() or "api" in src.lower() or "uwi" in canon.lower():
                 prod_dtypes.setdefault(src, str)
@@ -256,6 +261,9 @@ def load_from_files(
         else:
             raw = pd.read_excel(production_path, usecols=list(column_map_production.keys()),
                                 dtype=prod_dtypes or None)
+        for col in prod_date_cols:
+            if col in raw.columns:
+                raw[col] = pd.to_datetime(raw[col], errors="coerce")
         production_df = raw.rename(columns=column_map_production)
         prod_wells = production_df["uwi"].nunique() if "uwi" in production_df.columns else 0
         stats.record_independent("Production data loaded", prod_wells)

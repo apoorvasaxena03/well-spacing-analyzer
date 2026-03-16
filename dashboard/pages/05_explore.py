@@ -735,9 +735,14 @@ def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
     if IK.empty:
         return empty_figure("Pipeline results not loaded.")
 
-    # Filter to intra-neighborhood pairs only — never pass full IK to compute_gun_barrel
-    IK_filtered      = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)].copy()
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
+    # Data limiting (Spotfire pattern): filter IK where well_i is in selection.
+    # This shows each selected well's spacing to ALL its neighbors, not just
+    # neighbors that are also selected. The full neighborhood (well_i + well_k)
+    # is needed for GB positioning.
+    IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
+    # Expand HeelToe to include all wells that appear in the filtered pairs
+    all_gb_uwis = set(IK_filtered["well_i"].tolist() + IK_filtered["well_k"].tolist())
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(all_gb_uwis)]
 
     if IK_filtered.empty:
         return empty_figure("No spacing pairs found for selected well.")

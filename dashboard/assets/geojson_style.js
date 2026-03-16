@@ -43,4 +43,55 @@ window.dashExtensions = Object.assign({}, window.dashExtensions, {
             fillOpacity: h.opacity || 0.8,
         });
     },
+
+    // onEachFeature: hover tooltip + click popup for trajectories
+    trajectoryOnEach: function(feature, layer) {
+        var p = feature.properties || {};
+        // Tooltip (on hover) — compact one-liner
+        var tip = (p.well_name || p.uwi || "Unknown");
+        if (p.bench) tip += " | " + p.bench;
+        if (p.operator) tip += " | " + p.operator;
+        layer.bindTooltip(tip, {sticky: true, direction: "top", className: "well-tooltip"});
+
+        // Popup (on click) — detailed well info card
+        var rows = [];
+        rows.push("<b>" + (p.well_name || "—") + "</b>");
+        if (p.uwi) rows.push("<tr><td style='padding:1px 6px;color:#666'>UWI</td><td style='padding:1px 6px'>" + p.uwi + "</td></tr>");
+        if (p.operator) rows.push("<tr><td style='padding:1px 6px;color:#666'>Operator</td><td style='padding:1px 6px'>" + p.operator + "</td></tr>");
+        if (p.bench) rows.push("<tr><td style='padding:1px 6px;color:#666'>Bench</td><td style='padding:1px 6px'>" + p.bench + "</td></tr>");
+        if (p.rsv_cat) rows.push("<tr><td style='padding:1px 6px;color:#666'>RSV Cat</td><td style='padding:1px 6px'>" + p.rsv_cat + "</td></tr>");
+        if (p.spud_date) rows.push("<tr><td style='padding:1px 6px;color:#666'>Spud</td><td style='padding:1px 6px'>" + p.spud_date.substring(0,10) + "</td></tr>");
+        if (p.first_prod_date) rows.push("<tr><td style='padding:1px 6px;color:#666'>First Prod</td><td style='padding:1px 6px'>" + p.first_prod_date.substring(0,10) + "</td></tr>");
+        if (p.lateral_length_ft) rows.push("<tr><td style='padding:1px 6px;color:#666'>Lateral (ft)</td><td style='padding:1px 6px'>" + Math.round(p.lateral_length_ft).toLocaleString() + "</td></tr>");
+        if (p.hole_direction) rows.push("<tr><td style='padding:1px 6px;color:#666'>Direction</td><td style='padding:1px 6px'>" + p.hole_direction + "</td></tr>");
+
+        var title = rows.shift();
+        var html = "<div style='font-size:12px'>" + title +
+                   "<table style='margin-top:4px;border-collapse:collapse'>" + rows.join("") + "</table></div>";
+        layer.bindPopup(html, {maxWidth: 300});
+    },
+
+    // onEachFeature: hover tooltip + click popup for bottomholes
+    bottomholeOnEach: function(feature, layer) {
+        var p = feature.properties || {};
+        var tip = (p.well_name || p.uwi || "Unknown");
+        if (p.bench) tip += " | " + p.bench;
+        layer.bindTooltip(tip, {sticky: true, direction: "top", className: "well-tooltip"});
+
+        // Same popup as trajectory
+        var rows = [];
+        rows.push("<b>" + (p.well_name || "—") + "</b>");
+        if (p.uwi) rows.push("<tr><td style='padding:1px 6px;color:#666'>UWI</td><td style='padding:1px 6px'>" + p.uwi + "</td></tr>");
+        if (p.operator) rows.push("<tr><td style='padding:1px 6px;color:#666'>Operator</td><td style='padding:1px 6px'>" + p.operator + "</td></tr>");
+        if (p.bench) rows.push("<tr><td style='padding:1px 6px;color:#666'>Bench</td><td style='padding:1px 6px'>" + p.bench + "</td></tr>");
+        if (p.rsv_cat) rows.push("<tr><td style='padding:1px 6px;color:#666'>RSV Cat</td><td style='padding:1px 6px'>" + p.rsv_cat + "</td></tr>");
+        if (p.spud_date) rows.push("<tr><td style='padding:1px 6px;color:#666'>Spud</td><td style='padding:1px 6px'>" + p.spud_date.substring(0,10) + "</td></tr>");
+        if (p.first_prod_date) rows.push("<tr><td style='padding:1px 6px;color:#666'>First Prod</td><td style='padding:1px 6px'>" + p.first_prod_date.substring(0,10) + "</td></tr>");
+        if (p.lateral_length_ft) rows.push("<tr><td style='padding:1px 6px;color:#666'>Lateral (ft)</td><td style='padding:1px 6px'>" + Math.round(p.lateral_length_ft).toLocaleString() + "</td></tr>");
+
+        var title = rows.shift();
+        var html = "<div style='font-size:12px'>" + title +
+                   "<table style='margin-top:4px;border-collapse:collapse'>" + rows.join("") + "</table></div>";
+        layer.bindPopup(html, {maxWidth: 300});
+    },
 });

@@ -314,6 +314,7 @@ layout = dbc.Container(
                                                         id="geojson-trajectories",
                                                         data=_EMPTY_GEOJSON,
                                                         style="dashExtensions.trajectoryStyle",
+                                                        onEachFeature="dashExtensions.trajectoryOnEach",
                                                         hoverStyle={"weight": 6, "color": "#ff7800"},
                                                         hideout={
                                                             "colorMap": {},
@@ -331,6 +332,7 @@ layout = dbc.Container(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
                                                         pointToLayer="dashExtensions.bottomholePointToLayer",
+                                                        onEachFeature="dashExtensions.bottomholeOnEach",
                                                         hideout={
                                                             "colorMap": {},
                                                             "colorProp": "bench",

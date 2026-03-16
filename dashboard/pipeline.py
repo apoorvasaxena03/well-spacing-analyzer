@@ -91,6 +91,19 @@ def load_from_files(
         source=directional_path,
         column_map=column_map_directional or None,
     )
+    # For Enverus data: directional has uwi12 but not uwi.
+    # Merge uwi from header using uwi12 as join key (same as notebooks do).
+    if "uwi12" in directional_df.columns and "uwi" not in directional_df.columns:
+        if "uwi12" in header_df.columns and "uwi" in header_df.columns:
+            uwi_map = (
+                header_df[["uwi", "uwi12"]]
+                .sort_values("uwi")
+                .drop_duplicates(subset=["uwi12"], keep="first")
+            )
+            directional_df = directional_df.merge(uwi_map, on="uwi12", how="left")
+            logger.info("Merged uwi from header into directional via uwi12 (%d matched)",
+                        directional_df["uwi"].notna().sum())
+
     uwi_col = "uwi" if "uwi" in directional_df.columns else "uwi12"
     logger.info("Directional loaded: %d survey stations across %d wells",
                 len(directional_df), directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else -1)

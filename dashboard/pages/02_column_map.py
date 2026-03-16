@@ -523,14 +523,28 @@ def build_mapping_rows(store, template_name, saved_mapping):
 
 @callback(
     Output("btn-confirm-mapping", "disabled"),
+    Output("column-map-error", "children", allow_duplicate=True),
+    Output("column-map-error", "is_open", allow_duplicate=True),
     Input({"type": "map-input", "file": "header",      "src": ALL}, "value"),
     Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
     prevent_initial_call=False,
 )
 def toggle_confirm_button(header_vals, dir_vals):
-    has_uwi_header = "uwi" in (header_vals or [])
-    has_uwi_dir    = bool({"uwi", "uwi12"} & set(v for v in (dir_vals or []) if v))
-    return not (has_uwi_header and has_uwi_dir)
+    h = set(v for v in (header_vals or []) if v)
+    d = set(v for v in (dir_vals or []) if v)
+    has_uwi_header = "uwi" in h
+    has_uwi_dir = bool({"uwi", "uwi12"} & d)
+
+    # Enverus check: if directional uses uwi12, header MUST have both uwi and uwi12
+    is_enverus = "uwi12" in d and "uwi" not in d
+    if is_enverus and not ("uwi" in h and "uwi12" in h):
+        return True, (
+            "Enverus directional uses uwi12 — header must map BOTH 'uwi' and 'uwi12' "
+            "so the pipeline can link 14-digit UWIs to directional surveys."
+        ), True
+
+    disabled = not (has_uwi_header and has_uwi_dir)
+    return disabled, "", False
 
 
 @callback(

@@ -18,21 +18,9 @@ import pandas as pd
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, dcc, html
 import dash_leaflet as dl
-from dash_extensions.javascript import assign
 import plotly.graph_objects as go
 import plotly.express as px
 from shapely.geometry import shape, Point
-
-# JS function for rendering bottomhole Points as filled circle markers
-_point_to_circle = assign("""function(feature, latlng){
-    return L.circleMarker(latlng, {
-        radius: 5,
-        fillColor: '#e74c3c',
-        color: '#333',
-        weight: 1,
-        fillOpacity: 0.9
-    });
-}""")
 
 from dashboard.pipeline import (
     compute_gun_barrel,
@@ -346,7 +334,7 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
-                                                        pointToLayer=_point_to_circle,
+                                                        pointToLayer={"variable": "dashExtensions.default.ptl0"},
                                                     ),
                                                     name="Bottom Holes",
                                                     checked=True,

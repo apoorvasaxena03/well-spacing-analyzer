@@ -51,7 +51,7 @@ def load_from_files(
     column_map_directional: dict[str, str],
     production_path: str | None = None,
     column_map_production: dict[str, str] | None = None,
-    directional_source: str = "IHS",
+    directional_source: str = "ihs",
 ) -> dict[str, pd.DataFrame]:
     """
     Load well data from uploaded CSV/Excel files using src/ WellDataLoader.

@@ -315,7 +315,7 @@ def _build_rows(
 # Callbacks
 # ---------------------------------------------------------------------------
 
-def _panel(file_key: str, store: dict, template_name: str) -> list:
+def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict | None = None) -> list:
     template = TEMPLATES.get(template_name, TEMPLATES["Custom"])
     source_cols = store.get(f"{file_key}_preview_cols", [])
     sample_values = store.get(f"{file_key}_sample_values", {})
@@ -323,8 +323,11 @@ def _panel(file_key: str, store: dict, template_name: str) -> list:
     if not source_cols:
         return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
 
-    # Build prefill: template overrides fuzzy matches
-    prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
+    # If user already confirmed a mapping, restore it; otherwise use template + fuzzy
+    if saved_mapping and saved_mapping.get(file_key):
+        prefill = saved_mapping[file_key]
+    else:
+        prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
 
     required = REQUIRED_CANONICAL[file_key]
     if required:
@@ -359,16 +362,17 @@ def _panel(file_key: str, store: dict, template_name: str) -> list:
     Output("map-rows-production",  "children"),
     Input("upload-store",    "data"),
     Input("template-select", "value"),
+    State("column-map-store", "data"),
     prevent_initial_call=False,
 )
-def build_mapping_rows(store, template_name):
+def build_mapping_rows(store, template_name, saved_mapping):
     if not store:
         msg = [dbc.Alert("No data loaded — go back to Step 1.", color="warning")]
         return msg, msg, msg
     return (
-        _panel("header",      store, template_name),
-        _panel("directional", store, template_name),
-        _panel("production",  store, template_name),
+        _panel("header",      store, template_name, saved_mapping),
+        _panel("directional", store, template_name, saved_mapping),
+        _panel("production",  store, template_name, saved_mapping),
     )
 
 

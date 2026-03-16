@@ -53,7 +53,10 @@
       "Bash(taskkill //F //IM python.exe)",
       "Bash(rm -f dashboard/.cache/cache.db dashboard/.cache/cache.db-shm dashboard/.cache/cache.db-wal)",
       "Bash(tasklist //FI \"IMAGENAME eq python.exe\")",
-      "Bash(wmic process:*)"
+      "Bash(wmic process:*)",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, ''''.''''\\); from dashboard.app import app; print\\(''''OK''''\\)\")",
+      "Bash(taskkill //F //T //PID 18272)"
     ],
     "deny": [
       "Bash(git push --force*)",

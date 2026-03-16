@@ -49,9 +49,17 @@ def build_trajectory_geodataframe(
     gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
 
     keep_cols = ["uwi", "well_name", "bench", "first_prod_date", "operator",
-                 "hole_direction", "spud_date"]
+                 "hole_direction", "spud_date", "rsv_cat", "lateral_length_ft"]
     header_cols = [c for c in keep_cols if c in df_header.columns]
     gdf = gdf.merge(df_header[header_cols], on="uwi", how="left")
+
+    # Add spud_year for color-by-year support
+    if "spud_date" in gdf.columns:
+        try:
+            gdf["spud_year"] = pd.to_datetime(gdf["spud_date"], errors="coerce").dt.year.astype("Int64").astype(str)
+            gdf["spud_year"] = gdf["spud_year"].replace("<NA>", "Unknown")
+        except Exception:
+            gdf["spud_year"] = "Unknown"
 
     return gdf
 

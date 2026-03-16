@@ -5,6 +5,8 @@ Main visualisation page.
 Layout: map panel (left) + tabbed chart panel (right).
 - Click a well on the map → gun barrel updates automatically
 - All chart panels read from pipeline-result-store and selected-wells-store
+- Map layer styles (color-by, thickness, opacity) controlled via a
+  collapsible settings panel; colors passed to JS via dl.GeoJSON hideout.
 
 GeoJSON IDs are static in the layout; their `data` property is updated by
 load_map_layers(). This lets on_well_click reference them without needing
@@ -12,10 +14,12 @@ suppress_callback_exceptions for these specific components.
 """
 
 import dash
+import pandas as pd
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, dcc, html
 import dash_leaflet as dl
 import plotly.graph_objects as go
+import plotly.express as px
 from shapely.geometry import shape, Point
 
 from dashboard.pipeline import (
@@ -27,6 +31,17 @@ from dashboard.components.gun_barrel import build_gun_barrel_figure, empty_figur
 from dashboard.components.map_panel import build_trajectory_geodataframe, build_bottomhole_geodataframe
 
 dash.register_page(__name__, path="/explore", name="5 Explore", order=5)
+
+# ---------------------------------------------------------------------------
+# Color palette — 20 distinct colors for categorical variables
+# ---------------------------------------------------------------------------
+_PALETTE = px.colors.qualitative.Alphabet
+
+
+def _build_color_map(values: list[str]) -> dict[str, str]:
+    """Map each unique value to a hex color from the palette."""
+    unique = sorted(set(str(v) for v in values if v and str(v).strip()))
+    return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(unique)}
 
 _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
 
@@ -46,29 +61,102 @@ layout = dbc.Container(
             [
                 # ── Left: Map ───────────────────────────────────────────────
                 dbc.Col(
-                    dbc.Card(
-                        [
-                            dbc.CardHeader(
-                                dbc.Row(
-                                    [
+                    [
+                        # ── Style Controls (collapsible) ──
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    dbc.Row([
                                         dbc.Col(html.Strong("Map"), width="auto"),
                                         dbc.Col(
-                                            dbc.Select(
-                                                id="map-color-by",
-                                                options=[
-                                                    {"label": "Color by Bench",    "value": "bench"},
-                                                    {"label": "Color by Year",     "value": "year"},
-                                                    {"label": "Color by Operator", "value": "operator"},
-                                                ],
-                                                value="bench",
+                                            dbc.Button(
+                                                "Style Settings",
+                                                id="btn-toggle-style",
+                                                color="link",
                                                 size="sm",
+                                                className="p-0",
                                             ),
-                                            width=4,
+                                            width="auto",
+                                            className="ms-auto",
                                         ),
-                                    ],
-                                    align="center",
-                                )
-                            ),
+                                    ], align="center"),
+                                ),
+                                dbc.Collapse(
+                                    dbc.CardBody(
+                                        [
+                                            # -- Trajectories row --
+                                            html.H6("Trajectories", className="mb-2", style={"fontSize": "0.82rem"}),
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("Color by", className="small mb-0"),
+                                                    dbc.Select(
+                                                        id="traj-color-by",
+                                                        options=[
+                                                            {"label": "Bench",    "value": "bench"},
+                                                            {"label": "Spud Year","value": "spud_year"},
+                                                            {"label": "Operator", "value": "operator"},
+                                                            {"label": "RSV Cat",  "value": "rsv_cat"},
+                                                            {"label": "Uniform",  "value": "_uniform"},
+                                                        ],
+                                                        value="bench",
+                                                        size="sm",
+                                                    ),
+                                                ], md=4),
+                                                dbc.Col([
+                                                    dbc.Label("Thickness", className="small mb-0"),
+                                                    dcc.Slider(id="traj-weight", min=1, max=8, step=1, value=3,
+                                                               marks={1: "1", 4: "4", 8: "8"}),
+                                                ], md=4),
+                                                dbc.Col([
+                                                    dbc.Label("Opacity", className="small mb-0"),
+                                                    dcc.Slider(id="traj-opacity", min=0.1, max=1.0, step=0.1, value=0.9,
+                                                               marks={0.1: ".1", 0.5: ".5", 1.0: "1"}),
+                                                ], md=4),
+                                            ], className="mb-2"),
+
+                                            html.Hr(className="my-2"),
+
+                                            # -- Bottomholes row --
+                                            html.H6("Bottom Holes", className="mb-2", style={"fontSize": "0.82rem"}),
+                                            dbc.Row([
+                                                dbc.Col([
+                                                    dbc.Label("Color by", className="small mb-0"),
+                                                    dbc.Select(
+                                                        id="bh-color-by",
+                                                        options=[
+                                                            {"label": "Bench",    "value": "bench"},
+                                                            {"label": "Spud Year","value": "spud_year"},
+                                                            {"label": "Operator", "value": "operator"},
+                                                            {"label": "RSV Cat",  "value": "rsv_cat"},
+                                                            {"label": "Uniform",  "value": "_uniform"},
+                                                        ],
+                                                        value="bench",
+                                                        size="sm",
+                                                    ),
+                                                ], md=4),
+                                                dbc.Col([
+                                                    dbc.Label("Size", className="small mb-0"),
+                                                    dcc.Slider(id="bh-radius", min=2, max=12, step=1, value=4,
+                                                               marks={2: "2", 6: "6", 12: "12"}),
+                                                ], md=4),
+                                                dbc.Col([
+                                                    dbc.Label("Opacity", className="small mb-0"),
+                                                    dcc.Slider(id="bh-opacity", min=0.1, max=1.0, step=0.1, value=0.8,
+                                                               marks={0.1: ".1", 0.5: ".5", 1.0: "1"}),
+                                                ], md=4),
+                                            ]),
+                                        ],
+                                        className="py-2",
+                                    ),
+                                    id="style-collapse",
+                                    is_open=False,
+                                ),
+                            ],
+                            className="mb-1",
+                        ),
+
+                        # ── Map ──
+                        dbc.Card(
                             dbc.CardBody(
                                 dl.Map(
                                     [
@@ -102,14 +190,15 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-trajectories",
                                                         data=_EMPTY_GEOJSON,
-                                                        options={
-                                                            "style": {
-                                                                "color": "#3388ff",
-                                                                "weight": 3,
-                                                                "opacity": 0.9,
-                                                            }
+                                                        style="dashExtensions.trajectoryStyle",
+                                                        hoverStyle={"weight": 6, "color": "#ff7800"},
+                                                        hideout={
+                                                            "colorMap": {},
+                                                            "colorProp": "bench",
+                                                            "weight": 3,
+                                                            "opacity": 0.9,
+                                                            "defaultColor": "#3388ff",
                                                         },
-                                                        hoverStyle={"weight": 5, "color": "#ff7800"},
                                                     ),
                                                     name="Trajectories",
                                                     checked=True,
@@ -119,6 +208,13 @@ layout = dbc.Container(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
                                                         pointToLayer="dashExtensions.bottomholePointToLayer",
+                                                        hideout={
+                                                            "colorMap": {},
+                                                            "colorProp": "bench",
+                                                            "radius": 4,
+                                                            "opacity": 0.8,
+                                                            "defaultColor": "#e74c3c",
+                                                        },
                                                     ),
                                                     name="Bottom Holes",
                                                     checked=True,
@@ -157,12 +253,15 @@ layout = dbc.Container(
                                     id="main-map",
                                     center=[31.5, -101.9],
                                     zoom=10,
-                                    style={"height": "65vh"},
+                                    style={"height": "60vh"},
                                 ),
                                 className="p-0",
                             ),
-                        ]
-                    ),
+                        ),
+
+                        # ── Legend ──
+                        html.Div(id="map-legend", className="mt-1"),
+                    ],
                     md=5,
                 ),
 
@@ -240,6 +339,127 @@ layout = dbc.Container(
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------
+
+# -- Toggle style settings panel --
+@callback(
+    Output("style-collapse", "is_open"),
+    Input("btn-toggle-style", "n_clicks"),
+    State("style-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_style_panel(n, is_open):
+    return not is_open
+
+
+# -- Trajectory style → hideout --
+@callback(
+    Output("geojson-trajectories", "hideout"),
+    Output("map-legend", "children"),
+    Input("traj-color-by", "value"),
+    Input("traj-weight", "value"),
+    Input("traj-opacity", "value"),
+    Input("bh-color-by", "value"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=False,
+)
+def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipeline_result):
+    color_map = {}
+    if pipeline_result and pipeline_result.get("cache_path"):
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        header_df = data["header_df"]
+        if traj_color_by == "_uniform":
+            color_map = {}
+        elif traj_color_by == "spud_year" and "spud_date" in header_df.columns:
+            try:
+                years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year.dropna().astype(int).astype(str).tolist()
+                color_map = _build_color_map(years)
+            except Exception:
+                color_map = {}
+        elif traj_color_by in header_df.columns:
+            color_map = _build_color_map(header_df[traj_color_by].dropna().astype(str).tolist())
+
+    hideout = {
+        "colorMap": color_map,
+        "colorProp": traj_color_by if traj_color_by != "_uniform" else "bench",
+        "weight": weight or 3,
+        "opacity": opacity or 0.9,
+        "defaultColor": "#3388ff",
+    }
+
+    # Build legend from trajectory color map (primary layer)
+    legend = _build_legend(color_map, traj_color_by)
+
+    return hideout, legend
+
+
+# -- Bottomhole style → hideout --
+@callback(
+    Output("geojson-bottomholes", "hideout"),
+    Input("bh-color-by", "value"),
+    Input("bh-radius", "value"),
+    Input("bh-opacity", "value"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=False,
+)
+def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
+    color_map = {}
+    if pipeline_result and pipeline_result.get("cache_path"):
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        header_df = data["header_df"]
+        if bh_color_by == "_uniform":
+            color_map = {}
+        elif bh_color_by == "spud_year" and "spud_date" in header_df.columns:
+            try:
+                years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year.dropna().astype(int).astype(str).tolist()
+                color_map = _build_color_map(years)
+            except Exception:
+                color_map = {}
+        elif bh_color_by in header_df.columns:
+            color_map = _build_color_map(header_df[bh_color_by].dropna().astype(str).tolist())
+
+    return {
+        "colorMap": color_map,
+        "colorProp": bh_color_by if bh_color_by != "_uniform" else "bench",
+        "radius": radius or 4,
+        "opacity": opacity or 0.8,
+        "defaultColor": "#e74c3c",
+    }
+
+
+def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
+    """Build a compact color legend from a color map."""
+    if not color_map:
+        return None
+    items = []
+    for val, color in sorted(color_map.items()):
+        items.append(
+            html.Div(
+                [
+                    html.Span(
+                        style={
+                            "display": "inline-block",
+                            "width": "12px",
+                            "height": "12px",
+                            "backgroundColor": color,
+                            "borderRadius": "2px",
+                            "marginRight": "4px",
+                            "verticalAlign": "middle",
+                        }
+                    ),
+                    html.Span(val, style={"fontSize": "0.72rem", "verticalAlign": "middle"}),
+                ],
+                style={"lineHeight": "1.4"},
+            )
+        )
+    return dbc.Card(
+        dbc.CardBody(
+            [html.H6(label.replace("_", " ").title(), className="mb-1", style={"fontSize": "0.78rem"})]
+            + items,
+            className="py-1 px-2",
+        ),
+        style={"maxHeight": "200px", "overflowY": "auto"},
+    )
+
 
 @callback(
     Output("geojson-trajectories", "data"),

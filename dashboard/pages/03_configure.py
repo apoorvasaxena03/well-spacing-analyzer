@@ -94,6 +94,23 @@ layout = dbc.Container(
                                 ],
                                 md=4,
                             ),
+                            # Directional source
+                            dbc.Col(
+                                [
+                                    dbc.Label("Directional source"),
+                                    dbc.Select(
+                                        id="cfg-directional-source",
+                                        options=[
+                                            {"label": "Auto-detect from mapping", "value": "auto"},
+                                            {"label": "IHS (uwi 14-digit)",       "value": "ihs"},
+                                            {"label": "Enverus (uwi12 12-digit)", "value": "enverus"},
+                                        ],
+                                        value="auto",
+                                    ),
+                                    dbc.FormText("Controls required columns and UWI matching. Auto works for most cases."),
+                                ],
+                                md=4,
+                            ),
                             # Bench filter
                             dbc.Col(
                                 [
@@ -105,7 +122,7 @@ layout = dbc.Container(
                                     ),
                                     dbc.FormText("Comma-separated list. Leave blank to include all benches."),
                                 ],
-                                md=8,
+                                md=4,
                             ),
                         ],
                     ),
@@ -149,15 +166,17 @@ def toggle_utm_input(override):
     State("cfg-max-distance", "value"),
     State("cfg-cutoff-ft", "value"),
     State("cfg-batch-size", "value"),
+    State("cfg-directional-source", "value"),
     State("cfg-bench-filter", "value"),
     prevent_initial_call=True,
 )
-def save_config(n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size, bench_filter):
+def save_config(n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size, dir_source, bench_filter):
     cfg = {
         "utm_zone": utm_zone if "override" in (utm_override or []) else None,
         "max_distance_miles": float(max_dist or 4.0),
         "cutoff_ft": float(cutoff_ft or 5280),
         "batch_size": int(batch_size or 200_000),
+        "directional_source": dir_source if dir_source != "auto" else None,
         "bench_filter": [b.strip() for b in (bench_filter or "").split(",") if b.strip()],
     }
     return cfg, "/calculate"

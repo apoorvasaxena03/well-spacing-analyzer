@@ -51,7 +51,7 @@ def load_from_files(
     column_map_directional: dict[str, str],
     production_path: str | None = None,
     column_map_production: dict[str, str] | None = None,
-    directional_source: str = "ihs",
+    directional_source: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Load well data from uploaded CSV/Excel files using src/ WellDataLoader.
@@ -63,11 +63,21 @@ def load_from_files(
         column_map_directional: {source_col: canonical_col} mapping for directional.
         production_path: Optional path to production CSV/Excel file.
         column_map_production: Optional mapping for production file.
-        directional_source: 'IHS' or 'enverus' — controls validation schema.
+        directional_source: 'ihs' or 'enverus'. Auto-detected from mapping if None.
 
     Returns:
         dict with keys: 'header_df', 'directional_df', 'production_df' (or None)
     """
+    # Auto-detect directional source from column mapping:
+    # uwi12 in canonical values → enverus; uwi → ihs
+    if directional_source is None:
+        dir_canonical = set((column_map_directional or {}).values())
+        if "uwi12" in dir_canonical and "uwi" not in dir_canonical:
+            directional_source = "enverus"
+        else:
+            directional_source = "ihs"
+        logger.info("Auto-detected directional_source=%s from column mapping", directional_source)
+
     logger.info("Loading header from: %s", Path(header_path).name)
     loader = WellDataLoader(directional_source=directional_source)
     header_df = loader.get_header_data(
@@ -81,8 +91,9 @@ def load_from_files(
         source=directional_path,
         column_map=column_map_directional or None,
     )
+    uwi_col = "uwi" if "uwi" in directional_df.columns else "uwi12"
     logger.info("Directional loaded: %d survey stations across %d wells",
-                len(directional_df), directional_df["uwi"].nunique() if "uwi" in directional_df.columns else -1)
+                len(directional_df), directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else -1)
 
     production_df = None
     if production_path:
@@ -98,6 +109,7 @@ def load_from_files(
         "header_df": header_df,
         "directional_df": directional_df,
         "production_df": production_df,
+        "directional_source": directional_source,
     }
 
 
@@ -159,6 +171,7 @@ def project_and_extract_laterals(
     directional_df: pd.DataFrame,
     crs_to: str | None = None,
     inclination_filter: float = 30.0,
+    directional_source: str = "ihs",
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """
     Project lat/lon to UTM and extract lateral (horizontal) sections only.
@@ -180,7 +193,7 @@ def project_and_extract_laterals(
     processor = GeoSurveyProcessor(
         header_df=header_df,
         directional_df=directional_df,
-        directional_source="ihs",   # use full uwi (not uwi12) for cross-filtering
+        directional_source=directional_source,
         logger=logger,
     )
     lateral_df, header_aligned = processor.prepare_lateral_trajectory_data(

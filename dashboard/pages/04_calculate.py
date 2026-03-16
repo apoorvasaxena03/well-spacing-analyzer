@@ -143,6 +143,7 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             column_map_directional=col_map_store["directional"],
             production_path=upload_store.get("production_path"),
             column_map_production=col_map_store.get("production"),
+            directional_source=config_store.get("directional_source"),
         )
     except Exception as exc:
         return {"display": "none"}, 0, "", str(exc), True, "", False, dash.no_update, True, False
@@ -153,6 +154,7 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             header_df=data["header_df"],
             directional_df=data["directional_df"],
             crs_to=config_store.get("utm_zone"),
+            directional_source=data["directional_source"],
         )
     except Exception as exc:
         return {"display": "none"}, 0, "", str(exc), True, "", False, dash.no_update, True, False

@@ -64,11 +64,34 @@ CANONICAL_BY_FILE = {
     "production":  CANONICAL_PRODUCTION,
 }
 
-# Columns that MUST be mapped for the pipeline to run.
-REQUIRED_CANONICAL = {
+# Minimum columns to enable the "Confirm" button (hard gate).
+CONFIRM_REQUIRED = {
     "header":      {"uwi"},
-    "directional": {"uwi", "uwi12"},   # one of these is required
-    "production":  set(),              # production is optional overall
+    "directional": {"uwi", "uwi12"},   # at least one
+    "production":  set(),
+}
+
+# Full required column sets by source — shown as guidance in each tab.
+# These mirror WellDataLoader.HEADER_REQUIRED_COLS / DIRECTIONAL_REQUIRED_COLS.
+PIPELINE_REQUIRED = {
+    "header": {
+        "uwi", "well_name", "operator", "bench",
+        "first_prod_date", "hole_direction",
+        "surface_lat", "surface_lon",
+    },
+    "directional_ihs": {
+        "uwi", "md", "tvd", "inclination", "azimuth",
+        "latitude", "longitude",
+        "deviation_E/W", "deviation_N/S", "E/W", "N/S",
+    },
+    "directional_enverus": {
+        "uwi12", "md", "tvd", "inclination", "azimuth",
+        "latitude", "longitude",
+        "deviation_E/W", "deviation_N/S",
+    },
+    "production": {
+        "uwi", "prod_date", "oil", "gas", "water",
+    },
 }
 
 # Enverus templates
@@ -326,7 +349,6 @@ def _build_rows(
     Original | Standardized | Sample Values | Canonical Mapping
     """
     canonical = CANONICAL_BY_FILE[file_key]
-    required = REQUIRED_CANONICAL[file_key]
     rows = []
 
     for idx, src in enumerate(source_cols):
@@ -426,15 +448,39 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
     else:
         prefill = {**_fuzzy_match(source_cols, CANONICAL_BY_FILE[file_key]), **template[file_key]}
 
-    required = REQUIRED_CANONICAL[file_key]
     children = []
-    if required:
+
+    # Show pipeline-required columns for this tab
+    if file_key == "directional":
+        # Show both IHS and Enverus requirements so the user knows what's needed
+        ihs_req = sorted(PIPELINE_REQUIRED["directional_ihs"])
+        env_req = sorted(PIPELINE_REQUIRED["directional_enverus"])
+        children.append(
+            dbc.Alert(
+                [
+                    html.Strong("★ Required columns depend on source:"),
+                    html.Br(),
+                    html.Small([
+                        html.Strong("IHS: "),
+                        ", ".join(ihs_req),
+                    ]),
+                    html.Br(),
+                    html.Small([
+                        html.Strong("Enverus: "),
+                        ", ".join(env_req),
+                    ]),
+                ],
+                color="warning",
+                className="py-2 mb-2",
+            )
+        )
+    elif file_key in PIPELINE_REQUIRED:
+        req = sorted(PIPELINE_REQUIRED[file_key])
         children.append(
             dbc.Alert(
                 [
                     html.Strong("★ Required: "),
-                    html.Span(", ".join(sorted(required))),
-                    html.Span(" — the pipeline cannot run without these mappings.", className="text-muted"),
+                    html.Span(", ".join(req)),
                 ],
                 color="warning",
                 className="py-2 mb-2",

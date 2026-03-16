@@ -527,7 +527,7 @@ def build_mapping_rows(store, template_name, saved_mapping):
     Output("column-map-error", "is_open", allow_duplicate=True),
     Input({"type": "map-input", "file": "header",      "src": ALL}, "value"),
     Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
-    prevent_initial_call=False,
+    prevent_initial_call="initial_duplicate",
 )
 def toggle_confirm_button(header_vals, dir_vals):
     h = set(v for v in (header_vals or []) if v)

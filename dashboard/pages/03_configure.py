@@ -246,12 +246,13 @@ layout = dbc.Container(
                             dbc.Col(
                                 [
                                     dbc.Label("Bench filter (optional)"),
-                                    dbc.Input(
+                                    dcc.Dropdown(
                                         id="cfg-bench-filter",
-                                        placeholder="e.g. WOLFCAMP A, SPRABERRY",
-                                        value="",
+                                        multi=True,
+                                        placeholder="Select benches to include (blank = all)",
+                                        style={"fontSize": "0.85rem"},
                                     ),
-                                    dbc.FormText("Comma-separated. Leave blank to include all."),
+                                    dbc.FormText("Leave blank to include all benches."),
                                 ],
                                 md=4,
                             ),
@@ -451,6 +452,19 @@ def _utm_basin_table() -> dbc.Accordion:
 # ---------------------------------------------------------------------------
 
 @callback(
+    Output("cfg-bench-filter", "options"),
+    Input("upload-store", "data"),
+    prevent_initial_call=False,
+)
+def populate_bench_dropdown(upload_store):
+    """Populate bench filter dropdown from unique bench values in header."""
+    if not upload_store:
+        return []
+    benches = upload_store.get("header_unique_bench", [])
+    return [{"label": b, "value": b} for b in benches]
+
+
+@callback(
     Output("cfg-utm-detection", "children"),
     Input("upload-store", "data"),
     prevent_initial_call=False,
@@ -566,7 +580,7 @@ def save_config(
         "cutoff_ft": float(cutoff_ft or 5280),
         "batch_size": int(batch_size or 200_000),
         "directional_source": dir_source if dir_source != "auto" else None,
-        "bench_filter": [b.strip() for b in (bench_filter or "").split(",") if b.strip()],
+        "bench_filter": bench_filter or [],
         "rsv_categories": rsv_cats or [],
         "prod_cutoff_months": int(prod_cutoff or 6),
         "duc_age_years": int(duc_age or 3),

@@ -254,6 +254,12 @@ def on_header_upload(contents, filename, store):
     store["header_filename"] = filename
     store["header_preview_cols"] = list(df.columns)
     store["header_sample_values"] = _sample_values(df)
+    # Extract unique values for key categorical columns (used by Configure dropdowns)
+    for cat_col in ("bench", "operator", "well_status", "rsv_cat", "hole_direction"):
+        matches = [c for c in df.columns if c.lower().replace(" ", "_") == cat_col or c.lower() == cat_col]
+        if matches:
+            vals = sorted(df[matches[0]].dropna().astype(str).unique().tolist())
+            store[f"header_unique_{cat_col}"] = vals
     badge = dbc.Badge(f"{filename} ({len(df.columns)} cols)", color="success")
     return badge, store
 

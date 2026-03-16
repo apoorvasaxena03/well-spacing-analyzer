@@ -145,12 +145,20 @@ def _build_funnel_report(steps: list[dict]) -> dbc.Card:
 @callback(
     Output("calc-summary", "children"),
     Output("btn-calculate", "disabled", allow_duplicate=True),
+    Output("calc-error", "is_open", allow_duplicate=True),
+    Output("calc-error", "children", allow_duplicate=True),
+    Output("calc-funnel-report", "children", allow_duplicate=True),
+    Output("calc-success", "is_open", allow_duplicate=True),
+    Output("calc-progress-area", "style", allow_duplicate=True),
     Input("upload-store", "data"),
     Input("config-store", "data"),
     Input("column-map-store", "data"),
     prevent_initial_call="initial_duplicate",
 )
 def show_summary(upload_store, config_store, col_map_store):
+    # Clear all stale results/errors from previous runs
+    clear = (False, "", None, False, {"display": "none"})
+
     if not upload_store or not config_store:
         return (
             dbc.Alert(
@@ -159,6 +167,7 @@ def show_summary(upload_store, config_store, col_map_store):
                 color="warning",
             ),
             True,
+            *clear,
         )
 
     # Check version: config must have been saved AFTER the current mapping was confirmed
@@ -171,6 +180,7 @@ def show_summary(upload_store, config_store, col_map_store):
                 color="warning",
             ),
             True,
+            *clear,
         )
 
     items = [
@@ -185,7 +195,7 @@ def show_summary(upload_store, config_store, col_map_store):
     if config_store.get("bench_filter"):
         items.append(f"Benches: {', '.join(config_store['bench_filter'])}")
 
-    return html.Ul([html.Li(i, className="small") for i in items]), False
+    return html.Ul([html.Li(i, className="small") for i in items]), False, *clear
 
 
 @callback(

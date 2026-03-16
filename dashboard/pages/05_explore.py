@@ -52,14 +52,137 @@ _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
 layout = dbc.Container(
     [
         html.H3("Step 5 — Explore Results", className="mb-1"),
-        html.P(
-            "Click any well on the map to populate the gun barrel and production charts.",
-            className="text-muted mb-3",
-        ),
+        dbc.Row([
+            dbc.Col(
+                html.P(
+                    "Click any well on the map to populate the gun barrel and production charts.",
+                    className="text-muted mb-0",
+                ),
+            ),
+            dbc.Col(
+                dbc.Button(
+                    "Filters",
+                    id="btn-toggle-filters",
+                    color="outline-primary",
+                    size="sm",
+                    className="float-end",
+                ),
+                width="auto",
+            ),
+        ], align="center", className="mb-2"),
+
+        # Store for active filter state (list of UWIs that pass filters)
+        dcc.Store(id="filter-uwis-store"),
 
         dbc.Row(
             [
-                # ── Left: Map ───────────────────────────────────────────────
+                # ── Filter Panel (collapsible sidebar) ──
+                dbc.Col(
+                    dbc.Collapse(
+                        dbc.Card(
+                            dbc.CardBody(
+                                [
+                                    html.H6("Filters", className="mb-2"),
+                                    html.P(
+                                        "Filter wells across map & charts. "
+                                        "Uncheck items to exclude them.",
+                                        className="text-muted small mb-2",
+                                    ),
+
+                                    # -- Well search --
+                                    dbc.Label("Search well", className="small mb-0 fw-bold"),
+                                    dbc.Input(
+                                        id="filter-search",
+                                        placeholder="UWI or well name...",
+                                        size="sm",
+                                        debounce=True,
+                                        className="mb-2",
+                                    ),
+
+                                    # -- Bench --
+                                    dbc.Label("Bench", className="small mb-0 fw-bold"),
+                                    dcc.Dropdown(
+                                        id="filter-bench",
+                                        multi=True,
+                                        placeholder="All benches",
+                                        style={"fontSize": "0.8rem"},
+                                        className="mb-2",
+                                    ),
+
+                                    # -- Operator --
+                                    dbc.Label("Operator", className="small mb-0 fw-bold"),
+                                    dcc.Dropdown(
+                                        id="filter-operator",
+                                        multi=True,
+                                        placeholder="All operators",
+                                        style={"fontSize": "0.8rem"},
+                                        className="mb-2",
+                                    ),
+
+                                    # -- RSV Category --
+                                    dbc.Label("RSV Category", className="small mb-0 fw-bold"),
+                                    dbc.Checklist(
+                                        id="filter-rsv-cat",
+                                        options=[],
+                                        value=[],
+                                        inline=False,
+                                        input_class_name="me-1",
+                                        label_class_name="small",
+                                        className="mb-2",
+                                    ),
+
+                                    # -- Well Status --
+                                    dbc.Label("Well Status", className="small mb-0 fw-bold"),
+                                    dbc.Checklist(
+                                        id="filter-well-status",
+                                        options=[],
+                                        value=[],
+                                        inline=False,
+                                        input_class_name="me-1",
+                                        label_class_name="small",
+                                        className="mb-2",
+                                    ),
+
+                                    # -- Spud Year Range --
+                                    dbc.Label("Spud Year", className="small mb-0 fw-bold"),
+                                    dcc.RangeSlider(
+                                        id="filter-spud-year",
+                                        min=2000, max=2026,
+                                        step=1,
+                                        value=[2000, 2026],
+                                        marks={2000: "2000", 2010: "2010", 2020: "2020", 2026: "2026"},
+                                        tooltip={"placement": "bottom"},
+                                        className="mb-2",
+                                    ),
+
+                                    # -- Lateral Length Range --
+                                    dbc.Label("Lateral Length (ft)", className="small mb-0 fw-bold"),
+                                    dcc.RangeSlider(
+                                        id="filter-lateral-length",
+                                        min=0, max=15000,
+                                        step=500,
+                                        value=[0, 15000],
+                                        marks={0: "0", 5000: "5k", 10000: "10k", 15000: "15k"},
+                                        tooltip={"placement": "bottom"},
+                                        className="mb-2",
+                                    ),
+
+                                    html.Hr(className="my-2"),
+                                    html.Div(id="filter-count", className="text-muted small"),
+                                ],
+                                style={"maxHeight": "75vh", "overflowY": "auto"},
+                                className="py-2 px-2",
+                            ),
+                        ),
+                        id="filter-collapse",
+                        is_open=False,
+                    ),
+                    md=2,
+                    id="filter-col",
+                    style={"display": "none"},
+                ),
+
+                # ── Map ───────────────────────────────────────────────
                 dbc.Col(
                     [
                         # ── Style Controls (collapsible) ──
@@ -689,3 +812,186 @@ def select_wells_by_shape(geojson, pipeline_result):
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
     }
+
+
+# ---------------------------------------------------------------------------
+# Filter panel callbacks
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("filter-collapse", "is_open"),
+    Output("filter-col", "style"),
+    Input("btn-toggle-filters", "n_clicks"),
+    State("filter-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_filter_panel(n, is_open):
+    new_state = not is_open
+    style = {} if new_state else {"display": "none"}
+    return new_state, style
+
+
+@callback(
+    Output("filter-bench", "options"),
+    Output("filter-operator", "options"),
+    Output("filter-rsv-cat", "options"),
+    Output("filter-rsv-cat", "value"),
+    Output("filter-well-status", "options"),
+    Output("filter-well-status", "value"),
+    Output("filter-spud-year", "min"),
+    Output("filter-spud-year", "max"),
+    Output("filter-spud-year", "value"),
+    Output("filter-spud-year", "marks"),
+    Output("filter-lateral-length", "min"),
+    Output("filter-lateral-length", "max"),
+    Output("filter-lateral-length", "value"),
+    Output("filter-lateral-length", "marks"),
+    Input("pipeline-result-store", "data"),
+    prevent_initial_call=False,
+)
+def populate_filter_options(pipeline_result):
+    """Populate filter controls from pipeline header data."""
+    defaults = ([], [], [], [], [], [], 2000, 2026, [2000, 2026],
+                {2000: "2000", 2026: "2026"}, 0, 15000, [0, 15000],
+                {0: "0", 15000: "15k"})
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return defaults
+
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+
+    # Bench
+    bench_opts = []
+    if "bench" in header_df.columns:
+        bench_opts = [{"label": b, "value": b} for b in sorted(header_df["bench"].dropna().unique())]
+
+    # Operator
+    op_opts = []
+    if "operator" in header_df.columns:
+        op_opts = [{"label": o, "value": o} for o in sorted(header_df["operator"].dropna().unique())]
+
+    # RSV Cat
+    rsv_opts, rsv_vals = [], []
+    if "rsv_cat" in header_df.columns:
+        rsv_vals = sorted(header_df["rsv_cat"].dropna().unique().tolist())
+        rsv_opts = [{"label": r, "value": r} for r in rsv_vals]
+
+    # Well Status
+    ws_opts, ws_vals = [], []
+    if "well_status" in header_df.columns:
+        ws_vals = sorted(header_df["well_status"].dropna().unique().tolist())
+        ws_opts = [{"label": s, "value": s} for s in ws_vals]
+
+    # Spud Year
+    yr_min, yr_max = 2000, 2026
+    if "spud_date" in header_df.columns:
+        try:
+            years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year.dropna()
+            if len(years):
+                yr_min, yr_max = int(years.min()), int(years.max())
+        except Exception:
+            pass
+    yr_marks = {}
+    for y in range(yr_min, yr_max + 1, max(1, (yr_max - yr_min) // 4)):
+        yr_marks[y] = str(y)
+    yr_marks[yr_max] = str(yr_max)
+
+    # Lateral Length
+    ll_min, ll_max = 0, 15000
+    if "lateral_length_ft" in header_df.columns:
+        ll = header_df["lateral_length_ft"].dropna()
+        if len(ll):
+            ll_min = int(ll.min() // 500 * 500)
+            ll_max = int((ll.max() // 500 + 1) * 500)
+    ll_marks = {}
+    step = max(500, (ll_max - ll_min) // 4)
+    for v in range(ll_min, ll_max + 1, step):
+        ll_marks[v] = f"{v // 1000}k" if v >= 1000 else str(v)
+    ll_marks[ll_max] = f"{ll_max // 1000}k" if ll_max >= 1000 else str(ll_max)
+
+    return (bench_opts, op_opts, rsv_opts, rsv_vals, ws_opts, ws_vals,
+            yr_min, yr_max, [yr_min, yr_max], yr_marks,
+            ll_min, ll_max, [ll_min, ll_max], ll_marks)
+
+
+@callback(
+    Output("filter-uwis-store", "data"),
+    Output("filter-count", "children"),
+    Output("geojson-trajectories", "data", allow_duplicate=True),
+    Output("geojson-bottomholes", "data", allow_duplicate=True),
+    Input("filter-search", "value"),
+    Input("filter-bench", "value"),
+    Input("filter-operator", "value"),
+    Input("filter-rsv-cat", "value"),
+    Input("filter-well-status", "value"),
+    Input("filter-spud-year", "value"),
+    Input("filter-lateral-length", "value"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def apply_filters(search, benches, operators, rsv_cats, statuses,
+                  year_range, ll_range, pipeline_result):
+    """Filter header data and update map GeoJSON to show only matching wells."""
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return None, "", _EMPTY_GEOJSON, _EMPTY_GEOJSON
+
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+    lateral_df = data["lateral_df"]
+    mask = pd.Series(True, index=header_df.index)
+
+    # Text search
+    if search and search.strip():
+        s = search.strip().lower()
+        text_mask = pd.Series(False, index=header_df.index)
+        if "uwi" in header_df.columns:
+            text_mask |= header_df["uwi"].astype(str).str.lower().str.contains(s, na=False)
+        if "well_name" in header_df.columns:
+            text_mask |= header_df["well_name"].astype(str).str.lower().str.contains(s, na=False)
+        if "lease_name" in header_df.columns:
+            text_mask |= header_df["lease_name"].astype(str).str.lower().str.contains(s, na=False)
+        mask &= text_mask
+
+    # Categorical filters (empty = all)
+    if benches and "bench" in header_df.columns:
+        mask &= header_df["bench"].isin(benches)
+    if operators and "operator" in header_df.columns:
+        mask &= header_df["operator"].isin(operators)
+    if rsv_cats and "rsv_cat" in header_df.columns:
+        mask &= header_df["rsv_cat"].isin(rsv_cats)
+    if statuses and "well_status" in header_df.columns:
+        mask &= header_df["well_status"].isin(statuses)
+
+    # Year range
+    if year_range and "spud_date" in header_df.columns:
+        try:
+            years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year
+            mask &= (years >= year_range[0]) & (years <= year_range[1]) | years.isna()
+        except Exception:
+            pass
+
+    # Lateral length range
+    if ll_range and "lateral_length_ft" in header_df.columns:
+        mask &= (
+            (header_df["lateral_length_ft"] >= ll_range[0])
+            & (header_df["lateral_length_ft"] <= ll_range[1])
+        ) | header_df["lateral_length_ft"].isna()
+
+    filtered = header_df[mask]
+    filtered_uwis = filtered["uwi"].astype(str).tolist()
+    total = len(header_df)
+    shown = len(filtered)
+
+    # Rebuild GeoJSON with only filtered wells
+    filtered_lateral = lateral_df[lateral_df["uwi"].isin(filtered["uwi"])]
+    gdf_traj = build_trajectory_geodataframe(filtered_lateral, filtered)
+    gdf_bh = build_bottomhole_geodataframe(gdf_traj)
+
+    count_text = f"Showing {shown:,} of {total:,} wells"
+
+    return (
+        filtered_uwis,
+        count_text,
+        gdf_traj.__geo_interface__ if not gdf_traj.empty else _EMPTY_GEOJSON,
+        gdf_bh.__geo_interface__ if not gdf_bh.empty else _EMPTY_GEOJSON,
+    )

@@ -357,18 +357,28 @@ layout = dbc.Container(
         # ---- Collapsible reference table ----
         _reference_table(),
 
+        dbc.Alert(id="cfg-save-success", color="success", is_open=False, dismissable=True, className="mt-3"),
+
         html.Hr(),
         dbc.Row(
             [
                 dbc.Col(dbc.Button("← Back", href="/column-map", color="secondary", outline=True), width="auto"),
                 dbc.Col(
-                    dbc.Button("Save & Next →", id="btn-save-config", color="primary"),
+                    [
+                        dbc.Button("Save Config", id="btn-save-config", color="primary", className="me-2"),
+                        dbc.Button(
+                            "Calculate & Next →",
+                            id="btn-go-calculate",
+                            href="/calculate",
+                            color="success",
+                            disabled=True,
+                        ),
+                    ],
                     className="text-end",
                 ),
             ],
             justify="between",
         ),
-        dcc.Location(id="cfg-redirect", refresh=True),
     ],
     fluid=True,
     className="py-4",
@@ -390,7 +400,9 @@ def toggle_utm_input(override):
 
 @callback(
     Output("config-store", "data"),
-    Output("cfg-redirect", "href"),
+    Output("cfg-save-success", "children"),
+    Output("cfg-save-success", "is_open"),
+    Output("btn-go-calculate", "disabled"),
     Input("btn-save-config", "n_clicks"),
     State("cfg-utm-zone", "value"),
     State("cfg-utm-override", "value"),
@@ -422,7 +434,6 @@ def save_config(
         "prod_cutoff_months": int(prod_cutoff or 6),
         "duc_age_years": int(duc_age or 3),
         "permit_window_years": int(permit_window or 2),
-        # Copy version from column-map-store so Calculate can verify config is current
         "_mapping_version": (col_map_store or {}).get("_version"),
     }
-    return cfg, "/calculate"
+    return cfg, "Configuration saved. Click 'Calculate & Next →' to proceed.", True, False

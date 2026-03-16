@@ -298,24 +298,34 @@ layout = dbc.Container(
         ),
 
         dbc.Alert(id="column-map-error", color="danger", is_open=False, dismissable=True, className="mt-3"),
+        dbc.Alert(id="column-map-success", color="success", is_open=False, dismissable=True, className="mt-3"),
 
         html.Hr(),
         dbc.Row(
             [
                 dbc.Col(dbc.Button("← Back", href="/", color="secondary", outline=True), width="auto"),
                 dbc.Col(
-                    dbc.Button(
-                        "Confirm Mapping & Next →",
-                        id="btn-confirm-mapping",
-                        color="primary",
-                        disabled=True,
-                    ),
+                    [
+                        dbc.Button(
+                            "Confirm Mapping",
+                            id="btn-confirm-mapping",
+                            color="primary",
+                            disabled=True,
+                            className="me-2",
+                        ),
+                        dbc.Button(
+                            "Configure & Next →",
+                            id="btn-go-configure",
+                            href="/configure",
+                            color="success",
+                            disabled=True,
+                        ),
+                    ],
                     className="text-end",
                 ),
             ],
             justify="between",
         ),
-        dcc.Location(id="colmap-redirect", refresh=True),
     ],
     fluid=True,
     className="py-4",
@@ -566,10 +576,13 @@ def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mo
 
 
 @callback(
-    Output("column-map-store",   "data"),
-    Output("colmap-redirect",    "href"),
-    Output("column-map-error",   "children"),
-    Output("column-map-error",   "is_open"),
+    Output("column-map-store",        "data"),
+    Output("column-map-error",        "children"),
+    Output("column-map-error",        "is_open"),
+    Output("column-map-success",      "children"),
+    Output("column-map-success",      "is_open"),
+    Output("btn-go-configure",        "disabled"),
+    Output("btn-confirm-mapping",     "disabled", allow_duplicate=True),
     Input("btn-confirm-mapping", "n_clicks"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "value"),
     State({"type": "map-input", "file": ALL, "src": ALL}, "id"),
@@ -587,25 +600,27 @@ def confirm_mapping(n_clicks, values, ids, mode_header, mode_dir, mode_prod):
         src_col = id_["src"]
         mode = modes.get(file_key, "exclude")
         if val:
-            # Explicitly mapped
             mapping[file_key][src_col] = val
         elif mode == "as-is":
-            # Not mapped → keep original column name
             mapping[file_key][src_col] = src_col
         elif mode == "standardize":
-            # Not mapped → use snake_case version of original name
             mapping[file_key][src_col] = _to_snake(src_col)
-        # else: exclude — don't add to mapping
 
     if "uwi" not in mapping["header"].values():
-        return dash.no_update, dash.no_update, "Header mapping must include a 'uwi' column.", True
+        return dash.no_update, "Header mapping must include a 'uwi' column.", True, "", False, True, False
     dir_vals = set(mapping["directional"].values())
     if not dir_vals & {"uwi", "uwi12"}:
-        return dash.no_update, dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True
+        return dash.no_update, "Directional mapping must include 'uwi' or 'uwi12'.", True, "", False, True, False
 
-    # Stamp a version so Calculate page knows config is stale
     mapping["_version"] = int(time.time())
-    return mapping, "/configure", "", False
+    n_h = len(mapping["header"])
+    n_d = len(mapping["directional"])
+    n_p = len(mapping.get("production", {}))
+    success_msg = (
+        f"Mapping saved ({n_h} header, {n_d} directional, {n_p} production columns). "
+        f"Click 'Configure & Next →' to set spacing parameters."
+    )
+    return mapping, "", False, success_msg, True, False, True
 
 
 # ---------------------------------------------------------------------------

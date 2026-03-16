@@ -155,7 +155,8 @@ layout = dbc.Container(
                             id="unmapped-mode",
                             options=[
                                 {"label": "Exclude (don't load)", "value": "exclude"},
-                                {"label": "Read as-is (keep original name)", "value": "as-is"},
+                                {"label": "Keep original name", "value": "as-is"},
+                                {"label": "Use standardized name (snake_case)", "value": "standardize"},
                             ],
                             value="exclude",
                             inline=True,
@@ -404,8 +405,11 @@ def confirm_mapping(n_clicks, values, ids, unmapped_mode):
             # Explicitly mapped
             mapping[file_key][src_col] = val
         elif unmapped_mode == "as-is":
-            # Not mapped → keep original name as-is
+            # Not mapped → keep original column name
             mapping[file_key][src_col] = src_col
+        elif unmapped_mode == "standardize":
+            # Not mapped → use snake_case version of original name
+            mapping[file_key][src_col] = _to_snake(src_col)
         # else: exclude — don't add to mapping
 
     if "uwi" not in mapping["header"].values():

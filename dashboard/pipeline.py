@@ -26,6 +26,7 @@ from src.well_data.well_spacing_stats import (
     AvgSpacingCalculator,
 )
 from src.utils.custom_logger import get_logger, new_run_id, set_run_id
+from src.utils.utils import drop_uwi_duplicates_keep_max_last_prod, compute_rsv_cat
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to logs/dashboard.log + terminal
@@ -41,6 +42,62 @@ PIPELINE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
+# Pipeline stats tracker — records well/pair counts at each step
+# ---------------------------------------------------------------------------
+
+class PipelineStats:
+    """Accumulates step-by-step counts through the pipeline.
+
+    Each step is recorded as (label, count, delta_from_previous).
+    The final report is a list of dicts suitable for display in the UI.
+    """
+
+    def __init__(self):
+        self._steps: list[dict] = []
+        self._prev_count: int | None = None
+
+    def record(self, label: str, count: int, *, unit: str = "wells"):
+        delta = None
+        if self._prev_count is not None:
+            delta = count - self._prev_count
+        self._steps.append({
+            "label": label,
+            "count": count,
+            "delta": delta,
+            "unit": unit,
+        })
+        self._prev_count = count
+
+    def record_independent(self, label: str, count: int, *, unit: str = "wells"):
+        """Record a count that is NOT part of the running funnel (no delta)."""
+        self._steps.append({
+            "label": label,
+            "count": count,
+            "delta": None,
+            "unit": unit,
+        })
+
+    def to_list(self) -> list[dict]:
+        return list(self._steps)
+
+
+# ---------------------------------------------------------------------------
+# RSV category col_map for canonical column names
+# ---------------------------------------------------------------------------
+_RSV_COL_MAP = {
+    "status": "well_status",
+    "last_prod": "last_prod_date",
+    "first_prod": "first_prod_date",
+    "spud": "spud_date",
+    "comp": "comp_date",
+    "permit_date": "permit_date",
+}
+
+# Default RSV categories to keep (matches notebook)
+DEFAULT_RSV_KEEP = {"01PDP", "02PA", "02PDNP", "03PUD"}
+
+
+# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
@@ -52,24 +109,28 @@ def load_from_files(
     production_path: str | None = None,
     column_map_production: dict[str, str] | None = None,
     directional_source: str | None = None,
-) -> dict[str, pd.DataFrame]:
+    rsv_categories: list[str] | None = None,
+    stats: PipelineStats | None = None,
+) -> dict[str, Any]:
     """
     Load well data from uploaded CSV/Excel files using src/ WellDataLoader.
 
-    Args:
-        header_path: Path to header CSV/Excel file.
-        directional_path: Path to directional survey CSV/Excel file.
-        column_map_header: {source_col: canonical_col} mapping for header.
-        column_map_directional: {source_col: canonical_col} mapping for directional.
-        production_path: Optional path to production CSV/Excel file.
-        column_map_production: Optional mapping for production file.
-        directional_source: 'ihs' or 'enverus'. Auto-detected from mapping if None.
+    Pipeline steps (matching notebook):
+      1. Load header → column map
+      2. Deduplicate header by UWI (keep max last_prod_date)
+      3. Compute RSV category (if status/spud columns present)
+      4. Filter by RSV category (if rsv_categories provided)
+      5. Load directional → column map → merge uwi (Enverus)
+      6. Load production (optional)
 
     Returns:
-        dict with keys: 'header_df', 'directional_df', 'production_df' (or None)
+        dict with keys: 'header_df', 'directional_df', 'production_df',
+                        'directional_source', 'stats'
     """
-    # Auto-detect directional source from column mapping:
-    # uwi12 in canonical values → enverus; uwi → ihs
+    if stats is None:
+        stats = PipelineStats()
+
+    # --- Auto-detect directional source ---
     if directional_source is None:
         dir_canonical = set((column_map_directional or {}).values())
         if "uwi12" in dir_canonical and "uwi" not in dir_canonical:
@@ -78,21 +139,63 @@ def load_from_files(
             directional_source = "ihs"
         logger.info("Auto-detected directional_source=%s from column mapping", directional_source)
 
+    # --- Step 1: Load header ---
     logger.info("Loading header from: %s", Path(header_path).name)
     loader = WellDataLoader(directional_source=directional_source)
     header_df = loader.get_header_data(
         source=header_path,
         column_map=column_map_header or None,
     )
+    stats.record("Header loaded (raw)", len(header_df))
     logger.info("Header loaded: %d wells", len(header_df))
 
+    # --- Step 2: Deduplicate header ---
+    if "uwi" in header_df.columns and "last_prod_date" in header_df.columns:
+        before = len(header_df)
+        header_df = drop_uwi_duplicates_keep_max_last_prod(header_df)
+        removed = before - len(header_df)
+        stats.record("After UWI deduplication", len(header_df))
+        if removed:
+            logger.info("Deduplication: removed %d duplicate UWIs → %d remain", removed, len(header_df))
+        else:
+            logger.info("Deduplication: no duplicates found (%d wells)", len(header_df))
+    else:
+        logger.info("Skipping deduplication (missing 'uwi' or 'last_prod_date' column)")
+
+    # --- Step 3: Compute RSV category ---
+    has_rsv_cols = (
+        "well_status" in header_df.columns
+        and "spud_date" in header_df.columns
+    )
+    if has_rsv_cols:
+        if "rsv_cat" not in header_df.columns:
+            header_df["rsv_cat"] = compute_rsv_cat(header_df, col_map=_RSV_COL_MAP)
+            logger.info("RSV categorization computed: %s", header_df["rsv_cat"].value_counts().to_dict())
+        else:
+            logger.info("RSV category already present: %s", header_df["rsv_cat"].value_counts().to_dict())
+    else:
+        logger.info("Skipping RSV categorization (missing 'well_status' or 'spud_date')")
+
+    # --- Step 4: Filter by RSV category ---
+    if rsv_categories and "rsv_cat" in header_df.columns:
+        rsv_set = set(rsv_categories)
+        before = len(header_df)
+        header_df = header_df[header_df["rsv_cat"].isin(rsv_set)].copy()
+        removed = before - len(header_df)
+        stats.record("After RSV category filter", len(header_df))
+        logger.info("RSV filter (keep %s): removed %d → %d remain",
+                     sorted(rsv_set), removed, len(header_df))
+    elif "rsv_cat" in header_df.columns:
+        stats.record("RSV computed (no filter)", len(header_df))
+
+    # --- Step 5: Load directional ---
     logger.info("Loading directional survey from: %s", Path(directional_path).name)
     directional_df = loader.get_directional_data(
         source=directional_path,
         column_map=column_map_directional or None,
     )
-    # For Enverus data: directional has uwi12 but not uwi.
-    # Merge uwi from header using uwi12 as join key (same as notebooks do).
+
+    # Enverus merge: directional has uwi12 but not uwi
     if "uwi12" in directional_df.columns and "uwi" not in directional_df.columns:
         if "uwi12" in header_df.columns and "uwi" in header_df.columns:
             uwi_map = (
@@ -105,9 +208,21 @@ def load_from_files(
                         directional_df["uwi"].notna().sum())
 
     uwi_col = "uwi" if "uwi" in directional_df.columns else "uwi12"
+    dir_well_count = directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else 0
+    stats.record_independent("Directional surveys loaded", dir_well_count)
     logger.info("Directional loaded: %d survey stations across %d wells",
-                len(directional_df), directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else -1)
+                len(directional_df), dir_well_count)
 
+    # Report wells in header but missing from directional
+    if "uwi" in header_df.columns and "uwi" in directional_df.columns:
+        header_uwis = set(header_df["uwi"].dropna().unique())
+        dir_uwis = set(directional_df["uwi"].dropna().unique())
+        missing_dir = header_uwis - dir_uwis
+        if missing_dir:
+            stats.record_independent("Header wells missing directional data", len(missing_dir))
+            logger.warning("%d wells in header have NO directional survey data", len(missing_dir))
+
+    # --- Step 6: Load production (optional) ---
     production_df = None
     if production_path and column_map_production:
         logger.info("Loading production from: %s", Path(production_path).name)
@@ -117,14 +232,16 @@ def load_from_files(
         else:
             raw = pd.read_excel(production_path, usecols=list(column_map_production.keys()))
         production_df = raw.rename(columns=column_map_production)
-        logger.info("Production loaded: %d rows, %d wells",
-                    len(production_df), production_df["uwi"].nunique() if "uwi" in production_df.columns else -1)
+        prod_wells = production_df["uwi"].nunique() if "uwi" in production_df.columns else 0
+        stats.record_independent("Production data loaded", prod_wells)
+        logger.info("Production loaded: %d rows, %d wells", len(production_df), prod_wells)
 
     return {
         "header_df": header_df,
         "directional_df": directional_df,
         "production_df": production_df,
         "directional_source": directional_source,
+        "stats": stats,
     }
 
 
@@ -187,6 +304,7 @@ def project_and_extract_laterals(
     crs_to: str | None = None,
     inclination_filter: float = 30.0,
     directional_source: str = "ihs",
+    stats: PipelineStats | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     """
     Project lat/lon to UTM and extract lateral (horizontal) sections only.
@@ -202,8 +320,13 @@ def project_and_extract_laterals(
     Returns:
         (header_aligned, lateral_df, crs_used)
     """
+    if stats is None:
+        stats = PipelineStats()
+
     crs_used = crs_to or _auto_detect_utm(header_df)
     logger.info("UTM projection: %s (inclination filter: %.1f°)", crs_used, inclination_filter)
+
+    wells_before = header_df["uwi"].nunique() if "uwi" in header_df.columns else len(header_df)
 
     processor = GeoSurveyProcessor(
         header_df=header_df,
@@ -214,8 +337,15 @@ def project_and_extract_laterals(
     lateral_df, header_aligned = processor.prepare_lateral_trajectory_data(
         inclination_filter=inclination_filter,
     )
+
+    wells_after = lateral_df["uwi"].nunique() if "uwi" in lateral_df.columns else 0
+    wells_lost = wells_before - wells_after
+    stats.record("After UTM + lateral extraction", wells_after)
+    if wells_lost > 0:
+        logger.info("Lateral extraction: %d wells lost (no heel point or missing data) → %d remain",
+                     wells_lost, wells_after)
     logger.info("Lateral extraction complete: %d stations, %d wells",
-                len(lateral_df), lateral_df["uwi"].nunique() if "uwi" in lateral_df.columns else -1)
+                len(lateral_df), wells_after)
     return header_aligned, lateral_df, crs_used
 
 
@@ -247,6 +377,7 @@ def run_spacing_calculation(
     cutoff_ft: float = 5280.0,
     batch_size: int = 200_000,
     run_id: str | None = None,
+    stats: PipelineStats | None = None,
 ) -> str:
     """
     Run the full spacing pipeline and cache results to disk.
@@ -262,10 +393,14 @@ def run_spacing_calculation(
         cutoff_ft: Maximum spacing distance to include in results.
         batch_size: Pairs per batch (memory control).
         run_id: Optional run identifier for logging.
+        stats: PipelineStats tracker.
 
     Returns:
         Path to cached pipeline output (pickle file).
     """
+    if stats is None:
+        stats = PipelineStats()
+
     # Set run_id so all log lines for this calculation are correlated
     rid = run_id or new_run_id()
     set_run_id(rid)
@@ -285,7 +420,18 @@ def run_spacing_calculation(
         max_distance_miles=max_distance_miles,
         cutoff_ft=cutoff_ft,
     )
-    logger.info("Spacing stats done: %d pairs in %.1fs", len(df_spacing), time.perf_counter() - t0)
+    total_pairs = len(df_spacing)
+    stats.record_independent("Spacing pairs computed (raw)", total_pairs, unit="pairs")
+    logger.info("Spacing stats done: %d pairs in %.1fs", total_pairs, time.perf_counter() - t0)
+
+    # --- Filter out rejected pairs (matches notebook) ---
+    if "reject_reason" in df_spacing.columns:
+        valid_mask = (df_spacing["reject_reason"] == "") | df_spacing["reject_reason"].isna()
+        rejected_count = (~valid_mask).sum()
+        df_spacing = df_spacing[valid_mask].copy()
+        stats.record_independent("Valid pairs (reject_reason filtered)", len(df_spacing), unit="pairs")
+        if rejected_count:
+            logger.info("Reject filter: removed %d pairs → %d valid remain", rejected_count, len(df_spacing))
 
     t1 = time.perf_counter()
     neighbors = DirectionalBenchNeighbors(logger=logger)
@@ -294,10 +440,11 @@ def run_spacing_calculation(
         header_df=header_df,
         cutoff_ft=cutoff_ft,
     )
+    stats.record_independent("Neighbor-enriched wells", len(df_enriched), unit="wells")
     logger.info("Neighbor enrichment done: %d enriched rows in %.1fs",
                 len(df_enriched), time.perf_counter() - t1)
 
-    # Cache to disk
+    # Cache to disk (include stats)
     cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
     with open(cache_key, "wb") as f:
         pickle.dump(
@@ -305,6 +452,7 @@ def run_spacing_calculation(
                 "df_spacing": df_enriched,
                 "header_df": header_df,
                 "lateral_df": lateral_df,
+                "stats": stats.to_list(),
             },
             f,
         )
@@ -337,7 +485,6 @@ def load_cached_ik_heeltoe(
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     df_spacing = data["df_spacing"]
-    header_df = data["header_df"]
     lateral_df = data["lateral_df"]
 
     # HeelToe: midpoint of each well's lateral (mid_Lat, mid_Lon)

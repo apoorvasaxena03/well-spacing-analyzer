@@ -125,6 +125,39 @@ layout = dbc.Container(
                                 md=4,
                             ),
                         ],
+                        className="mb-3",
+                    ),
+                    # Row 3: RSV category filter
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("RSV category filter"),
+                                    dbc.Checklist(
+                                        id="cfg-rsv-categories",
+                                        options=[
+                                            {"label": "01PDP — Proved Developed Producing",      "value": "01PDP"},
+                                            {"label": "02PA — P&A Producer",                     "value": "02PA"},
+                                            {"label": "02PDNP — Proved Developed Non-Producing", "value": "02PDNP"},
+                                            {"label": "03PUD — Proved Undeveloped (DUC)",        "value": "03PUD"},
+                                            {"label": "Old DUC — Spudded >3 yr, no completion",  "value": "Old DUC"},
+                                            {"label": "Expired Perm — Permit older than 2 yr",   "value": "Expired Perm"},
+                                        ],
+                                        value=["01PDP", "02PA", "02PDNP", "03PUD"],
+                                        inline=False,
+                                        input_class_name="me-1",
+                                        label_class_name="small",
+                                        className="ms-1",
+                                    ),
+                                    dbc.FormText(
+                                        "Only wells matching these categories will be included. "
+                                        "Requires 'well_status' and 'spud_date' columns in header. "
+                                        "Uncheck all to skip RSV filtering."
+                                    ),
+                                ],
+                                md=6,
+                            ),
+                        ],
                     ),
                 ]
             )
@@ -168,9 +201,10 @@ def toggle_utm_input(override):
     State("cfg-batch-size", "value"),
     State("cfg-directional-source", "value"),
     State("cfg-bench-filter", "value"),
+    State("cfg-rsv-categories", "value"),
     prevent_initial_call=True,
 )
-def save_config(n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size, dir_source, bench_filter):
+def save_config(n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_size, dir_source, bench_filter, rsv_cats):
     cfg = {
         "utm_zone": utm_zone if "override" in (utm_override or []) else None,
         "max_distance_miles": float(max_dist or 4.0),
@@ -178,5 +212,6 @@ def save_config(n_clicks, utm_zone, utm_override, max_dist, cutoff_ft, batch_siz
         "batch_size": int(batch_size or 200_000),
         "directional_source": dir_source if dir_source != "auto" else None,
         "bench_filter": [b.strip() for b in (bench_filter or "").split(",") if b.strip()],
+        "rsv_categories": rsv_cats or [],
     }
     return cfg, "/calculate"

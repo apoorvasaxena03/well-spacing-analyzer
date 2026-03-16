@@ -1,7 +1,8 @@
 """
 Step 4 — Calculate
 Runs the spacing pipeline as a background job (dash.long_callback + DiskcacheManager).
-Shows live progress bar. On completion → stores cache path in pipeline-result-store.
+Shows live progress bar. On completion → stores cache path in pipeline-result-store
+and displays a funnel report showing well counts at each pipeline step.
 """
 
 import uuid
@@ -11,6 +12,7 @@ import dash_bootstrap_components as dbc
 from dash import Input, Output, State, callback, dcc, html
 
 from dashboard.pipeline import (
+    PipelineStats,
     load_from_files,
     project_and_extract_laterals,
     run_spacing_calculation,
@@ -58,6 +60,10 @@ layout = dbc.Container(
         ),
 
         dbc.Alert(id="calc-error", color="danger", is_open=False, dismissable=True, className="mt-3"),
+
+        # Pipeline funnel report — shown after successful calculation
+        html.Div(id="calc-funnel-report"),
+
         dbc.Alert(id="calc-success", color="success", is_open=False, className="mt-3"),
 
         html.Hr(),
@@ -86,6 +92,56 @@ layout = dbc.Container(
 )
 
 
+def _build_funnel_report(steps: list[dict]) -> dbc.Card:
+    """Build a visual funnel report card from pipeline stats."""
+    rows = []
+    for step in steps:
+        label = step["label"]
+        count = step["count"]
+        delta = step["delta"]
+        unit = step.get("unit", "wells")
+
+        # Format delta badge
+        if delta is not None and delta < 0:
+            badge = dbc.Badge(f"{delta:,}", color="danger", className="ms-2")
+        elif delta is not None and delta == 0:
+            badge = dbc.Badge("no change", color="secondary", className="ms-2")
+        else:
+            badge = None
+
+        row = html.Tr([
+            html.Td(label, style={"fontSize": "0.85rem"}),
+            html.Td(
+                [
+                    html.Strong(f"{count:,}"),
+                    html.Small(f" {unit}", className="text-muted ms-1"),
+                    badge,
+                ],
+                style={"fontSize": "0.85rem", "textAlign": "right"},
+            ),
+        ])
+        rows.append(row)
+
+    return dbc.Card(
+        dbc.CardBody([
+            html.H6("Pipeline Summary", className="mb-2"),
+            html.P(
+                "Well and pair counts at each processing step. "
+                "Red badges show how many were removed by each filter.",
+                className="text-muted small mb-2",
+            ),
+            dbc.Table(
+                [html.Tbody(rows)],
+                bordered=True,
+                size="sm",
+                hover=True,
+                className="mb-0",
+            ),
+        ]),
+        className="mt-3",
+    )
+
+
 @callback(
     Output("calc-summary", "children"),
     Output("btn-calculate", "disabled", allow_duplicate=True),
@@ -111,6 +167,8 @@ def show_summary(upload_store, config_store):
         f"Cutoff: {config_store.get('cutoff_ft', 5280):,} ft",
         f"Batch size: {int(config_store.get('batch_size', 200_000)):,} pairs",
     ]
+    if config_store.get("rsv_categories"):
+        items.append(f"RSV filter: {', '.join(config_store['rsv_categories'])}")
     if config_store.get("bench_filter"):
         items.append(f"Benches: {', '.join(config_store['bench_filter'])}")
 
@@ -123,6 +181,7 @@ def show_summary(upload_store, config_store):
     Output("calc-status-text", "children"),
     Output("calc-error", "children"),
     Output("calc-error", "is_open"),
+    Output("calc-funnel-report", "children"),
     Output("calc-success", "children"),
     Output("calc-success", "is_open"),
     Output("pipeline-result-store", "data"),
@@ -138,11 +197,16 @@ def show_summary(upload_store, config_store):
 )
 def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_store):
     """Background spacing calculation job."""
-    if not upload_store or not col_map_store or not config_store:
-        no_show = {"display": "none"}
-        return no_show, 0, "", "Missing data — complete Steps 1–3 first.", True, "", False, dash.no_update, True, False
+    no_show = {"display": "none"}
+    empty_return = (no_show, 0, "", "", False, None, "", False, dash.no_update, True, False)
 
-    set_progress((5, "Loading data from files..."))
+    if not upload_store or not col_map_store or not config_store:
+        return (no_show, 0, "", "Missing data — complete Steps 1–3 first.", True,
+                None, "", False, dash.no_update, True, False)
+
+    stats = PipelineStats()
+
+    set_progress((5, "Loading and pre-processing data..."))
     try:
         data = load_from_files(
             header_path=upload_store["header_path"],
@@ -152,20 +216,23 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             production_path=upload_store.get("production_path"),
             column_map_production=col_map_store.get("production"),
             directional_source=config_store.get("directional_source"),
+            rsv_categories=config_store.get("rsv_categories"),
+            stats=stats,
         )
     except Exception as exc:
-        return {"display": "none"}, 0, "", str(exc), True, "", False, dash.no_update, True, False
+        return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)
 
-    set_progress((20, "Projecting coordinates to UTM..."))
+    set_progress((20, "Projecting coordinates to UTM and extracting laterals..."))
     try:
         header_df, lateral_df, crs_used = project_and_extract_laterals(
             header_df=data["header_df"],
             directional_df=data["directional_df"],
             crs_to=config_store.get("utm_zone"),
             directional_source=data["directional_source"],
+            stats=stats,
         )
     except Exception as exc:
-        return {"display": "none"}, 0, "", str(exc), True, "", False, dash.no_update, True, False
+        return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)
 
     set_progress((35, "Running spacing calculation (this is the slow step)..."))
     run_id = uuid.uuid4().hex[:8]
@@ -177,15 +244,18 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             cutoff_ft=config_store.get("cutoff_ft", 5280),
             batch_size=config_store.get("batch_size", 200_000),
             run_id=run_id,
+            stats=stats,
         )
     except Exception as exc:
-        return {"display": "none"}, 0, "", str(exc), True, "", False, dash.no_update, True, False
+        return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)
 
     set_progress((100, "Done."))
     result_store = {"cache_path": cache_path, "crs_used": crs_used, "run_id": run_id}
-    success_msg = f"Calculation complete. Run ID: {run_id}. Results cached at {cache_path}"
+    funnel = _build_funnel_report(stats.to_list())
+    success_msg = f"Calculation complete. Run ID: {run_id}."
     return (
         {"display": "block"}, 100, "Done.", "", False,
+        funnel,
         success_msg, True,
         result_store, False, True,
     )

@@ -332,6 +332,7 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
+                                                        pointToLayer="dashExtensions.bottomholePointToLayer",
                                                         hideout={
                                                             "colorMap": {},
                                                             "colorProp": "bench",
@@ -377,6 +378,9 @@ layout = dbc.Container(
                                     id="main-map",
                                     center=[31.5, -101.9],
                                     zoom=10,
+                                    scrollWheelZoom=True,
+                                    wheelDebounceTime=80,
+                                    wheelPxPerZoomLevel=120,
                                     style={"height": "60vh"},
                                 ),
                                 className="p-0",
@@ -648,12 +652,23 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
         return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
 
     # All wells that share a spacing pair with the clicked well
-    neighborhood = set(
-        IK.loc[
-            (IK["well_i"] == clicked_uwi) | (IK["well_k"] == clicked_uwi),
-            ["well_i", "well_k"],
-        ].values.flatten()
-    )
+    # Raw IK pairs have well_i/well_k; enriched summary has well_i + uwi_same/near columns
+    neighborhood = set()
+    if "well_k" in IK.columns:
+        neighborhood = set(
+            IK.loc[
+                (IK["well_i"] == clicked_uwi) | (IK["well_k"] == clicked_uwi),
+                ["well_i", "well_k"],
+            ].values.flatten()
+        )
+    elif "well_i" in IK.columns:
+        # Enriched summary: collect neighbor UWIs from uwi_same_*/uwi_near_* columns
+        row = IK[IK["well_i"] == clicked_uwi]
+        if not row.empty:
+            for col in IK.columns:
+                if col.startswith("uwi_same_") or col.startswith("uwi_near_"):
+                    vals = row[col].dropna().tolist()
+                    neighborhood.update(str(v) for v in vals if v)
     neighborhood.add(clicked_uwi)
 
     return {

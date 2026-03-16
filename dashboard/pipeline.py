@@ -481,7 +481,8 @@ def run_spacing_calculation(
     with open(cache_key, "wb") as f:
         pickle.dump(
             {
-                "df_spacing": df_enriched,
+                "df_spacing": df_enriched,      # enriched neighbor summary (well_i + uwi_same/near)
+                "df_ik_pairs": df_spacing,       # raw IK pairs (well_i, well_k, horizontal_dist, etc.)
                 "header_df": header_df,
                 "lateral_df": lateral_df,
                 "stats": stats.to_list(),
@@ -516,7 +517,10 @@ def load_cached_ik_heeltoe(
         return pd.DataFrame(), pd.DataFrame()
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
-    df_spacing = data["df_spacing"]
+    # Prefer raw IK pairs (well_i, well_k); fall back to enriched summary
+    df_ik = data.get("df_ik_pairs")
+    if df_ik is None:
+        df_ik = data["df_spacing"]
     lateral_df = data["lateral_df"]
 
     # HeelToe: midpoint of each well's lateral (mid_Lat, mid_Lon)
@@ -529,7 +533,7 @@ def load_cached_ik_heeltoe(
         .reset_index()
     )
 
-    return df_spacing, heel_toe
+    return df_ik, heel_toe
 
 
 # ---------------------------------------------------------------------------

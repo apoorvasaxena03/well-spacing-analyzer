@@ -684,14 +684,20 @@ def on_well_click(traj_clicks, bh_clicks, map_click, traj_click_data, bh_click_d
             empty_figure("Click a well on the map."),
         )
 
+    import logging
+    _log = logging.getLogger("dashboard")
+
     click_data = traj_click_data or bh_click_data
     if not click_data or not pipeline_result:
         return no_change, no_change, no_change, no_change
 
     props = click_data.get("properties") or {}
     clicked_uwi = props.get("uwi")
+    _log.info("on_well_click: triggered=%s uwi=%s type=%s", triggered, clicked_uwi, type(clicked_uwi).__name__)
     if not clicked_uwi:
         return no_change, no_change, no_change, no_change
+    # Ensure string
+    clicked_uwi = str(clicked_uwi)
 
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
@@ -719,6 +725,7 @@ def on_well_click(traj_clicks, bh_clicks, map_click, traj_click_data, bh_click_d
                     vals = row[col].dropna().tolist()
                     neighborhood.update(str(v) for v in vals if v)
     neighborhood.add(clicked_uwi)
+    _log.info("on_well_click: uwi=%s neighborhood=%d wells", clicked_uwi, len(neighborhood))
 
     # Return selection; charts will update via their own callbacks
     return (

@@ -411,6 +411,7 @@ def run_spacing_calculation(
     batch_size: int = 200_000,
     run_id: str | None = None,
     stats: PipelineStats | None = None,
+    production_df: pd.DataFrame | None = None,
 ) -> str:
     """
     Run the full spacing pipeline and cache results to disk.
@@ -485,6 +486,7 @@ def run_spacing_calculation(
                 "df_ik_pairs": df_spacing,       # raw IK pairs (well_i, well_k, horizontal_dist, etc.)
                 "header_df": header_df,
                 "lateral_df": lateral_df,
+                "production_df": production_df,  # may be None if not uploaded
                 "stats": stats.to_list(),
             },
             f,

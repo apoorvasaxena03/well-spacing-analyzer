@@ -280,6 +280,7 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             batch_size=config_store.get("batch_size", 200_000),
             run_id=run_id,
             stats=stats,
+            production_df=data.get("production_df"),
         )
     except Exception as exc:
         return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)

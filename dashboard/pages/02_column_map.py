@@ -529,8 +529,8 @@ def build_mapping_rows(store, template_name, saved_mapping):
     Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
     State({"type": "map-input", "file": "header",      "src": ALL}, "id"),
     State({"type": "map-input", "file": "directional", "src": ALL}, "id"),
-    State("unmapped-mode-header",      "value"),
-    State("unmapped-mode-directional", "value"),
+    Input("unmapped-mode-header",      "value"),
+    Input("unmapped-mode-directional", "value"),
     prevent_initial_call="initial_duplicate",
 )
 def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mode_d):

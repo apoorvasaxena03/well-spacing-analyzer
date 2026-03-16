@@ -695,11 +695,17 @@ def update_gun_barrel(selected, x_col, pipeline_result):
         return empty_figure("Pipeline results not loaded.")
 
     # Filter to intra-neighborhood pairs only — never pass full IK to compute_gun_barrel
-    IK_filtered      = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)]
+    IK_filtered      = IK[IK["well_i"].isin(uwis) & IK["well_k"].isin(uwis)].copy()
     HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
 
     if IK_filtered.empty:
         return empty_figure("No spacing pairs found for selected well.")
+
+    # elevation = tvd * -1 (depth below surface → elevation above datum)
+    if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
+        IK_filtered["elevation_i"] = IK_filtered["tvd_i"] * -1
+    if "tvd_k" in IK_filtered.columns and "elevation_k" not in IK_filtered.columns:
+        IK_filtered["elevation_k"] = IK_filtered["tvd_k"] * -1
 
     GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
     return build_gun_barrel_figure(GB, IK_filtered, x_col=x_col)

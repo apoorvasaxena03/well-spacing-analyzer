@@ -705,6 +705,16 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     prevent_initial_call=True,
 )
 def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
+    import logging
+    _log = logging.getLogger("dashboard")
+    try:
+        return _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result)
+    except Exception as exc:
+        _log.exception("Gun barrel error: %s", exc)
+        return empty_figure(f"Error: {exc}")
+
+
+def _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -715,15 +725,13 @@ def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
         return empty_figure("Pipeline results not loaded.")
 
     # Spotfire data-limiting: filter IK where well_i is in selection.
-    # GB only plots selected wells (unique well_i). Spacing between adjacent
-    # selected wells comes from IK pairs where (well_i, well_k) match.
     IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
     HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
 
     if IK_filtered.empty:
         return empty_figure("No spacing pairs found for selected well. Try selecting multiple wells.")
 
-    # elevation = tvd * -1 (depth below surface → elevation above datum)
+    # elevation = tvd * -1
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
         IK_filtered["elevation_i"] = IK_filtered["tvd_i"] * -1
     if "tvd_k" in IK_filtered.columns and "elevation_k" not in IK_filtered.columns:
@@ -748,40 +756,46 @@ def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
     prevent_initial_call=True,
 )
 def update_cum_oil(selected, pipeline_result):
-    if not selected or not pipeline_result:
-        return empty_figure("Click a well on the map.")
+    import logging
+    _log = logging.getLogger("dashboard")
+    try:
+        if not selected or not pipeline_result:
+            return empty_figure("Click a well on the map.")
 
-    data = load_cached_pipeline(pipeline_result["cache_path"])
-    prod = data.get("production_df")
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        prod = data.get("production_df")
 
-    if prod is None or prod.empty:
-        return empty_figure("No production data loaded.")
+        if prod is None or prod.empty:
+            return empty_figure("No production data loaded.")
 
-    uwis = selected.get("neighborhood_uwis", [])
-    prod_sel = prod[prod["uwi"].isin(uwis)].copy()
-    if prod_sel.empty:
-        return empty_figure("No production data for selected wells.")
+        uwis = selected.get("neighborhood_uwis", [])
+        prod_sel = prod[prod["uwi"].isin(uwis)].copy()
+        if prod_sel.empty:
+            return empty_figure("No production data for selected wells.")
 
-    prod_sel = prod_sel.sort_values(["uwi", "prod_date"])
-    prod_sel["cum_oil"] = prod_sel.groupby("uwi")["oil"].cumsum()
-    prod_sel["months"] = prod_sel.groupby("uwi")["prod_date"].transform(
-        lambda s: (s - s.min()).dt.days / 30.44
-    )
+        prod_sel = prod_sel.sort_values(["uwi", "prod_date"])
+        prod_sel["cum_oil"] = prod_sel.groupby("uwi")["oil"].cumsum()
+        prod_sel["months"] = prod_sel.groupby("uwi")["prod_date"].transform(
+            lambda s: (s - s.min()).dt.days / 30.44
+        )
 
-    fig = go.Figure()
-    for uwi, grp in prod_sel.groupby("uwi"):
-        fig.add_trace(go.Scatter(
-            x=grp["months"], y=grp["cum_oil"],
-            mode="lines", name=str(uwi),
-        ))
-    fig.update_layout(
-        xaxis_title="Months since first production",
-        yaxis_title="Cumulative Oil (BBL)",
-        template="plotly_white",
-        hovermode="x unified",
-        margin=dict(t=30, b=50, l=60, r=20),
-    )
-    return fig
+        fig = go.Figure()
+        for uwi, grp in prod_sel.groupby("uwi"):
+            fig.add_trace(go.Scatter(
+                x=grp["months"], y=grp["cum_oil"],
+                mode="lines", name=str(uwi),
+            ))
+        fig.update_layout(
+            xaxis_title="Months since first production",
+            yaxis_title="Cumulative Oil (BBL)",
+            template="plotly_white",
+            hovermode="x unified",
+            margin=dict(t=30, b=50, l=60, r=20),
+        )
+        return fig
+    except Exception as exc:
+        _log.exception("Cum oil chart error: %s", exc)
+        return empty_figure(f"Error: {exc}")
 
 
 @callback(
@@ -791,33 +805,39 @@ def update_cum_oil(selected, pipeline_result):
     prevent_initial_call=True,
 )
 def update_daily_oil(selected, pipeline_result):
-    if not selected or not pipeline_result:
-        return empty_figure("Click a well on the map.")
+    import logging
+    _log = logging.getLogger("dashboard")
+    try:
+        if not selected or not pipeline_result:
+            return empty_figure("Click a well on the map.")
 
-    data = load_cached_pipeline(pipeline_result["cache_path"])
-    prod = data.get("production_df")
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        prod = data.get("production_df")
 
-    if prod is None or prod.empty:
-        return empty_figure("No production data loaded.")
+        if prod is None or prod.empty:
+            return empty_figure("No production data loaded.")
 
-    uwis = selected.get("neighborhood_uwis", [])
-    prod_sel = prod[prod["uwi"].isin(uwis)].sort_values(["uwi", "prod_date"])
+        uwis = selected.get("neighborhood_uwis", [])
+        prod_sel = prod[prod["uwi"].isin(uwis)].sort_values(["uwi", "prod_date"])
 
-    fig = go.Figure()
-    for uwi, grp in prod_sel.groupby("uwi"):
-        oil_col = "daily_oil" if "daily_oil" in grp.columns else "oil"
-        fig.add_trace(go.Scatter(
-            x=grp["prod_date"], y=grp[oil_col],
-            mode="lines", name=str(uwi),
-        ))
-    fig.update_layout(
-        xaxis_title="Production Date",
-        yaxis_title="Daily Oil (BOPD)",
-        template="plotly_white",
-        hovermode="x unified",
-        margin=dict(t=30, b=50, l=60, r=20),
-    )
-    return fig
+        fig = go.Figure()
+        for uwi, grp in prod_sel.groupby("uwi"):
+            oil_col = "daily_oil" if "daily_oil" in grp.columns else "oil"
+            fig.add_trace(go.Scatter(
+                x=grp["prod_date"], y=grp[oil_col],
+                mode="lines", name=str(uwi),
+            ))
+        fig.update_layout(
+            xaxis_title="Production Date",
+            yaxis_title="Daily Oil (BOPD)",
+            template="plotly_white",
+            hovermode="x unified",
+            margin=dict(t=30, b=50, l=60, r=20),
+        )
+        return fig
+    except Exception as exc:
+        _log.exception("Daily oil chart error: %s", exc)
+        return empty_figure(f"Error: {exc}")
 
 
 # ---------------------------------------------------------------------------

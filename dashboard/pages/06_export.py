@@ -5,6 +5,7 @@ Offers multiple datasets: raw IK pairs, valid IK pairs, neighbor summary, header
 """
 
 import io
+import logging
 
 import dash
 import dash_bootstrap_components as dbc
@@ -12,6 +13,8 @@ import pandas as pd
 from dash import Input, Output, State, callback, dcc, html
 
 from dashboard.pipeline import load_cached_pipeline
+
+logger = logging.getLogger("dashboard")
 
 dash.register_page(__name__, path="/export", name="6 Export", order=6)
 
@@ -144,9 +147,14 @@ def do_export(n_clicks, pipeline_result, fmt, include):
         return dash.no_update, "No pipeline results available. Run Step 4 first.", True
 
     try:
-        data = load_cached_pipeline(pipeline_result["cache_path"])
+        return _do_export_inner(pipeline_result, fmt, include)
     except Exception as exc:
+        logger.exception("Export failed: %s", exc)
         return dash.no_update, str(exc), True
+
+
+def _do_export_inner(pipeline_result, fmt, include):
+    data = load_cached_pipeline(pipeline_result["cache_path"])
 
     # Build dict of selected datasets
     sheets: dict[str, pd.DataFrame] = {}

@@ -89,6 +89,8 @@ layout = dbc.Container(
 
         # Store for active filter state (list of UWIs that pass filters)
         dcc.Store(id="filter-uwis-store"),
+        # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
+        dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
 
         dbc.Row(
             [
@@ -679,6 +681,7 @@ def load_map_layers(pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data"),
+    Output("last-geojson-clicks", "data"),
     Input("geojson-trajectories", "n_clicks"),
     Input("geojson-bottomholes", "n_clicks"),
     State("geojson-trajectories", "clickData"),
@@ -694,15 +697,18 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     import logging
     _log = logging.getLogger("dashboard")
 
+    # Save current click counts so map-click callback can detect well clicks
+    click_counts = {"traj": traj_clicks or 0, "bh": bh_clicks or 0}
+
     click_data = traj_click_data or bh_click_data
     if not click_data or not pipeline_result:
-        return no_change
+        return no_change, click_counts
 
     props = click_data.get("properties") or {}
     clicked_uwi = props.get("uwi")
     _log.info("on_well_click: triggered=%s uwi=%s type=%s", triggered, clicked_uwi, type(clicked_uwi).__name__)
     if not clicked_uwi:
-        return no_change
+        return no_change, click_counts
     # Ensure string
     clicked_uwi = str(clicked_uwi)
 
@@ -710,7 +716,7 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     # The GB uses Spotfire data-limiting: selected wells = well_i set.
     # Shape selection (polygon/line/circle) selects multiple wells.
     _log.info("on_well_click: uwi=%s selected=1 well", clicked_uwi)
-    return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
+    return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}, click_counts
 
 
 @callback(
@@ -925,6 +931,33 @@ def select_wells_by_shape(geojson, pipeline_result):
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
     }
+
+
+# ---------------------------------------------------------------------------
+# Click empty map space → clear selection
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("selected-wells-store", "data", allow_duplicate=True),
+    Input("main-map", "click_lat_lng"),
+    State("geojson-trajectories", "n_clicks"),
+    State("geojson-bottomholes", "n_clicks"),
+    State("last-geojson-clicks", "data"),
+    prevent_initial_call=True,
+)
+def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
+    """Clear selection when clicking empty map space (no well underneath)."""
+    if not click_lat_lng:
+        return dash.no_update
+
+    # Compare current GeoJSON n_clicks with stored values.
+    # If they changed, a well was just clicked → don't clear.
+    last = last_clicks or {"traj": 0, "bh": 0}
+    if (traj_clicks or 0) != last.get("traj", 0) or (bh_clicks or 0) != last.get("bh", 0):
+        return dash.no_update
+
+    # No GeoJSON click happened → empty map space clicked → clear
+    return None
 
 
 # ---------------------------------------------------------------------------

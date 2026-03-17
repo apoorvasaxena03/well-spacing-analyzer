@@ -894,21 +894,20 @@ def select_wells_by_shape(geojson, pipeline_result):
 
     # Use the last drawn shape
     drawn = features[-1]
-    _log.info("select_wells_by_shape: feature geometry=%s properties=%s",
-              drawn.get("geometry", {}).get("type"), drawn.get("properties"))
+    props = drawn.get("properties", {}) or {}
+    geom_type = drawn.get("geometry", {}).get("type", "")
+    _log.info("select_wells_by_shape: geom=%s props=%s", geom_type, props)
     drawn_geom = shape(drawn["geometry"])
 
-    # For polylines: buffer to create a corridor (~0.5 mile ≈ 0.008 degrees)
+    # Buffer non-polygon geometries so they can select wells within a corridor
     if drawn_geom.geom_type in ("LineString", "MultiLineString"):
-        BUFFER_DEG = 0.008  # ~0.5 miles at Texas latitudes
-        drawn_geom = drawn_geom.buffer(BUFFER_DEG)
-
-    # For circles: Leaflet stores radius in meters in properties
-    if drawn_geom.geom_type == "Point" and "radius" in drawn.get("properties", {}):
-        radius_m = drawn["properties"]["radius"]
-        # Convert meters to degrees (approximate)
-        radius_deg = radius_m / 111_320
-        drawn_geom = drawn_geom.buffer(radius_deg)
+        # Polyline → buffer by ~0.5 mile corridor
+        drawn_geom = drawn_geom.buffer(0.008)
+    elif drawn_geom.geom_type == "Point":
+        # Circle center → buffer by radius (from properties or default 0.5 mile)
+        radius_m = props.get("radius", 800)  # default ~0.5 mile
+        drawn_geom = drawn_geom.buffer(radius_m / 111_320)
+    # Polygon/MultiPolygon → use as-is (rectangle, polygon, or circle-as-polygon)
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -920,11 +919,13 @@ def select_wells_by_shape(geojson, pipeline_result):
         return dash.no_update
 
     # Find wells within the shape/buffer
+    _log.info("select_wells_by_shape: checking %d wells against %s (bounds=%s)",
+              len(header_df), drawn_geom.geom_type, drawn_geom.bounds)
     selected_uwis = []
     for _, row in header_df.iterrows():
         try:
             pt = Point(float(row[lon_col]), float(row[lat_col]))
-            if drawn_geom.contains(pt):
+            if drawn_geom.contains(pt) or drawn_geom.intersects(pt):
                 selected_uwis.append(str(row["uwi"]))
         except (ValueError, TypeError):
             continue

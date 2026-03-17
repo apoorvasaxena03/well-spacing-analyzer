@@ -56,7 +56,11 @@
       "Bash(wmic process:*)",
       "Bash(python -c \":*)",
       "Bash(python -c \"import sys; sys.path.insert\\(0, ''''.''''\\); from dashboard.app import app; print\\(''''OK''''\\)\")",
-      "Bash(taskkill //F //T //PID 18272)"
+      "Bash(taskkill //F //T //PID 18272)",
+      "Bash(xargs head:*)",
+      "Bash(find 'c:/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer/venv/Lib/site-packages/dash_leaflet' -name *.js -not -path *node_modules*)",
+      "Bash(mv assets/dashExtensions_default.js dashboard/assets/dashExtensions_default.js)",
+      "Bash(rmdir assets:*)"
     ],
     "deny": [
       "Bash(git push --force*)",

@@ -896,15 +896,13 @@ def select_wells_by_shape(geojson, pipeline_result):
     _log.info("select_wells_by_shape: geom=%s props=%s", geom_type, props)
     drawn_geom = shape(drawn["geometry"])
 
-    # Buffer non-polygon geometries so they can select wells within a corridor
-    if drawn_geom.geom_type in ("LineString", "MultiLineString"):
-        # Polyline → buffer by ~0.5 mile corridor
-        drawn_geom = drawn_geom.buffer(0.008)
-    elif drawn_geom.geom_type == "Point":
-        # Circle center → buffer by radius (from properties or default 0.5 mile)
-        radius_m = props.get("radius", 800)  # default ~0.5 mile
+    # For circles: Leaflet stores center as Point + radius in properties.
+    # Buffer the point by the radius to create a circular polygon.
+    if drawn_geom.geom_type == "Point":
+        radius_m = props.get("radius", 800)
         drawn_geom = drawn_geom.buffer(radius_m / 111_320)
-    # Polygon/MultiPolygon → use as-is (rectangle, polygon, or circle-as-polygon)
+    # LineString, Polygon, Rectangle → use as-is for direct intersection
+    # No buffer needed — we check if the shape touches/crosses the trajectory
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     lateral_df = data["lateral_df"]
@@ -1025,21 +1023,23 @@ def clear_selection(n):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("main-map", "bounds"),
+    Output("main-map", "center"),
+    Output("main-map", "zoom"),
     Input("btn-zoom-to-wells", "n_clicks"),
     State("pipeline-result-store", "data"),
     State("filter-uwis-store", "data"),
     prevent_initial_call=True,
 )
 def zoom_to_wells(n, pipeline_result, filter_uwis):
-    """Fit map bounds to show all currently visible wells."""
+    """Fit map center and zoom to show all currently visible wells."""
+    import math
+
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
 
-    # If filters are active, zoom to filtered wells only
     if filter_uwis:
         header_df = header_df[header_df["uwi"].astype(str).isin(filter_uwis)]
 
@@ -1047,19 +1047,24 @@ def zoom_to_wells(n, pipeline_result, filter_uwis):
     lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
 
     if lat_col not in header_df.columns or lon_col not in header_df.columns:
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
     lats = header_df[lat_col].dropna()
     lons = header_df[lon_col].dropna()
     if lats.empty or lons.empty:
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
-    # Bounding box with small padding
-    pad = 0.02
-    return [
-        [float(lats.min()) - pad, float(lons.min()) - pad],
-        [float(lats.max()) + pad, float(lons.max()) + pad],
-    ]
+    lat_min, lat_max = float(lats.min()), float(lats.max())
+    lon_min, lon_max = float(lons.min()), float(lons.max())
+    center = [(lat_min + lat_max) / 2, (lon_min + lon_max) / 2]
+
+    # Estimate zoom level from bounding box span
+    lat_span = lat_max - lat_min
+    lon_span = lon_max - lon_min
+    span = max(lat_span, lon_span, 0.001)
+    zoom = max(1, min(18, int(math.log2(360 / span)) - 1))
+
+    return center, zoom
 
 
 # ---------------------------------------------------------------------------

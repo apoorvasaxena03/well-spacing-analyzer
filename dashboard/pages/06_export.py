@@ -187,4 +187,4 @@ def do_export(n_clicks, pipeline_result, fmt, include):
                     df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
         buf.seek(0)
         filename = f"spacing_results_{run_id}.xlsx"
-        return dcc.send_bytes(buf.read, filename), "", False
+        return dcc.send_bytes(buf.getvalue(), filename), "", False

@@ -159,6 +159,12 @@ def do_export(n_clicks, pipeline_result, fmt, include):
     if "production" in include and data.get("production_df") is not None:
         sheets["Production"] = data["production_df"]
 
+    # Strip timezone info from datetime columns — Excel doesn't support tz-aware datetimes
+    for name, df in sheets.items():
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                sheets[name][col] = df[col].dt.tz_localize(None) if hasattr(df[col].dt, 'tz') and df[col].dt.tz else df[col]
+
     if not sheets:
         return dash.no_update, "No datasets selected.", True
 

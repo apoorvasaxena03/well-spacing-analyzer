@@ -870,22 +870,25 @@ def update_daily_oil(selected, pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data", allow_duplicate=True),
-    Input("draw-control", "geojson"),
+    Input("draw-control", "action"),
+    State("draw-control", "geojson"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def select_wells_by_shape(geojson, pipeline_result):
-    """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer).
+def select_wells_by_shape(action, geojson, pipeline_result):
+    """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer)."""
+    import logging
+    _log = logging.getLogger("dashboard")
+    _log.info("select_wells_by_shape: FIRED! action=%s geojson=%s pipeline=%s",
+              action, type(geojson).__name__ if geojson else None,
+              bool(pipeline_result))
 
-    For polylines: buffers the line by ~0.5 miles (~0.008 degrees) and selects
-    all wells whose surface location falls within the buffer corridor.
-    For circles: uses the radius from the drawn feature properties.
-    For polygons/rectangles: standard containment check.
-    """
     if not geojson or not pipeline_result:
+        _log.info("select_wells_by_shape: skipping (no geojson or pipeline)")
         return dash.no_update
 
     features = geojson.get("features", [])
+    _log.info("select_wells_by_shape: %d features in geojson", len(features))
     if not features:
         return dash.no_update
 
@@ -924,6 +927,8 @@ def select_wells_by_shape(geojson, pipeline_result):
         except (ValueError, TypeError):
             continue
 
+    _log.info("select_wells_by_shape: %d wells found in shape (geom_type=%s)",
+              len(selected_uwis), drawn_geom.geom_type)
     if not selected_uwis:
         return dash.no_update
 

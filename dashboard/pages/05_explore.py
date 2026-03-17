@@ -688,32 +688,11 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     # Ensure string
     clicked_uwi = str(clicked_uwi)
 
-    IK, _ = load_cached_ik_heeltoe(pipeline_result)
-    if IK.empty:
-        return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
-
-    # All wells that share a spacing pair with the clicked well
-    # Raw IK pairs have well_i/well_k; enriched summary has well_i + uwi_same/near columns
-    neighborhood = set()
-    if "well_k" in IK.columns:
-        neighborhood = set(
-            IK.loc[
-                (IK["well_i"] == clicked_uwi) | (IK["well_k"] == clicked_uwi),
-                ["well_i", "well_k"],
-            ].values.flatten()
-        )
-    elif "well_i" in IK.columns:
-        # Enriched summary: collect neighbor UWIs from uwi_same_*/uwi_near_* columns
-        row = IK[IK["well_i"] == clicked_uwi]
-        if not row.empty:
-            for col in IK.columns:
-                if col.startswith("uwi_same_") or col.startswith("uwi_near_"):
-                    vals = row[col].dropna().tolist()
-                    neighborhood.update(str(v) for v in vals if v)
-    neighborhood.add(clicked_uwi)
-    _log.info("on_well_click: uwi=%s neighborhood=%d wells", clicked_uwi, len(neighborhood))
-
-    return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": sorted(neighborhood)}
+    # Only return the clicked well — no neighborhood expansion.
+    # The GB uses Spotfire data-limiting: selected wells = well_i set.
+    # Shape selection (polygon/line/circle) selects multiple wells.
+    _log.info("on_well_click: uwi=%s selected=1 well", clicked_uwi)
+    return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}
 
 
 @callback(
@@ -735,17 +714,14 @@ def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
     if IK.empty:
         return empty_figure("Pipeline results not loaded.")
 
-    # Data limiting (Spotfire pattern): filter IK where well_i is in selection.
-    # This shows each selected well's spacing to ALL its neighbors, not just
-    # neighbors that are also selected. The full neighborhood (well_i + well_k)
-    # is needed for GB positioning.
+    # Spotfire data-limiting: filter IK where well_i is in selection.
+    # GB only plots selected wells (unique well_i). Spacing between adjacent
+    # selected wells comes from IK pairs where (well_i, well_k) match.
     IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
-    # Expand HeelToe to include all wells that appear in the filtered pairs
-    all_gb_uwis = set(IK_filtered["well_i"].tolist() + IK_filtered["well_k"].tolist())
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(all_gb_uwis)]
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
 
     if IK_filtered.empty:
-        return empty_figure("No spacing pairs found for selected well.")
+        return empty_figure("No spacing pairs found for selected well. Try selecting multiple wells.")
 
     # elevation = tvd * -1 (depth below surface → elevation above datum)
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:

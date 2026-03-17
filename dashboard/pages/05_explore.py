@@ -870,6 +870,7 @@ def update_daily_oil(selected, pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data", allow_duplicate=True),
+    Output("draw-control", "geojson"),
     Input("draw-control", "geojson"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
@@ -878,19 +879,15 @@ def select_wells_by_shape(geojson, pipeline_result):
     """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer)."""
     import logging
     _log = logging.getLogger("dashboard")
-    _log.info("select_wells_by_shape: FIRED! geojson_type=%s features=%s pipeline=%s",
-              type(geojson).__name__ if geojson else None,
-              len(geojson.get("features", [])) if isinstance(geojson, dict) else "N/A",
-              bool(pipeline_result))
+
+    empty_geojson = {"type": "FeatureCollection", "features": []}
 
     if not geojson or not pipeline_result:
-        _log.info("select_wells_by_shape: skipping (no geojson or pipeline)")
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
     features = geojson.get("features", [])
-    _log.info("select_wells_by_shape: %d features in geojson", len(features))
     if not features:
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
     # Use the last drawn shape
     drawn = features[-1]
@@ -933,12 +930,13 @@ def select_wells_by_shape(geojson, pipeline_result):
     _log.info("select_wells_by_shape: %d wells found in shape (geom_type=%s)",
               len(selected_uwis), drawn_geom.geom_type)
     if not selected_uwis:
-        return dash.no_update
+        return dash.no_update, empty_geojson
 
+    # Return selection + clear drawn shapes from map
     return {
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
-    }
+    }, empty_geojson
 
 
 # ---------------------------------------------------------------------------

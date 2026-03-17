@@ -907,24 +907,24 @@ def select_wells_by_shape(geojson, pipeline_result):
     # Polygon/MultiPolygon → use as-is (rectangle, polygon, or circle-as-polygon)
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
-    header_df = data["header_df"]
+    lateral_df = data["lateral_df"]
 
-    lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
-    lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
-
-    if lat_col not in header_df.columns or lon_col not in header_df.columns:
-        return dash.no_update
-
-    # Find wells within the shape/buffer
-    _log.info("select_wells_by_shape: checking %d wells against %s (bounds=%s)",
-              len(header_df), drawn_geom.geom_type, drawn_geom.bounds)
+    # Build trajectory LineStrings per well and check intersection with drawn shape
+    from shapely.geometry import LineString as ShapelyLineString
+    _log.info("select_wells_by_shape: checking trajectories against %s (bounds=%s)",
+              drawn_geom.geom_type, drawn_geom.bounds)
     selected_uwis = []
-    for _, row in header_df.iterrows():
+    for uwi, grp in lateral_df.groupby("uwi"):
+        if "longitude" not in grp.columns or "latitude" not in grp.columns:
+            continue
+        coords = list(zip(grp["longitude"].astype(float), grp["latitude"].astype(float)))
+        if len(coords) < 2:
+            continue
         try:
-            pt = Point(float(row[lon_col]), float(row[lat_col]))
-            if drawn_geom.contains(pt) or drawn_geom.intersects(pt):
-                selected_uwis.append(str(row["uwi"]))
-        except (ValueError, TypeError):
+            traj = ShapelyLineString(coords)
+            if drawn_geom.intersects(traj):
+                selected_uwis.append(str(uwi))
+        except Exception:
             continue
 
     _log.info("select_wells_by_shape: %d wells found in shape (geom_type=%s)",

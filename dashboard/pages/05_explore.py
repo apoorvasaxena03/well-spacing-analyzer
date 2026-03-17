@@ -894,6 +894,8 @@ def select_wells_by_shape(geojson, pipeline_result):
 
     # Use the last drawn shape
     drawn = features[-1]
+    _log.info("select_wells_by_shape: feature geometry=%s properties=%s",
+              drawn.get("geometry", {}).get("type"), drawn.get("properties"))
     drawn_geom = shape(drawn["geometry"])
 
     # For polylines: buffer to create a corridor (~0.5 mile ≈ 0.008 degrees)

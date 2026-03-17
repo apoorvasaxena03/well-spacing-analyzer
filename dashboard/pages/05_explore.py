@@ -62,6 +62,13 @@ layout = dbc.Container(
             dbc.Col(
                 [
                     dbc.Button(
+                        "Zoom to Wells",
+                        id="btn-zoom-to-wells",
+                        color="outline-secondary",
+                        size="sm",
+                        className="me-2",
+                    ),
+                    dbc.Button(
                         "Clear Selection",
                         id="btn-clear-selection",
                         color="outline-danger",
@@ -928,6 +935,48 @@ def clear_selection(n):
         empty_figure("Click a well on the map."),
         empty_figure("Click a well on the map."),
     )
+
+
+# ---------------------------------------------------------------------------
+# Zoom to wells (fit bounds to all visible wells)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("main-map", "bounds"),
+    Input("btn-zoom-to-wells", "n_clicks"),
+    State("pipeline-result-store", "data"),
+    State("filter-uwis-store", "data"),
+    prevent_initial_call=True,
+)
+def zoom_to_wells(n, pipeline_result, filter_uwis):
+    """Fit map bounds to show all currently visible wells."""
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return dash.no_update
+
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+
+    # If filters are active, zoom to filtered wells only
+    if filter_uwis:
+        header_df = header_df[header_df["uwi"].astype(str).isin(filter_uwis)]
+
+    lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
+    lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
+
+    if lat_col not in header_df.columns or lon_col not in header_df.columns:
+        return dash.no_update
+
+    lats = header_df[lat_col].dropna()
+    lons = header_df[lon_col].dropna()
+    if lats.empty or lons.empty:
+        return dash.no_update
+
+    # Bounding box with small padding
+    pad = 0.02
+    return [
+        [float(lats.min()) - pad, float(lons.min()) - pad],
+        [float(lats.max()) + pad, float(lons.max()) + pad],
+    ]
 
 
 # ---------------------------------------------------------------------------

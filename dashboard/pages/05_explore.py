@@ -348,6 +348,17 @@ layout = dbc.Container(
                                                     name="Bottom Holes",
                                                     checked=True,
                                                 ),
+                                                dl.Overlay(
+                                                    dl.GeoJSON(
+                                                        id="geojson-selected",
+                                                        data=_EMPTY_GEOJSON,
+                                                        options={
+                                                            "style": {"color": "#ff7800", "weight": 5, "opacity": 1.0},
+                                                        },
+                                                    ),
+                                                    name="Selected Wells",
+                                                    checked=True,
+                                                ),
                                             ],
                                             position="topright",
                                         ),
@@ -914,6 +925,39 @@ def select_wells_by_shape(geojson, pipeline_result):
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
     }
+
+
+# ---------------------------------------------------------------------------
+# Highlight selected wells on map
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("geojson-selected", "data"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def highlight_selected_wells(selected, pipeline_result):
+    """Render selected wells as highlighted trajectories on the map."""
+    if not selected or not selected.get("neighborhood_uwis") or not pipeline_result:
+        return _EMPTY_GEOJSON
+
+    uwis = selected["neighborhood_uwis"]
+    try:
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        lateral_df = data["lateral_df"]
+        header_df = data["header_df"]
+
+        sel_lateral = lateral_df[lateral_df["uwi"].isin(uwis)]
+        sel_header = header_df[header_df["uwi"].isin(uwis)]
+
+        if sel_lateral.empty:
+            return _EMPTY_GEOJSON
+
+        gdf = build_trajectory_geodataframe(sel_lateral, sel_header)
+        return gdf.__geo_interface__ if not gdf.empty else _EMPTY_GEOJSON
+    except Exception:
+        return _EMPTY_GEOJSON
 
 
 # ---------------------------------------------------------------------------

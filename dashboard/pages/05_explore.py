@@ -388,8 +388,8 @@ layout = dbc.Container(
                                                     "polygon": {"shapeOptions": {"color": "#ff7800"}},
                                                     "rectangle": {"shapeOptions": {"color": "#ff7800"}},
                                                 },
-                                                edit={"edit": False},
                                             ),
+                                            id="draw-feature-group",
                                         ),
                                     ],
                                     id="main-map",
@@ -870,17 +870,17 @@ def update_daily_oil(selected, pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data", allow_duplicate=True),
-    Input("draw-control", "action"),
-    State("draw-control", "geojson"),
+    Input("draw-control", "geojson"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def select_wells_by_shape(action, geojson, pipeline_result):
+def select_wells_by_shape(geojson, pipeline_result):
     """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer)."""
     import logging
     _log = logging.getLogger("dashboard")
-    _log.info("select_wells_by_shape: FIRED! action=%s geojson=%s pipeline=%s",
-              action, type(geojson).__name__ if geojson else None,
+    _log.info("select_wells_by_shape: FIRED! geojson_type=%s features=%s pipeline=%s",
+              type(geojson).__name__ if geojson else None,
+              len(geojson.get("features", [])) if isinstance(geojson, dict) else "N/A",
               bool(pipeline_result))
 
     if not geojson or not pipeline_result:

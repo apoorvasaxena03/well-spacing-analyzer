@@ -9,13 +9,19 @@ On completion → populates upload-store with file paths or query strings.
 
 import base64
 import io
+import json
+import logging
+import pickle
 import tempfile
+import zipfile
 from pathlib import Path
 
 import dash
 import dash_bootstrap_components as dbc
 import pandas as pd
 from dash import Input, Output, State, callback, dcc, html
+
+logger = logging.getLogger("dashboard")
 
 dash.register_page(__name__, path="/", name="1 Upload", order=1)
 
@@ -179,6 +185,47 @@ layout = dbc.Container(
                     label="Database Query",
                     tab_id="tab-db",
                 ),
+
+                # ── Tab C: Import Session ─────────────────────────────────
+                dbc.Tab(
+                    dbc.Container(
+                        [
+                            dbc.Row(
+                                dbc.Col(
+                                    [
+                                        html.H5("Import a Previous Session", className="mt-3 mb-2"),
+                                        html.P(
+                                            "Upload a session package (.zip) exported from the Export page. "
+                                            "This skips Steps 2–4 and takes you directly to Explore.",
+                                            className="text-muted mb-3",
+                                        ),
+                                        dcc.Upload(
+                                            id="upload-session-zip",
+                                            children=dbc.Card(
+                                                dbc.CardBody(
+                                                    [
+                                                        html.I(className="bi bi-box-arrow-in-down", style={"fontSize": "2rem"}),
+                                                        html.P("Drag & drop or click to upload session package (.zip)", className="mb-0 mt-2"),
+                                                    ],
+                                                    className="text-center py-4",
+                                                ),
+                                                className="border-dashed",
+                                                style={"borderStyle": "dashed", "borderColor": "#aaa", "cursor": "pointer"},
+                                            ),
+                                            accept=".zip",
+                                        ),
+                                        html.Div(id="session-import-status", className="mt-3"),
+                                        dcc.Location(id="session-redirect", refresh=True),
+                                    ],
+                                    md=6,
+                                ),
+                            ),
+                        ],
+                        fluid=True,
+                    ),
+                    label="Import Session",
+                    tab_id="tab-session",
+                ),
             ],
             id="upload-mode-tabs",
             active_tab="tab-file",
@@ -325,3 +372,97 @@ def toggle_next_button(store, active_tab):
         # DB mode — enable once queries are entered (validated on next page)
         ready = True
     return not ready
+
+
+# ---------------------------------------------------------------------------
+# Session package import
+# ---------------------------------------------------------------------------
+
+PIPELINE_CACHE_DIR = Path("./dashboard/.pipeline_cache")
+
+
+@callback(
+    Output("session-import-status", "children"),
+    Output("pipeline-result-store", "data", allow_duplicate=True),
+    Output("session-redirect", "href"),
+    Input("upload-session-zip", "contents"),
+    State("upload-session-zip", "filename"),
+    prevent_initial_call=True,
+)
+def import_session_package(contents, filename):
+    """Import a session package ZIP and redirect to Explore."""
+    if not contents:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    try:
+        # Decode uploaded ZIP
+        content_type, content_string = contents.split(",")
+        decoded = base64.b64decode(content_string)
+        zf = zipfile.ZipFile(io.BytesIO(decoded))
+
+        # Read metadata
+        metadata = {}
+        if "metadata.json" in zf.namelist():
+            metadata = json.loads(zf.read("metadata.json"))
+
+        run_id = metadata.get("run_id", "imported")
+
+        # Read parquet files into DataFrames
+        cache_data = {}
+        parquet_map = {
+            "ik_pairs.parquet": "df_ik_pairs",
+            "neighbor_summary.parquet": "df_spacing",
+            "header.parquet": "header_df",
+            "lateral.parquet": "lateral_df",
+            "production.parquet": "production_df",
+        }
+        for zip_name, cache_key in parquet_map.items():
+            if zip_name in zf.namelist():
+                buf = io.BytesIO(zf.read(zip_name))
+                cache_data[cache_key] = pd.read_parquet(buf)
+
+        # Read stats
+        if "stats.json" in zf.namelist():
+            cache_data["stats"] = json.loads(zf.read("stats.json"))
+
+        if "header_df" not in cache_data or "lateral_df" not in cache_data:
+            return (
+                dbc.Alert("Invalid session package: missing header or lateral data.", color="danger"),
+                dash.no_update,
+                dash.no_update,
+            )
+
+        # Save as pipeline cache pickle
+        PIPELINE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = PIPELINE_CACHE_DIR / f"pipeline_{run_id}.pkl"
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache_data, f)
+
+        # Build summary
+        datasets = metadata.get("datasets", [])
+        summary_items = [f"{d['name']}: {d['rows']:,} rows" for d in datasets]
+
+        logger.info("Session imported: %s → %s (%d datasets)", filename, cache_path.name, len(datasets))
+
+        return (
+            dbc.Alert(
+                [
+                    html.Strong(f"Session imported: {filename}"),
+                    html.Br(),
+                    html.Small(" | ".join(summary_items)),
+                    html.Br(),
+                    html.Small("Redirecting to Explore..."),
+                ],
+                color="success",
+            ),
+            {"cache_path": str(cache_path), "run_id": run_id, "crs_used": metadata.get("crs_used")},
+            "/explore",
+        )
+
+    except Exception as exc:
+        logger.exception("Session import failed: %s", exc)
+        return (
+            dbc.Alert(f"Import failed: {exc}", color="danger"),
+            dash.no_update,
+            dash.no_update,
+        )

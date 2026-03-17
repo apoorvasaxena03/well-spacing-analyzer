@@ -5,7 +5,9 @@ Offers multiple datasets: raw IK pairs, valid IK pairs, neighbor summary, header
 """
 
 import io
+import json
 import logging
+import zipfile
 
 import dash
 import dash_bootstrap_components as dbc
@@ -87,6 +89,29 @@ layout = dbc.Container(
 
         dbc.Alert(id="export-error", color="danger", is_open=False, dismissable=True, className="mt-3"),
         dcc.Download(id="export-download"),
+
+        # ── Session Package Export ──
+        dbc.Card(
+            dbc.CardBody(
+                [
+                    html.H6("Session Package", className="mb-2"),
+                    html.P(
+                        "Export all results as a portable ZIP of Parquet files. "
+                        "This package can be re-imported on the Upload page to skip "
+                        "Steps 2–4 and go straight to Explore.",
+                        className="text-muted small mb-3",
+                    ),
+                    dbc.Button(
+                        [html.I(className="bi bi-box-arrow-up me-2"), "Export Session Package (.zip)"],
+                        id="btn-export-session",
+                        color="success",
+                        size="lg",
+                    ),
+                ]
+            ),
+            className="mt-3",
+        ),
+        dcc.Download(id="session-download"),
 
         html.Hr(),
         dbc.Row(
@@ -196,3 +221,74 @@ def _do_export_inner(pipeline_result, fmt, include):
         buf.seek(0)
         filename = f"spacing_results_{run_id}.xlsx"
         return dcc.send_bytes(buf.getvalue(), filename), "", False
+
+
+# ---------------------------------------------------------------------------
+# Session package export (ZIP of Parquet files)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("session-download", "data"),
+    Output("export-error", "children", allow_duplicate=True),
+    Output("export-error", "is_open", allow_duplicate=True),
+    Input("btn-export-session", "n_clicks"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def export_session_package(n_clicks, pipeline_result):
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return dash.no_update, "No pipeline results available.", True
+
+    try:
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+    except Exception as exc:
+        logger.exception("Session export failed: %s", exc)
+        return dash.no_update, str(exc), True
+
+    run_id = pipeline_result.get("run_id", "session")
+    buf = io.BytesIO()
+
+    try:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Metadata
+            metadata = {
+                "run_id": run_id,
+                "crs_used": pipeline_result.get("crs_used"),
+                "datasets": [],
+            }
+
+            # Write each DataFrame as parquet
+            dataset_keys = [
+                ("df_ik_pairs", "ik_pairs"),
+                ("df_spacing", "neighbor_summary"),
+                ("header_df", "header"),
+                ("lateral_df", "lateral"),
+                ("production_df", "production"),
+            ]
+            for cache_key, file_name in dataset_keys:
+                df = data.get(cache_key)
+                if df is not None and not df.empty:
+                    pq_buf = io.BytesIO()
+                    df.to_parquet(pq_buf, index=False, engine="pyarrow")
+                    zf.writestr(f"{file_name}.parquet", pq_buf.getvalue())
+                    metadata["datasets"].append({
+                        "name": file_name,
+                        "rows": len(df),
+                        "columns": len(df.columns),
+                    })
+
+            # Write stats if available
+            stats = data.get("stats")
+            if stats:
+                zf.writestr("stats.json", json.dumps(stats, indent=2))
+
+            zf.writestr("metadata.json", json.dumps(metadata, indent=2))
+
+        buf.seek(0)
+        filename = f"spacing_session_{run_id}.zip"
+        logger.info("Session package exported: %s (%.1f MB)", filename, buf.tell() / 1024 / 1024)
+        return dcc.send_bytes(buf.getvalue(), filename), "", False
+
+    except Exception as exc:
+        logger.exception("Session export failed: %s", exc)
+        return dash.no_update, str(exc), True

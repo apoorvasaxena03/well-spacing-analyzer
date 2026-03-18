@@ -89,6 +89,8 @@ layout = dbc.Container(
 
         # Store for active filter state (list of UWIs that pass filters)
         dcc.Store(id="filter-uwis-store"),
+        dcc.Store(id="clear-draw-trigger", data=0),
+        html.Div(id="_draw-clear-dummy", style={"display": "none"}),
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
 
@@ -629,6 +631,30 @@ layout = dbc.Container(
 # Callbacks
 # ---------------------------------------------------------------------------
 
+# -- Clientside: clear drawn shapes from Leaflet map --
+dash.clientside_callback(
+    """
+    function(trigger) {
+        (window._leafletMaps || []).forEach(function(map) {
+            map.eachLayer(function(layer) {
+                if (
+                    layer instanceof L.FeatureGroup &&
+                    !(layer instanceof L.GeoJSON) &&
+                    typeof layer.clearLayers === "function"
+                ) {
+                    layer.clearLayers();
+                }
+            });
+        });
+        return null;
+    }
+    """,
+    Output("_draw-clear-dummy", "children"),
+    Input("clear-draw-trigger", "data"),
+    prevent_initial_call=True,
+)
+
+
 # -- Toggle style settings panel --
 @callback(
     Output("style-collapse", "is_open"),
@@ -790,12 +816,27 @@ def load_map_layers(pipeline_result):
     bh_data = gdf_bh.__geo_interface__
     logger.info("load_map_layers: %d trajectories, %d bottomholes", len(gdf_traj), len(gdf_bh))
 
+    import math
+
     lat_col = "surface_lat" if "surface_lat" in header_df.columns else "latitude"
     lon_col = "surface_lon" if "surface_lon" in header_df.columns else "longitude"
-    lat_centre = float(header_df[lat_col].dropna().mean()) if lat_col in header_df.columns else 31.5
-    lon_centre = float(header_df[lon_col].dropna().mean()) if lon_col in header_df.columns else -101.9
 
-    return traj_data, bh_data, [lat_centre, lon_centre], 11
+    lats = header_df[lat_col].dropna() if lat_col in header_df.columns else pd.Series(dtype=float)
+    lons = header_df[lon_col].dropna() if lon_col in header_df.columns else pd.Series(dtype=float)
+
+    if lats.empty or lons.empty:
+        return traj_data, bh_data, [31.5, -101.9], 10
+
+    lat_min, lat_max = float(lats.min()), float(lats.max())
+    lon_min, lon_max = float(lons.min()), float(lons.max())
+    center = [(lat_min + lat_max) / 2, (lon_min + lon_max) / 2]
+
+    lat_span = lat_max - lat_min
+    lon_span = lon_max - lon_min
+    span = max(lat_span, lon_span, 0.001)
+    zoom = max(1, min(18, int(math.log2(360 / span)) - 1))
+
+    return traj_data, bh_data, center, zoom
 
 
 @callback(
@@ -1016,6 +1057,7 @@ def update_daily_production(selected, product, pipeline_result):
 @callback(
     Output("selected-wells-store", "data", allow_duplicate=True),
     Output("draw-control", "geojson"),
+    Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("draw-control", "geojson"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
@@ -1023,16 +1065,17 @@ def update_daily_production(selected, product, pipeline_result):
 def select_wells_by_shape(geojson, pipeline_result):
     """Select all wells within a drawn shape (polygon, rectangle, circle, or line buffer)."""
     import logging
+    import time
     _log = logging.getLogger("dashboard")
 
     empty_geojson = {"type": "FeatureCollection", "features": []}
 
     if not geojson or not pipeline_result:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
 
     features = geojson.get("features", [])
     if not features:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
 
     # Use the last drawn shape
     drawn = features[-1]
@@ -1073,13 +1116,13 @@ def select_wells_by_shape(geojson, pipeline_result):
     _log.info("select_wells_by_shape: %d wells found in shape (geom_type=%s)",
               len(selected_uwis), drawn_geom.geom_type)
     if not selected_uwis:
-        return dash.no_update, empty_geojson
+        return dash.no_update, empty_geojson, time.time()
 
     # Return selection + clear drawn shapes from map
     return {
         "clicked_uwi": selected_uwis[0],
         "neighborhood_uwis": sorted(selected_uwis),
-    }, empty_geojson
+    }, empty_geojson, time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -1088,6 +1131,15 @@ def select_wells_by_shape(geojson, pipeline_result):
 
 @callback(
     Output("selected-wells-store", "data", allow_duplicate=True),
+    Output("gun-barrel-chart", "figure", allow_duplicate=True),
+    Output("cum-oil-chart", "figure", allow_duplicate=True),
+    Output("daily-oil-chart", "figure", allow_duplicate=True),
+    Output("geojson-selected", "data", allow_duplicate=True),
+    Output("ik-pairs-table", "data", allow_duplicate=True),
+    Output("ik-pairs-table", "columns", allow_duplicate=True),
+    Output("gb-data-table", "data", allow_duplicate=True),
+    Output("gb-data-table", "columns", allow_duplicate=True),
+    Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("main-map", "click_lat_lng"),
     State("geojson-trajectories", "n_clicks"),
     State("geojson-bottomholes", "n_clicks"),
@@ -1095,18 +1147,30 @@ def select_wells_by_shape(geojson, pipeline_result):
     prevent_initial_call=True,
 )
 def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
-    """Clear selection when clicking empty map space (no well underneath)."""
+    """Full clear (same as Clear Selection button) when clicking empty map space."""
+    import time
+
+    no_update_all = (dash.no_update,) * 10
+
     if not click_lat_lng:
-        return dash.no_update
+        return no_update_all
 
     # Compare current GeoJSON n_clicks with stored values.
     # If they changed, a well was just clicked → don't clear.
     last = last_clicks or {"traj": 0, "bh": 0}
     if (traj_clicks or 0) != last.get("traj", 0) or (bh_clicks or 0) != last.get("bh", 0):
-        return dash.no_update
+        return no_update_all
 
-    # No GeoJSON click happened → empty map space clicked → clear
-    return None
+    # No GeoJSON click happened → empty map space clicked → full clear
+    return (
+        None,
+        empty_figure("Click a well on the map."),
+        empty_figure("Click a well on the map."),
+        empty_figure("Click a well on the map."),
+        _EMPTY_GEOJSON,
+        [], [], [], [],
+        time.time(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1226,10 +1290,12 @@ def update_gb_table(selected, pipeline_result):
     Output("ik-pairs-table", "columns", allow_duplicate=True),
     Output("gb-data-table", "data", allow_duplicate=True),
     Output("gb-data-table", "columns", allow_duplicate=True),
+    Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("btn-clear-selection", "n_clicks"),
     prevent_initial_call=True,
 )
 def clear_selection(n):
+    import time
     return (
         None,
         empty_figure("Click a well on the map."),
@@ -1237,6 +1303,7 @@ def clear_selection(n):
         empty_figure("Click a well on the map."),
         _EMPTY_GEOJSON,
         [], [], [], [],
+        time.time(),  # trigger JS to clear drawn shapes from map
     )
 
 

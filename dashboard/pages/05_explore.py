@@ -575,79 +575,116 @@ layout = dbc.Container(
                             dbc.Accordion(
                                 [
                                     dbc.AccordionItem(
-                                        dash_table.DataTable(
-                                            id="ik-pairs-table",
-                                            columns=[],
-                                            data=[],
-                                            filter_action="native",
-                                            sort_action="native",
-                                            sort_mode="multi",
-                                            column_selectable="multi",
-
-                                            page_size=20,
-                                            style_table={"overflowX": "auto", "maxHeight": "40vh"},
-                                            style_cell={
-                                                "textAlign": "left",
-                                                "fontSize": "12px",
-                                                "padding": "4px 8px",
-                                                "minWidth": "80px",
-                                            },
-                                            style_header={
-                                                "fontWeight": "bold",
-                                                "backgroundColor": "#f8f9fa",
-                                            },
-                                            fixed_rows={"headers": True},
-                                        ),
+                                        [
+                                            dcc.Dropdown(
+                                                id="ik-col-selector",
+                                                multi=True,
+                                                placeholder="Select columns to display...",
+                                                className="mb-2",
+                                                style={"fontSize": "12px"},
+                                            ),
+                                            dash_table.DataTable(
+                                                id="ik-pairs-table",
+                                                columns=[],
+                                                data=[],
+                                                filter_action="native",
+                                                sort_action="native",
+                                                sort_mode="multi",
+                                                page_size=20,
+                                                style_table={"overflowX": "auto", "maxHeight": "40vh"},
+                                                style_cell={
+                                                    "textAlign": "left",
+                                                    "fontSize": "12px",
+                                                    "padding": "4px 8px",
+                                                    "minWidth": "80px",
+                                                    "maxWidth": "250px",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                },
+                                                style_header={
+                                                    "fontWeight": "bold",
+                                                    "backgroundColor": "#f8f9fa",
+                                                },
+                                                tooltip_duration=None,
+                                                fixed_rows={"headers": True},
+                                            ),
+                                        ],
                                         title="IK Spacing Pairs",
                                         item_id="acc-ik",
                                     ),
                                     dbc.AccordionItem(
-                                        dash_table.DataTable(
-                                            id="gb-data-table",
-                                            columns=[],
-                                            data=[],
-                                            filter_action="native",
-                                            sort_action="native",
-                                            sort_mode="multi",
-                                            page_size=15,
-                                            style_table={"overflowX": "auto", "maxHeight": "35vh"},
-                                            style_cell={
-                                                "textAlign": "left",
-                                                "fontSize": "12px",
-                                                "padding": "4px 8px",
-                                                "minWidth": "80px",
-                                            },
-                                            style_header={
-                                                "fontWeight": "bold",
-                                                "backgroundColor": "#f8f9fa",
-                                            },
-                                            fixed_rows={"headers": True},
-                                        ),
+                                        [
+                                            dcc.Dropdown(
+                                                id="gb-col-selector",
+                                                multi=True,
+                                                placeholder="Select columns to display...",
+                                                className="mb-2",
+                                                style={"fontSize": "12px"},
+                                            ),
+                                            dash_table.DataTable(
+                                                id="gb-data-table",
+                                                columns=[],
+                                                data=[],
+                                                filter_action="native",
+                                                sort_action="native",
+                                                sort_mode="multi",
+                                                page_size=15,
+                                                style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                                style_cell={
+                                                    "textAlign": "left",
+                                                    "fontSize": "12px",
+                                                    "padding": "4px 8px",
+                                                    "minWidth": "80px",
+                                                    "maxWidth": "250px",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                },
+                                                style_header={
+                                                    "fontWeight": "bold",
+                                                    "backgroundColor": "#f8f9fa",
+                                                },
+                                                tooltip_duration=None,
+                                                fixed_rows={"headers": True},
+                                            ),
+                                        ],
                                         title="Gun Barrel Data",
                                         item_id="acc-gb",
                                     ),
                                     dbc.AccordionItem(
-                                        dash_table.DataTable(
-                                            id="header-data-table",
-                                            columns=[],
-                                            data=[],
-                                            filter_action="native",
-                                            sort_action="native",
-                                            sort_mode="multi",
-                                            page_size=20,
-                                            style_table={"overflowX": "auto", "maxHeight": "40vh"},
-                                            style_cell={
-                                                "textAlign": "left",
-                                                "fontSize": "12px",
-                                                "padding": "4px 8px",
-                                                "minWidth": "80px",
-                                            },
-                                            style_header={
-                                                "fontWeight": "bold",
-                                                "backgroundColor": "#f8f9fa",
-                                            },
-                                            fixed_rows={"headers": True},
-                                        ),
+                                        [
+                                            dcc.Dropdown(
+                                                id="header-col-selector",
+                                                multi=True,
+                                                placeholder="Select columns to display...",
+                                                className="mb-2",
+                                                style={"fontSize": "12px"},
+                                            ),
+                                            dash_table.DataTable(
+                                                id="header-data-table",
+                                                columns=[],
+                                                data=[],
+                                                filter_action="native",
+                                                sort_action="native",
+                                                sort_mode="multi",
+                                                page_size=20,
+                                                style_table={"overflowX": "auto", "maxHeight": "40vh"},
+                                                style_cell={
+                                                    "textAlign": "left",
+                                                    "fontSize": "12px",
+                                                    "padding": "4px 8px",
+                                                    "minWidth": "80px",
+                                                    "maxWidth": "250px",
+                                                    "overflow": "hidden",
+                                                    "textOverflow": "ellipsis",
+                                                },
+                                                style_header={
+                                                    "fontWeight": "bold",
+                                                    "backgroundColor": "#f8f9fa",
+                                                },
+                                                tooltip_duration=None,
+                                                fixed_rows={"headers": True},
+                                            ),
+                                        ],
                                         title="Well Header",
                                         item_id="acc-header",
                                     ),
@@ -1203,6 +1240,12 @@ def select_wells_by_shape(geojson, pipeline_result):
     Output("gb-data-table", "columns", allow_duplicate=True),
     Output("header-data-table", "data", allow_duplicate=True),
     Output("header-data-table", "columns", allow_duplicate=True),
+    Output("ik-col-selector", "options", allow_duplicate=True),
+    Output("ik-col-selector", "value", allow_duplicate=True),
+    Output("gb-col-selector", "options", allow_duplicate=True),
+    Output("gb-col-selector", "value", allow_duplicate=True),
+    Output("header-col-selector", "options", allow_duplicate=True),
+    Output("header-col-selector", "value", allow_duplicate=True),
     Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("main-map", "click_lat_lng"),
     State("geojson-trajectories", "n_clicks"),
@@ -1214,18 +1257,15 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
     """Full clear (same as Clear Selection button) when clicking empty map space."""
     import time
 
-    no_update_all = (dash.no_update,) * 12
+    no_update_all = (dash.no_update,) * 18
 
     if not click_lat_lng:
         return no_update_all
 
-    # Compare current GeoJSON n_clicks with stored values.
-    # If they changed, a well was just clicked → don't clear.
     last = last_clicks or {"traj": 0, "bh": 0}
     if (traj_clicks or 0) != last.get("traj", 0) or (bh_clicks or 0) != last.get("bh", 0):
         return no_update_all
 
-    # No GeoJSON click happened → empty map space clicked → full clear
     return (
         None,
         empty_figure("Click a well on the map."),
@@ -1234,6 +1274,7 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
         _EMPTY_GEOJSON,
         [], [], [], [],
         [], [],
+        [], [], [], [], [], [],
         time.time(),
     )
 
@@ -1278,59 +1319,87 @@ def highlight_selected_wells(selected, pipeline_result):
 
 
 # ---------------------------------------------------------------------------
-# Data tables — IK Pairs + Gun Barrel
+# Data tables — IK Pairs + Gun Barrel + Header
 # ---------------------------------------------------------------------------
+
+# Default columns shown when data first loads (user can change via dropdown)
+_IK_DEFAULT_COLS = [
+    "well_i", "well_k", "well_name_i", "well_name_k",
+    "horizontal_dist", "vertical_dist", "dist3d",
+    "alignment_type", "overlap_pct",
+    "bench_i", "bench_k", "operator_i", "operator_k",
+]
+_GB_DEFAULT_COLS = [
+    "well_i", "well_name", "bench", "operator", "rsv_cat",
+    "elevation_i", "cum_dist", "sectionDist",
+    "horizontal_dist", "vertical_dist",
+    "first_prod_date",
+]
+_HDR_DEFAULT_COLS = [
+    "uwi", "well_name", "operator", "bench", "rsv_cat",
+    "hole_direction", "spud_date", "first_prod_date",
+    "lateral_length_ft",
+]
+
 
 @callback(
     Output("ik-pairs-table", "columns"),
     Output("ik-pairs-table", "data"),
+    Output("ik-col-selector", "options"),
+    Output("ik-col-selector", "value"),
     Input("selected-wells-store", "data"),
     State("pipeline-result-store", "data"),
+    State("ik-col-selector", "value"),
     prevent_initial_call=True,
 )
-def update_ik_table(selected, pipeline_result):
+def update_ik_table(selected, pipeline_result, current_selection):
     """Populate IK pairs table for selected wells (expanded neighbourhood)."""
     if not selected or not pipeline_result:
-        return [], []
+        return [], [], [], []
     uwis = selected.get("neighborhood_uwis", [])
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
-        return [], []
-    # Expand to full neighbourhood, then keep pairs where BOTH wells are in it
+        return [], [], [], []
     neighborhood = _expand_neighborhood(IK, uwis)
     ik_sel = IK[
         IK["well_i"].astype(str).isin(neighborhood)
         & IK["well_k"].astype(str).isin(neighborhood)
     ]
     if ik_sel.empty:
-        return [], []
-    # Select display columns
-    display_cols = [c for c in [
-        "well_i", "well_k", "well_name_i", "well_name_k",
-        "horizontal_dist", "vertical_dist", "dist3d",
-        "alignment_type", "overlap_pct",
-        "bench_i", "bench_k", "operator_i", "operator_k",
-    ] if c in ik_sel.columns]
-    ik_display = ik_sel[display_cols].round(1)
-    columns = [{"name": c, "id": c, "selectable": True} for c in display_cols]
-    return columns, ik_display.to_dict("records")
+        return [], [], [], []
+    # Round numeric columns
+    all_cols = list(ik_sel.columns)
+    ik_display = ik_sel.copy()
+    for col in ik_display.select_dtypes(include="number").columns:
+        ik_display[col] = ik_display[col].round(2)
+    options = [{"label": c, "value": c} for c in all_cols]
+    # Keep user's current selection if valid; otherwise use defaults
+    if current_selection:
+        visible = [c for c in current_selection if c in all_cols]
+    else:
+        visible = [c for c in _IK_DEFAULT_COLS if c in all_cols]
+    columns = [{"name": c, "id": c} for c in visible]
+    return columns, ik_display.to_dict("records"), options, visible
 
 
 @callback(
     Output("gb-data-table", "columns"),
     Output("gb-data-table", "data"),
+    Output("gb-col-selector", "options"),
+    Output("gb-col-selector", "value"),
     Input("selected-wells-store", "data"),
     State("pipeline-result-store", "data"),
+    State("gb-col-selector", "value"),
     prevent_initial_call=True,
 )
-def update_gb_table(selected, pipeline_result):
-    """Populate gun barrel data table for selected wells."""
+def update_gb_table(selected, pipeline_result, current_selection):
+    """Populate gun barrel data table with header info for selected wells."""
     if not selected or not pipeline_result:
-        return [], []
+        return [], [], [], []
     uwis = selected.get("neighborhood_uwis", [])
     IK, HeelToe = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
-        return [], []
+        return [], [], [], []
     neighborhood = _expand_neighborhood(IK, uwis)
     IK_filtered = IK[
         IK["well_i"].astype(str).isin(neighborhood)
@@ -1338,61 +1407,113 @@ def update_gb_table(selected, pipeline_result):
     ].copy()
     HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(neighborhood)]
     if IK_filtered.empty:
-        return [], []
+        return [], [], [], []
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
         IK_filtered["elevation_i"] = IK_filtered["tvd_i"] * -1
     GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
     if GB.empty:
-        return [], []
-    display_cols = [c for c in [
-        "well_i", "well_name", "bench", "elevation_i",
-        "cum_dist", "sectionDist",
-        "horizontal_dist", "vertical_dist",
-        "first_prod_date",
-    ] if c in GB.columns]
-    gb_display = GB[display_cols].round(1)
-    columns = [{"name": c, "id": c} for c in display_cols]
-    return columns, gb_display.to_dict("records")
+        return [], [], [], []
+    # Enrich GB with header data (operator, rsv_cat, etc.)
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+    if not header_df.empty and "uwi" in header_df.columns:
+        header_cols_to_add = [c for c in header_df.columns
+                              if c not in GB.columns and c != "uwi"]
+        if header_cols_to_add:
+            GB = GB.merge(
+                header_df[["uwi"] + header_cols_to_add].rename(columns={"uwi": "well_i"}),
+                on="well_i", how="left",
+            )
+    # Round numeric columns
+    all_cols = list(GB.columns)
+    for col in GB.select_dtypes(include="number").columns:
+        GB[col] = GB[col].round(2)
+    options = [{"label": c, "value": c} for c in all_cols]
+    if current_selection:
+        visible = [c for c in current_selection if c in all_cols]
+    else:
+        visible = [c for c in _GB_DEFAULT_COLS if c in all_cols]
+    columns = [{"name": c, "id": c} for c in visible]
+    return columns, GB.to_dict("records"), options, visible
 
 
 @callback(
     Output("header-data-table", "columns"),
     Output("header-data-table", "data"),
+    Output("header-col-selector", "options"),
+    Output("header-col-selector", "value"),
     Input("selected-wells-store", "data"),
     State("pipeline-result-store", "data"),
+    State("header-col-selector", "value"),
     prevent_initial_call=True,
 )
-def update_header_table(selected, pipeline_result):
-    """Populate header data table for the expanded neighbourhood."""
+def update_header_table(selected, pipeline_result, current_selection):
+    """Populate header data table for the expanded neighbourhood (all columns)."""
     if not selected or not pipeline_result:
-        return [], []
+        return [], [], [], []
     uwis = selected.get("neighborhood_uwis", [])
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
     if header_df.empty:
-        return [], []
-    # Expand to neighbourhood (same logic as gun barrel / IK table)
+        return [], [], [], []
     if not IK.empty:
         neighborhood = _expand_neighborhood(IK, uwis)
     else:
         neighborhood = set(str(u) for u in uwis)
     hdr_sel = header_df[header_df["uwi"].astype(str).isin(neighborhood)]
     if hdr_sel.empty:
-        return [], []
-    # Show the most useful header columns
-    display_cols = [c for c in [
-        "uwi", "well_name", "operator", "bench", "rsv_cat",
-        "hole_direction", "spud_date", "first_prod_date",
-        "lateral_length_ft", "surface_lat", "surface_lon",
-        "latitude", "longitude",
-    ] if c in hdr_sel.columns]
-    hdr_display = hdr_sel[display_cols].copy()
-    # Round numeric columns
+        return [], [], [], []
+    # Expose ALL columns; user picks which to show via dropdown
+    all_cols = list(hdr_sel.columns)
+    hdr_display = hdr_sel.copy()
     for col in hdr_display.select_dtypes(include="number").columns:
         hdr_display[col] = hdr_display[col].round(2)
-    columns = [{"name": c, "id": c} for c in display_cols]
-    return columns, hdr_display.to_dict("records")
+    options = [{"label": c, "value": c} for c in all_cols]
+    if current_selection:
+        visible = [c for c in current_selection if c in all_cols]
+    else:
+        visible = [c for c in _HDR_DEFAULT_COLS if c in all_cols]
+    columns = [{"name": c, "id": c} for c in visible]
+    return columns, hdr_display.to_dict("records"), options, visible
+
+
+# -- Column selector callbacks (update visible columns without reloading data) --
+
+@callback(
+    Output("ik-pairs-table", "columns", allow_duplicate=True),
+    Input("ik-col-selector", "value"),
+    State("ik-pairs-table", "data"),
+    prevent_initial_call=True,
+)
+def filter_ik_columns(selected_cols, data):
+    if not selected_cols or not data:
+        return dash.no_update
+    return [{"name": c, "id": c} for c in selected_cols]
+
+
+@callback(
+    Output("gb-data-table", "columns", allow_duplicate=True),
+    Input("gb-col-selector", "value"),
+    State("gb-data-table", "data"),
+    prevent_initial_call=True,
+)
+def filter_gb_columns(selected_cols, data):
+    if not selected_cols or not data:
+        return dash.no_update
+    return [{"name": c, "id": c} for c in selected_cols]
+
+
+@callback(
+    Output("header-data-table", "columns", allow_duplicate=True),
+    Input("header-col-selector", "value"),
+    State("header-data-table", "data"),
+    prevent_initial_call=True,
+)
+def filter_header_columns(selected_cols, data):
+    if not selected_cols or not data:
+        return dash.no_update
+    return [{"name": c, "id": c} for c in selected_cols]
 
 
 # ---------------------------------------------------------------------------
@@ -1411,6 +1532,12 @@ def update_header_table(selected, pipeline_result):
     Output("gb-data-table", "columns", allow_duplicate=True),
     Output("header-data-table", "data", allow_duplicate=True),
     Output("header-data-table", "columns", allow_duplicate=True),
+    Output("ik-col-selector", "options", allow_duplicate=True),
+    Output("ik-col-selector", "value", allow_duplicate=True),
+    Output("gb-col-selector", "options", allow_duplicate=True),
+    Output("gb-col-selector", "value", allow_duplicate=True),
+    Output("header-col-selector", "options", allow_duplicate=True),
+    Output("header-col-selector", "value", allow_duplicate=True),
     Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("btn-clear-selection", "n_clicks"),
     prevent_initial_call=True,
@@ -1425,7 +1552,8 @@ def clear_selection(n):
         _EMPTY_GEOJSON,
         [], [], [], [],
         [], [],
-        time.time(),  # trigger JS to clear drawn shapes from map
+        [], [], [], [], [], [],
+        time.time(),
     )
 
 

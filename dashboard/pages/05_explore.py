@@ -1148,14 +1148,21 @@ def select_wells_by_shape(geojson, pipeline_result):
     # No buffer needed — we check if the shape touches/crosses the trajectory
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
-    lateral_df = data["lateral_df"]
+    # Use full directional survey (matches what the map displays);
+    # fall back to lateral-only for old caches.
+    survey_df = data.get("directional_df")
+    if survey_df is None or survey_df.empty:
+        survey_df = data["lateral_df"]
+    elif "uwi" in survey_df.columns and "uwi" in data["header_df"].columns:
+        valid_uwis = set(data["header_df"]["uwi"].astype(str).unique())
+        survey_df = survey_df[survey_df["uwi"].astype(str).isin(valid_uwis)]
 
     # Build trajectory LineStrings per well and check intersection with drawn shape
     from shapely.geometry import LineString as ShapelyLineString
     _log.info("select_wells_by_shape: checking trajectories against %s (bounds=%s)",
               drawn_geom.geom_type, drawn_geom.bounds)
     selected_uwis = []
-    for uwi, grp in lateral_df.groupby("uwi"):
+    for uwi, grp in survey_df.groupby("uwi"):
         if "longitude" not in grp.columns or "latitude" not in grp.columns:
             continue
         coords = list(zip(grp["longitude"].astype(float), grp["latitude"].astype(float)))

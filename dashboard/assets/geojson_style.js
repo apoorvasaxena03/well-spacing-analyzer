@@ -1,6 +1,9 @@
 window.dashExtensions = window.dashExtensions || {};
 window.dashExtensions.default = window.dashExtensions.default || {};
 
+// Flag used by draw_clear.js to distinguish well clicks from empty-map clicks
+window._wellFeatureClicked = false;
+
 // Bottomhole: solid filled circle markers
 window.dashExtensions.default.ptl0 = function(feature, latlng) {
     return L.circleMarker(latlng, {
@@ -14,6 +17,9 @@ window.dashExtensions.default.ptl0 = function(feature, latlng) {
 
 // Trajectory tooltip + popup
 window.dashExtensions.default.oef0 = function(feature, layer) {
+    // Signal that a well feature was clicked (checked by draw_clear.js)
+    layer.on('click', function() { window._wellFeatureClicked = true; });
+
     var p = feature.properties || {};
     // Tooltip on hover
     var tip = (p.well_name || p.uwi || "Well");

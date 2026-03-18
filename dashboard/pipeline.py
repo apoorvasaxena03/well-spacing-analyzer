@@ -412,6 +412,7 @@ def run_spacing_calculation(
     run_id: str | None = None,
     stats: PipelineStats | None = None,
     production_df: pd.DataFrame | None = None,
+    directional_df: pd.DataFrame | None = None,
 ) -> str:
     """
     Run the full spacing pipeline and cache results to disk.
@@ -490,6 +491,7 @@ def run_spacing_calculation(
                 "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
                 "header_df": header_df,
                 "lateral_df": lateral_df,
+                "directional_df": directional_df, # full survey (for map trajectories)
                 "production_df": production_df,   # may be None if not uploaded
                 "stats": stats.to_list(),
             },

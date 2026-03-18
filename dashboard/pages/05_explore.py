@@ -45,6 +45,23 @@ def _build_color_map(values: list[str]) -> dict[str, str]:
 
 _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
 
+
+def _expand_neighborhood(IK: pd.DataFrame, uwis: list[str]) -> set[str]:
+    """
+    Expand selected wells to include all direct IK neighbors.
+
+    Mirrors the Spotfire 'data limiting' behaviour: when a well is selected,
+    ALL wells it has spacing pairs with are included in the neighborhood.
+
+    Returns the full set of UWIs (selected + their IK neighbours).
+    """
+    uwi_set = set(str(u) for u in uwis)
+    # Find all pairs involving selected wells (either as well_i or well_k)
+    mask = IK["well_i"].astype(str).isin(uwi_set) | IK["well_k"].astype(str).isin(uwi_set)
+    involved = IK.loc[mask]
+    # Expand: union of all well_i and well_k from those pairs
+    return uwi_set | set(involved["well_i"].astype(str)) | set(involved["well_k"].astype(str))
+
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
@@ -609,6 +626,31 @@ layout = dbc.Container(
                                         title="Gun Barrel Data",
                                         item_id="acc-gb",
                                     ),
+                                    dbc.AccordionItem(
+                                        dash_table.DataTable(
+                                            id="header-data-table",
+                                            columns=[],
+                                            data=[],
+                                            filter_action="native",
+                                            sort_action="native",
+                                            sort_mode="multi",
+                                            page_size=20,
+                                            style_table={"overflowX": "auto", "maxHeight": "40vh"},
+                                            style_cell={
+                                                "textAlign": "left",
+                                                "fontSize": "12px",
+                                                "padding": "4px 8px",
+                                                "minWidth": "80px",
+                                            },
+                                            style_header={
+                                                "fontWeight": "bold",
+                                                "backgroundColor": "#f8f9fa",
+                                            },
+                                            fixed_rows={"headers": True},
+                                        ),
+                                        title="Well Header",
+                                        item_id="acc-header",
+                                    ),
                                 ],
                                 start_collapsed=True,
                                 always_open=True,
@@ -807,9 +849,17 @@ def load_map_layers(pipeline_result):
     logger.info("load_map_layers: loading from %s", pipeline_result["cache_path"])
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
-    lateral_df = data["lateral_df"]
+    # Prefer full directional survey for map (shows vertical + build sections);
+    # fall back to lateral-only for caches created before this change.
+    # Filter to wells present in header_df (only wells used in spacing calc).
+    survey_df = data.get("directional_df")
+    if survey_df is None or survey_df.empty:
+        survey_df = data["lateral_df"]
+    elif "uwi" in survey_df.columns and "uwi" in header_df.columns:
+        valid_uwis = set(header_df["uwi"].astype(str).unique())
+        survey_df = survey_df[survey_df["uwi"].astype(str).isin(valid_uwis)]
 
-    gdf_traj = build_trajectory_geodataframe(lateral_df, header_df)
+    gdf_traj = build_trajectory_geodataframe(survey_df, header_df)
     gdf_bh = build_bottomhole_geodataframe(gdf_traj)
 
     traj_data = gdf_traj.__geo_interface__
@@ -909,9 +959,14 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
     if IK.empty:
         return empty_figure("Pipeline results not loaded.")
 
-    # Spotfire data-limiting: filter IK where well_i is in selection.
-    IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
+    # Expand selection to include all direct IK neighbours (Spotfire data-limiting)
+    neighborhood = _expand_neighborhood(IK, uwis)
+    # Keep pairs where BOTH well_i AND well_k are in the neighbourhood
+    IK_filtered = IK[
+        IK["well_i"].astype(str).isin(neighborhood)
+        & IK["well_k"].astype(str).isin(neighborhood)
+    ].copy()
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(neighborhood)]
 
     if IK_filtered.empty:
         return empty_figure("No spacing pairs found for selected well. Try selecting multiple wells.")
@@ -1139,6 +1194,8 @@ def select_wells_by_shape(geojson, pipeline_result):
     Output("ik-pairs-table", "columns", allow_duplicate=True),
     Output("gb-data-table", "data", allow_duplicate=True),
     Output("gb-data-table", "columns", allow_duplicate=True),
+    Output("header-data-table", "data", allow_duplicate=True),
+    Output("header-data-table", "columns", allow_duplicate=True),
     Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("main-map", "click_lat_lng"),
     State("geojson-trajectories", "n_clicks"),
@@ -1150,7 +1207,7 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
     """Full clear (same as Clear Selection button) when clicking empty map space."""
     import time
 
-    no_update_all = (dash.no_update,) * 10
+    no_update_all = (dash.no_update,) * 12
 
     if not click_lat_lng:
         return no_update_all
@@ -1169,6 +1226,7 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
         empty_figure("Click a well on the map."),
         _EMPTY_GEOJSON,
         [], [], [], [],
+        [], [],
         time.time(),
     )
 
@@ -1218,15 +1276,19 @@ def highlight_selected_wells(selected, pipeline_result):
     prevent_initial_call=True,
 )
 def update_ik_table(selected, pipeline_result):
-    """Populate IK pairs table for selected wells."""
+    """Populate IK pairs table for selected wells (expanded neighbourhood)."""
     if not selected or not pipeline_result:
         return [], []
     uwis = selected.get("neighborhood_uwis", [])
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
         return [], []
-    # Filter to pairs involving selected wells (well_i OR well_k in selection)
-    ik_sel = IK[IK["well_i"].isin(uwis) | IK["well_k"].isin(uwis)]
+    # Expand to full neighbourhood, then keep pairs where BOTH wells are in it
+    neighborhood = _expand_neighborhood(IK, uwis)
+    ik_sel = IK[
+        IK["well_i"].astype(str).isin(neighborhood)
+        & IK["well_k"].astype(str).isin(neighborhood)
+    ]
     if ik_sel.empty:
         return [], []
     # Select display columns
@@ -1256,8 +1318,12 @@ def update_gb_table(selected, pipeline_result):
     IK, HeelToe = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
         return [], []
-    IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
+    neighborhood = _expand_neighborhood(IK, uwis)
+    IK_filtered = IK[
+        IK["well_i"].astype(str).isin(neighborhood)
+        & IK["well_k"].astype(str).isin(neighborhood)
+    ].copy()
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(neighborhood)]
     if IK_filtered.empty:
         return [], []
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
@@ -1276,6 +1342,46 @@ def update_gb_table(selected, pipeline_result):
     return columns, gb_display.to_dict("records")
 
 
+@callback(
+    Output("header-data-table", "columns"),
+    Output("header-data-table", "data"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def update_header_table(selected, pipeline_result):
+    """Populate header data table for the expanded neighbourhood."""
+    if not selected or not pipeline_result:
+        return [], []
+    uwis = selected.get("neighborhood_uwis", [])
+    IK, _ = load_cached_ik_heeltoe(pipeline_result)
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+    if header_df.empty:
+        return [], []
+    # Expand to neighbourhood (same logic as gun barrel / IK table)
+    if not IK.empty:
+        neighborhood = _expand_neighborhood(IK, uwis)
+    else:
+        neighborhood = set(str(u) for u in uwis)
+    hdr_sel = header_df[header_df["uwi"].astype(str).isin(neighborhood)]
+    if hdr_sel.empty:
+        return [], []
+    # Show the most useful header columns
+    display_cols = [c for c in [
+        "uwi", "well_name", "operator", "bench", "rsv_cat",
+        "hole_direction", "spud_date", "first_prod_date",
+        "lateral_length_ft", "surface_lat", "surface_lon",
+        "latitude", "longitude",
+    ] if c in hdr_sel.columns]
+    hdr_display = hdr_sel[display_cols].copy()
+    # Round numeric columns
+    for col in hdr_display.select_dtypes(include="number").columns:
+        hdr_display[col] = hdr_display[col].round(2)
+    columns = [{"name": c, "id": c} for c in display_cols]
+    return columns, hdr_display.to_dict("records")
+
+
 # ---------------------------------------------------------------------------
 # Clear selection
 # ---------------------------------------------------------------------------
@@ -1290,6 +1396,8 @@ def update_gb_table(selected, pipeline_result):
     Output("ik-pairs-table", "columns", allow_duplicate=True),
     Output("gb-data-table", "data", allow_duplicate=True),
     Output("gb-data-table", "columns", allow_duplicate=True),
+    Output("header-data-table", "data", allow_duplicate=True),
+    Output("header-data-table", "columns", allow_duplicate=True),
     Output("clear-draw-trigger", "data", allow_duplicate=True),
     Input("btn-clear-selection", "n_clicks"),
     prevent_initial_call=True,
@@ -1303,6 +1411,7 @@ def clear_selection(n):
         empty_figure("Click a well on the map."),
         _EMPTY_GEOJSON,
         [], [], [], [],
+        [], [],
         time.time(),  # trigger JS to clear drawn shapes from map
     )
 

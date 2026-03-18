@@ -16,7 +16,7 @@ suppress_callback_exceptions for these specific components.
 import dash
 import pandas as pd
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback, dcc, html
+from dash import Input, Output, State, callback, dcc, html, dash_table
 import dash_leaflet as dl
 import plotly.graph_objects as go
 import plotly.express as px
@@ -411,7 +411,7 @@ layout = dbc.Container(
                 ),
 
                 # ── Right: Charts ───────────────────────────────────────────
-                dbc.Col(
+                dbc.Col([
                     dbc.Card(
                         [
                             dbc.CardHeader(
@@ -453,12 +453,20 @@ layout = dbc.Container(
                                             ),
                                             dbc.Col(
                                                 dbc.Checklist(
-                                                    id="gb-toggles",
-                                                    options=[
-                                                        {"label": "Lines", "value": "lines"},
-                                                        {"label": "Labels", "value": "labels"},
-                                                    ],
-                                                    value=["lines", "labels"],
+                                                    id="gb-toggle-lines",
+                                                    options=[{"label": "Lines", "value": "lines"}],
+                                                    value=["lines"],
+                                                    inline=True,
+                                                    input_class_name="me-1",
+                                                    label_class_name="small me-3",
+                                                ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.Checklist(
+                                                    id="gb-toggle-labels",
+                                                    options=[{"label": "Labels", "value": "labels"}],
+                                                    value=["labels"],
                                                     inline=True,
                                                     input_class_name="me-1",
                                                     label_class_name="small me-3",
@@ -472,41 +480,141 @@ layout = dbc.Container(
                                 ]
                             ),
                             dbc.CardBody(
-                                dbc.Tabs(
-                                    [
-                                        dbc.Tab(
-                                            dcc.Graph(
-                                                id="gun-barrel-chart",
-                                                style={"height": "60vh"},
-                                                figure=empty_figure("Click a well on the map."),
+                                [
+                                    # Gun Barrel (standalone)
+                                    dcc.Graph(
+                                        id="gun-barrel-chart",
+                                        style={"height": "40vh"},
+                                        figure=empty_figure("Click a well on the map."),
+                                    ),
+                                    html.Hr(className="my-2"),
+
+                                    # Cumulative Production
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(html.Strong("Cumulative Production", className="small"), width="auto"),
+                                            dbc.Col(
+                                                dbc.RadioItems(
+                                                    id="cum-prod-product",
+                                                    options=[
+                                                        {"label": "Oil",   "value": "oil"},
+                                                        {"label": "Gas",   "value": "gas"},
+                                                        {"label": "Water", "value": "water"},
+                                                    ],
+                                                    value="oil",
+                                                    inline=True,
+                                                    className="small",
+                                                ),
+                                                width="auto",
                                             ),
-                                            label="Gun Barrel",
-                                            tab_id="tab-gb",
-                                        ),
-                                        dbc.Tab(
-                                            dcc.Graph(
-                                                id="cum-oil-chart",
-                                                style={"height": "60vh"},
-                                                figure=empty_figure("Click a well on the map."),
+                                        ],
+                                        align="center",
+                                        className="mb-1",
+                                    ),
+                                    dcc.Graph(
+                                        id="cum-oil-chart",
+                                        style={"height": "28vh"},
+                                        figure=empty_figure("Click a well on the map."),
+                                    ),
+                                    html.Hr(className="my-2"),
+
+                                    # Daily Production
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(html.Strong("Daily Production", className="small"), width="auto"),
+                                            dbc.Col(
+                                                dbc.RadioItems(
+                                                    id="daily-prod-product",
+                                                    options=[
+                                                        {"label": "Oil",   "value": "oil"},
+                                                        {"label": "Gas",   "value": "gas"},
+                                                        {"label": "Water", "value": "water"},
+                                                    ],
+                                                    value="oil",
+                                                    inline=True,
+                                                    className="small",
+                                                ),
+                                                width="auto",
                                             ),
-                                            label="Cum Oil",
-                                            tab_id="tab-cum-oil",
-                                        ),
-                                        dbc.Tab(
-                                            dcc.Graph(
-                                                id="daily-oil-chart",
-                                                style={"height": "60vh"},
-                                                figure=empty_figure("Click a well on the map."),
-                                            ),
-                                            label="Daily Oil",
-                                            tab_id="tab-daily-oil",
-                                        ),
-                                    ],
-                                    active_tab="tab-gb",
-                                ),
+                                        ],
+                                        align="center",
+                                        className="mb-1",
+                                    ),
+                                    dcc.Graph(
+                                        id="daily-oil-chart",
+                                        style={"height": "28vh"},
+                                        figure=empty_figure("Click a well on the map."),
+                                    ),
+                                ],
+                                style={"maxHeight": "90vh", "overflowY": "auto"},
                             ),
                         ]
                     ),
+                    # ── Data Tables ────────────────────────────────────────
+                    dbc.Card(
+                        dbc.CardBody(
+                            dbc.Accordion(
+                                [
+                                    dbc.AccordionItem(
+                                        dash_table.DataTable(
+                                            id="ik-pairs-table",
+                                            columns=[],
+                                            data=[],
+                                            filter_action="native",
+                                            sort_action="native",
+                                            sort_mode="multi",
+                                            column_selectable="multi",
+
+                                            page_size=20,
+                                            style_table={"overflowX": "auto", "maxHeight": "40vh"},
+                                            style_cell={
+                                                "textAlign": "left",
+                                                "fontSize": "12px",
+                                                "padding": "4px 8px",
+                                                "minWidth": "80px",
+                                            },
+                                            style_header={
+                                                "fontWeight": "bold",
+                                                "backgroundColor": "#f8f9fa",
+                                            },
+                                            fixed_rows={"headers": True},
+                                        ),
+                                        title="IK Spacing Pairs",
+                                        item_id="acc-ik",
+                                    ),
+                                    dbc.AccordionItem(
+                                        dash_table.DataTable(
+                                            id="gb-data-table",
+                                            columns=[],
+                                            data=[],
+                                            filter_action="native",
+                                            sort_action="native",
+                                            sort_mode="multi",
+                                            page_size=15,
+                                            style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                            style_cell={
+                                                "textAlign": "left",
+                                                "fontSize": "12px",
+                                                "padding": "4px 8px",
+                                                "minWidth": "80px",
+                                            },
+                                            style_header={
+                                                "fontWeight": "bold",
+                                                "backgroundColor": "#f8f9fa",
+                                            },
+                                            fixed_rows={"headers": True},
+                                        ),
+                                        title="Gun Barrel Data",
+                                        item_id="acc-gb",
+                                    ),
+                                ],
+                                start_collapsed=True,
+                                always_open=True,
+                            ),
+                        ),
+                        className="mt-2",
+                    ),
+                    ],
                     md=7,
                 ),
             ],
@@ -530,6 +638,17 @@ layout = dbc.Container(
 )
 def toggle_style_panel(n, is_open):
     return not is_open
+
+
+# -- Labels disabled when Lines unchecked --
+@callback(
+    Output("gb-toggle-labels", "options"),
+    Input("gb-toggle-lines", "value"),
+    prevent_initial_call=True,
+)
+def toggle_labels_enabled(lines_value):
+    disabled = "lines" not in (lines_value or [])
+    return [{"label": "Labels", "value": "labels", "disabled": disabled}]
 
 
 # -- Trajectory style → hideout --
@@ -724,21 +843,22 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     Input("selected-wells-store", "data"),
     Input("gb-xaxis-mode", "value"),
     Input("gb-color-by", "value"),
-    Input("gb-toggles", "value"),
+    Input("gb-toggle-lines", "value"),
+    Input("gb-toggle-labels", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_gun_barrel(selected, x_col, color_by, toggles, pipeline_result):
+def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
-        return _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result)
+        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, pipeline_result)
     except Exception as exc:
         _log.exception("Gun barrel error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
-def _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result):
+def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -762,8 +882,8 @@ def _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result
         IK_filtered["elevation_k"] = IK_filtered["tvd_k"] * -1
 
     GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
-    show_lines = "lines" in (toggles or [])
-    show_labels = "labels" in (toggles or [])
+    show_lines = "lines" in (lines_toggle or [])
+    show_labels = show_lines and "labels" in (labels_toggle or [])
     return build_gun_barrel_figure(
         GB, IK_filtered,
         x_col=x_col,
@@ -776,13 +896,15 @@ def _update_gun_barrel_inner(selected, x_col, color_by, toggles, pipeline_result
 @callback(
     Output("cum-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
+    Input("cum-prod-product", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_cum_oil(selected, pipeline_result):
+def update_cum_production(selected, product, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
+        product = product or "oil"
         if not selected or not pipeline_result:
             return empty_figure("Click a well on the map.")
 
@@ -791,6 +913,11 @@ def update_cum_oil(selected, pipeline_result):
 
         if prod is None or prod.empty:
             return empty_figure("No production data loaded.")
+
+        # Find the column for the selected product
+        col = product if product in prod.columns else None
+        if col is None:
+            return empty_figure(f"No '{product}' column in production data.")
 
         uwis = selected.get("neighborhood_uwis", [])
         prod_sel = prod[prod["uwi"].isin(uwis)].copy()
@@ -798,40 +925,47 @@ def update_cum_oil(selected, pipeline_result):
             return empty_figure("No production data for selected wells.")
 
         prod_sel = prod_sel.sort_values(["uwi", "prod_date"])
-        prod_sel["cum_oil"] = prod_sel.groupby("uwi")["oil"].cumsum()
+        cum_col = f"cum_{product}"
+        prod_sel[cum_col] = prod_sel.groupby("uwi")[col].cumsum()
         prod_sel["months"] = prod_sel.groupby("uwi")["prod_date"].transform(
             lambda s: (s - s.min()).dt.days / 30.44
         )
 
+        unit_map = {"oil": "BBL", "gas": "MCF", "water": "BBL"}
+        unit = unit_map.get(product, "")
+
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
             fig.add_trace(go.Scatter(
-                x=grp["months"], y=grp["cum_oil"],
+                x=grp["months"], y=grp[cum_col],
                 mode="lines", name=str(uwi),
             ))
         fig.update_layout(
             xaxis_title="Months since first production",
-            yaxis_title="Cumulative Oil (BBL)",
+            yaxis_title=f"Cumulative {product.title()} ({unit})",
             template="plotly_white",
             hovermode="x unified",
             margin=dict(t=30, b=50, l=60, r=20),
+            yaxis=dict(tickformat=","),
         )
         return fig
     except Exception as exc:
-        _log.exception("Cum oil chart error: %s", exc)
+        _log.exception("Cum production chart error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
 @callback(
     Output("daily-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
+    Input("daily-prod-product", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_daily_oil(selected, pipeline_result):
+def update_daily_production(selected, product, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
+        product = product or "oil"
         if not selected or not pipeline_result:
             return empty_figure("Click a well on the map.")
 
@@ -841,26 +975,37 @@ def update_daily_oil(selected, pipeline_result):
         if prod is None or prod.empty:
             return empty_figure("No production data loaded.")
 
+        # Try daily_<product> first, then fall back to <product>
+        daily_col = f"daily_{product}"
+        col = daily_col if daily_col in prod.columns else (product if product in prod.columns else None)
+        if col is None:
+            return empty_figure(f"No '{product}' column in production data.")
+
+        unit_map = {"oil": "BOPD", "gas": "MCFD", "water": "BWPD"}
+        unit = unit_map.get(product, "")
+
         uwis = selected.get("neighborhood_uwis", [])
         prod_sel = prod[prod["uwi"].isin(uwis)].sort_values(["uwi", "prod_date"])
+        if prod_sel.empty:
+            return empty_figure("No production data for selected wells.")
 
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
-            oil_col = "daily_oil" if "daily_oil" in grp.columns else "oil"
             fig.add_trace(go.Scatter(
-                x=grp["prod_date"], y=grp[oil_col],
+                x=grp["prod_date"], y=grp[col],
                 mode="lines", name=str(uwi),
             ))
         fig.update_layout(
             xaxis_title="Production Date",
-            yaxis_title="Daily Oil (BOPD)",
+            yaxis_title=f"Daily {product.title()} ({unit})",
             template="plotly_white",
             hovermode="x unified",
             margin=dict(t=30, b=50, l=60, r=20),
+            yaxis=dict(tickformat=","),
         )
         return fig
     except Exception as exc:
-        _log.exception("Daily oil chart error: %s", exc)
+        _log.exception("Daily production chart error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
@@ -998,6 +1143,76 @@ def highlight_selected_wells(selected, pipeline_result):
 
 
 # ---------------------------------------------------------------------------
+# Data tables — IK Pairs + Gun Barrel
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("ik-pairs-table", "columns"),
+    Output("ik-pairs-table", "data"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def update_ik_table(selected, pipeline_result):
+    """Populate IK pairs table for selected wells."""
+    if not selected or not pipeline_result:
+        return [], []
+    uwis = selected.get("neighborhood_uwis", [])
+    IK, _ = load_cached_ik_heeltoe(pipeline_result)
+    if IK.empty:
+        return [], []
+    # Filter to pairs involving selected wells (well_i OR well_k in selection)
+    ik_sel = IK[IK["well_i"].isin(uwis) | IK["well_k"].isin(uwis)]
+    if ik_sel.empty:
+        return [], []
+    # Select display columns
+    display_cols = [c for c in [
+        "well_i", "well_k", "well_name_i", "well_name_k",
+        "horizontal_dist", "vertical_dist", "dist3d",
+        "alignment_type", "overlap_pct",
+        "bench_i", "bench_k", "operator_i", "operator_k",
+    ] if c in ik_sel.columns]
+    ik_display = ik_sel[display_cols].round(1)
+    columns = [{"name": c, "id": c, "selectable": True} for c in display_cols]
+    return columns, ik_display.to_dict("records")
+
+
+@callback(
+    Output("gb-data-table", "columns"),
+    Output("gb-data-table", "data"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def update_gb_table(selected, pipeline_result):
+    """Populate gun barrel data table for selected wells."""
+    if not selected or not pipeline_result:
+        return [], []
+    uwis = selected.get("neighborhood_uwis", [])
+    IK, HeelToe = load_cached_ik_heeltoe(pipeline_result)
+    if IK.empty:
+        return [], []
+    IK_filtered = IK[IK["well_i"].isin(uwis)].copy()
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].isin(uwis)]
+    if IK_filtered.empty:
+        return [], []
+    if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
+        IK_filtered["elevation_i"] = IK_filtered["tvd_i"] * -1
+    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
+    if GB.empty:
+        return [], []
+    display_cols = [c for c in [
+        "well_i", "well_name", "bench", "elevation_i",
+        "cum_dist", "sectionDist",
+        "horizontal_dist", "vertical_dist",
+        "first_prod_date",
+    ] if c in GB.columns]
+    gb_display = GB[display_cols].round(1)
+    columns = [{"name": c, "id": c} for c in display_cols]
+    return columns, gb_display.to_dict("records")
+
+
+# ---------------------------------------------------------------------------
 # Clear selection
 # ---------------------------------------------------------------------------
 
@@ -1006,6 +1221,11 @@ def highlight_selected_wells(selected, pipeline_result):
     Output("gun-barrel-chart", "figure", allow_duplicate=True),
     Output("cum-oil-chart", "figure", allow_duplicate=True),
     Output("daily-oil-chart", "figure", allow_duplicate=True),
+    Output("geojson-selected", "data", allow_duplicate=True),
+    Output("ik-pairs-table", "data", allow_duplicate=True),
+    Output("ik-pairs-table", "columns", allow_duplicate=True),
+    Output("gb-data-table", "data", allow_duplicate=True),
+    Output("gb-data-table", "columns", allow_duplicate=True),
     Input("btn-clear-selection", "n_clicks"),
     prevent_initial_call=True,
 )
@@ -1015,6 +1235,8 @@ def clear_selection(n):
         empty_figure("Click a well on the map."),
         empty_figure("Click a well on the map."),
         empty_figure("Click a well on the map."),
+        _EMPTY_GEOJSON,
+        [], [], [], [],
     )
 
 

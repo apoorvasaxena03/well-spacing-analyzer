@@ -457,6 +457,9 @@ def run_spacing_calculation(
     stats.record_independent("Spacing pairs computed (raw)", total_pairs, unit="pairs")
     logger.info("Spacing stats done: %d pairs in %.1fs", total_pairs, time.perf_counter() - t0)
 
+    # Preserve ALL pairs (including rejected) for optional export
+    df_spacing_raw = df_spacing.copy()
+
     # --- Filter out rejected pairs (matches notebook) ---
     if "reject_reason" in df_spacing.columns:
         valid_mask = (df_spacing["reject_reason"] == "") | df_spacing["reject_reason"].isna()
@@ -482,11 +485,12 @@ def run_spacing_calculation(
     with open(cache_key, "wb") as f:
         pickle.dump(
             {
-                "df_spacing": df_enriched,      # enriched neighbor summary (well_i + uwi_same/near)
-                "df_ik_pairs": df_spacing,       # raw IK pairs (well_i, well_k, horizontal_dist, etc.)
+                "df_spacing": df_enriched,       # enriched neighbor summary (well_i + uwi_same/near)
+                "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
+                "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
                 "header_df": header_df,
                 "lateral_df": lateral_df,
-                "production_df": production_df,  # may be None if not uploaded
+                "production_df": production_df,   # may be None if not uploaded
                 "stats": stats.to_list(),
             },
             f,

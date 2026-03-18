@@ -56,10 +56,11 @@ layout = dbc.Container(
                                     dbc.Checklist(
                                         id="export-include",
                                         options=[
-                                            {"label": "Valid IK pairs (reject-filtered)",  "value": "ik_valid"},
-                                            {"label": "Neighbor summary (1 row/well)",     "value": "neighbor_summary"},
-                                            {"label": "Well header (processed)",           "value": "header"},
-                                            {"label": "Production data",                   "value": "production"},
+                                            {"label": "Valid IK pairs (reject-filtered)",       "value": "ik_valid"},
+                                            {"label": "IK pairs — all, including rejected",     "value": "ik_raw"},
+                                            {"label": "Neighbor summary (1 row/well)",          "value": "neighbor_summary"},
+                                            {"label": "Well header (processed)",                "value": "header"},
+                                            {"label": "Production data",                        "value": "production"},
                                         ],
                                         value=["ik_valid", "neighbor_summary", "header"],
                                         input_class_name="me-1",
@@ -142,6 +143,9 @@ def show_preview(pipeline_result):
     ik = data.get("df_ik_pairs")
     if ik is not None:
         lines.append(f"Valid IK pairs: {len(ik):,} rows × {len(ik.columns)} columns")
+    ik_raw = data.get("df_ik_pairs_raw")
+    if ik_raw is not None:
+        lines.append(f"IK pairs (all, incl. rejected): {len(ik_raw):,} rows × {len(ik_raw.columns)} columns")
     summary = data.get("df_spacing")
     if summary is not None:
         lines.append(f"Neighbor summary: {len(summary):,} rows × {len(summary.columns)} columns")
@@ -185,6 +189,8 @@ def _do_export_inner(pipeline_result, fmt, include):
     sheets: dict[str, pd.DataFrame] = {}
     if "ik_valid" in include and data.get("df_ik_pairs") is not None:
         sheets["IK_Pairs_Valid"] = data["df_ik_pairs"]
+    if "ik_raw" in include and data.get("df_ik_pairs_raw") is not None:
+        sheets["IK_Pairs_All"] = data["df_ik_pairs_raw"]
     if "neighbor_summary" in include and data.get("df_spacing") is not None:
         sheets["Neighbor_Summary"] = data["df_spacing"]
     if "header" in include and data.get("header_df") is not None:
@@ -260,6 +266,7 @@ def export_session_package(n_clicks, pipeline_result):
             # Write each DataFrame as parquet
             dataset_keys = [
                 ("df_ik_pairs", "ik_pairs"),
+                ("df_ik_pairs_raw", "ik_pairs_raw"),
                 ("df_spacing", "neighbor_summary"),
                 ("header_df", "header"),
                 ("lateral_df", "lateral"),

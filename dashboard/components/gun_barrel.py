@@ -257,10 +257,12 @@ def build_gun_barrel_figure(
         xaxis=dict(
             title=x_label,
             zeroline=False,
+            tickformat=",",
         ),
         yaxis=dict(
             title="Depth TVD (ft)",
             autorange="reversed",
+            tickformat=",",
         ),
         legend=dict(title="Bench / Formation", orientation="h", y=-0.15),
         hovermode="closest",

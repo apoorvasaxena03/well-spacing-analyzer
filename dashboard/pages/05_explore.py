@@ -1256,16 +1256,22 @@ def highlight_selected_wells(selected, pipeline_result):
     uwis = selected["neighborhood_uwis"]
     try:
         data = load_cached_pipeline(pipeline_result["cache_path"])
-        lateral_df = data["lateral_df"]
         header_df = data["header_df"]
+        # Use full directional survey for highlight (matches map display)
+        survey_df = data.get("directional_df")
+        if survey_df is None or survey_df.empty:
+            survey_df = data["lateral_df"]
+        elif "uwi" in survey_df.columns and "uwi" in header_df.columns:
+            valid_uwis = set(header_df["uwi"].astype(str).unique())
+            survey_df = survey_df[survey_df["uwi"].astype(str).isin(valid_uwis)]
 
-        sel_lateral = lateral_df[lateral_df["uwi"].isin(uwis)]
+        sel_survey = survey_df[survey_df["uwi"].astype(str).isin([str(u) for u in uwis])]
         sel_header = header_df[header_df["uwi"].isin(uwis)]
 
-        if sel_lateral.empty:
+        if sel_survey.empty:
             return _EMPTY_GEOJSON
 
-        gdf = build_trajectory_geodataframe(sel_lateral, sel_header)
+        gdf = build_trajectory_geodataframe(sel_survey, sel_header)
         return gdf.__geo_interface__ if not gdf.empty else _EMPTY_GEOJSON
     except Exception:
         return _EMPTY_GEOJSON

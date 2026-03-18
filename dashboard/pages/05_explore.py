@@ -1023,8 +1023,8 @@ def clear_selection(n):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("main-map", "center"),
-    Output("main-map", "zoom"),
+    Output("main-map", "center", allow_duplicate=True),
+    Output("main-map", "zoom", allow_duplicate=True),
     Input("btn-zoom-to-wells", "n_clicks"),
     State("pipeline-result-store", "data"),
     State("filter-uwis-store", "data"),

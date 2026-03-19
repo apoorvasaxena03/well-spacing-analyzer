@@ -58,6 +58,13 @@ layout = dbc.Container(
             id="calc-progress-area",
             style={"display": "none"},
         ),
+        # Spinner shown immediately on click (before background job updates progress)
+        dcc.Loading(
+            id="calc-loading-spinner",
+            type="default",
+            children=html.Div(id="calc-loading-target"),
+            fullscreen=False,
+        ),
 
         dbc.Alert(id="calc-error", color="danger", is_open=False, dismissable=True, className="mt-3"),
 
@@ -140,6 +147,24 @@ def _build_funnel_report(steps: list[dict]) -> dbc.Card:
         ]),
         className="mt-3",
     )
+
+
+# Show progress area immediately on button click (before background job starts)
+dash.clientside_callback(
+    """
+    function(n_clicks) {
+        if (!n_clicks) return [window.dash_clientside.no_update,
+                               window.dash_clientside.no_update,
+                               window.dash_clientside.no_update];
+        return [{"display": "block"}, true, "Starting..."];
+    }
+    """,
+    Output("calc-progress-area", "style", allow_duplicate=True),
+    Output("btn-calculate", "disabled", allow_duplicate=True),
+    Output("calc-status-text", "children", allow_duplicate=True),
+    Input("btn-calculate", "n_clicks"),
+    prevent_initial_call=True,
+)
 
 
 @callback(

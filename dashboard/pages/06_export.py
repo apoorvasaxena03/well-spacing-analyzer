@@ -70,15 +70,22 @@ layout = dbc.Container(
                                 md=6,
                             ),
                             dbc.Col(
-                                dbc.Button(
-                                    [html.I(className="bi bi-download me-2"), "Download"],
-                                    id="btn-export",
-                                    color="primary",
-                                    size="lg",
-                                    className="mt-3",
-                                ),
+                                [
+                                    dcc.Loading(
+                                        id="export-loading",
+                                        type="circle",
+                                        children=dbc.Button(
+                                            [html.I(className="bi bi-download me-2"), "Download"],
+                                            id="btn-export",
+                                            color="primary",
+                                            size="lg",
+                                            className="mt-3",
+                                        ),
+                                    ),
+                                    html.Div(id="export-status", className="small text-muted mt-1"),
+                                ],
                                 md=4,
-                                className="d-flex align-items-end",
+                                className="d-flex flex-column align-items-start",
                             ),
                         ]
                     ),
@@ -102,11 +109,15 @@ layout = dbc.Container(
                         "Steps 2–4 and go straight to Explore.",
                         className="text-muted small mb-3",
                     ),
-                    dbc.Button(
-                        [html.I(className="bi bi-box-arrow-up me-2"), "Export Session Package (.zip)"],
-                        id="btn-export-session",
-                        color="success",
-                        size="lg",
+                    dcc.Loading(
+                        id="session-export-loading",
+                        type="circle",
+                        children=dbc.Button(
+                            [html.I(className="bi bi-box-arrow-up me-2"), "Export Session Package (.zip)"],
+                            id="btn-export-session",
+                            color="success",
+                            size="lg",
+                        ),
                     ),
                 ]
             ),
@@ -165,6 +176,7 @@ def show_preview(pipeline_result):
     Output("export-download", "data"),
     Output("export-error", "children"),
     Output("export-error", "is_open"),
+    Output("export-status", "children"),
     Input("btn-export", "n_clicks"),
     State("pipeline-result-store", "data"),
     State("export-format", "value"),
@@ -173,16 +185,24 @@ def show_preview(pipeline_result):
 )
 def do_export(n_clicks, pipeline_result, fmt, include):
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return dash.no_update, "No pipeline results available. Run Step 4 first.", True
+        return dash.no_update, "No pipeline results available. Run Step 4 first.", True, ""
 
     try:
-        return _do_export_inner(pipeline_result, fmt, include)
+        result = _do_export_inner(pipeline_result, fmt, include)
+        total_rows = sum(len(df) for df in _last_export_sheets.values()) if _last_export_sheets else 0
+        status = f"Downloaded ({total_rows:,} rows total)."
+        return result[0], result[1], result[2], status
     except Exception as exc:
         logger.exception("Export failed: %s", exc)
-        return dash.no_update, str(exc), True
+        return dash.no_update, str(exc), True, ""
+
+
+# Track last export for status message
+_last_export_sheets: dict[str, pd.DataFrame] = {}
 
 
 def _do_export_inner(pipeline_result, fmt, include):
+    global _last_export_sheets
     data = load_cached_pipeline(pipeline_result["cache_path"])
 
     # Build dict of selected datasets
@@ -207,11 +227,10 @@ def _do_export_inner(pipeline_result, fmt, include):
     if not sheets:
         return dash.no_update, "No datasets selected.", True
 
+    _last_export_sheets = sheets
     run_id = pipeline_result.get("run_id", "export")
 
     if fmt == "csv":
-        # For CSV: export the first selected dataset (most important)
-        # For multi-dataset CSV export, use Excel instead
         name = list(sheets.keys())[0]
         df = sheets[name]
         filename = f"{name}_{run_id}.csv"

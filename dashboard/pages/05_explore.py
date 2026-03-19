@@ -596,22 +596,42 @@ layout = dbc.Container(
                     dbc.Tab(label="Analysis", tab_id="tab-analysis", children=[
                         dbc.Card(dbc.CardBody([
                             # -- Shared Parameters --
-                            html.H6("Shared Parameters", className="mb-2"),
+                            html.H6("Shared Parameters", className="mb-1"),
+                            html.P(
+                                "These thresholds are shared by Directional Bench Neighbors and "
+                                "Average Spacing. They control which IK pairs qualify as neighbors.",
+                                className="text-muted small mb-2",
+                            ),
                             dbc.Row([
                                 dbc.Col([
                                     dbc.Label("Cutoff (ft)", size="sm"),
                                     dbc.Input(id="dbn-cutoff-ft", type="number",
                                               value=1800, min=0, step=100, size="sm"),
+                                    dbc.FormText(
+                                        "Maximum horizontal spacing (ft) to consider a well a neighbor. "
+                                        "Pairs with horizontal_dist > cutoff are excluded. "
+                                        "Typical range: 800-2,500 ft."
+                                    ),
                                 ], md=4),
                                 dbc.Col([
                                     dbc.Label("Vertical cutoff (ft)", size="sm"),
                                     dbc.Input(id="dbn-vertical-cutoff-ft", type="number",
                                               placeholder="None", min=0, step=50, size="sm"),
+                                    dbc.FormText(
+                                        "Optional. If set, pairs must also satisfy vertical_dist <= this. "
+                                        "Useful for multi-bench developments where you want to exclude "
+                                        "wells in different benches that are laterally close but vertically far."
+                                    ),
                                 ], md=4),
                                 dbc.Col([
                                     dbc.Label("Overlap % min", size="sm"),
                                     dbc.Input(id="dbn-overlap-pct-min", type="number",
                                               placeholder="None", min=0, max=1, step=0.05, size="sm"),
+                                    dbc.FormText(
+                                        "Optional. Minimum lateral overlap fraction (0-1) required. "
+                                        "E.g. 0.40 = well_k must overlap at least 40% of well_i's lateral. "
+                                        "Filters out pairs that barely overlap."
+                                    ),
                                 ], md=4),
                             ], className="mb-2"),
                             dbc.Row([
@@ -623,6 +643,11 @@ layout = dbc.Container(
                                                    {"label": "EW only", "value": "EW"},
                                                    {"label": "NS only", "value": "NS"},
                                                ]),
+                                    dbc.FormText(
+                                        "Direction eligibility. 'Any' = neighbors from all directions. "
+                                        "'EW' = only east/west neighbors. 'NS' = only north/south. "
+                                        "Use when well pattern has a dominant drilling direction."
+                                    ),
                                 ], md=4),
                                 dbc.Col([
                                     dbc.Label("Prefer axis", size="sm"),
@@ -632,6 +657,10 @@ layout = dbc.Container(
                                                    {"label": "EW", "value": "EW"},
                                                    {"label": "NS", "value": "NS"},
                                                ]),
+                                    dbc.FormText(
+                                        "Optional tie-breaker. When two candidates tie on distance, "
+                                        "prefer the one along this axis. Leave 'None' for no preference."
+                                    ),
                                 ], md=4),
                             ], className="mb-3"),
 
@@ -640,7 +669,14 @@ layout = dbc.Container(
                             # -- Overrides --
                             dbc.Row([
                                 dbc.Col([
-                                    html.H6("Overrides", className="mb-1"),
+                                    html.H6("Per-Well Overrides", className="mb-1"),
+                                    html.P(
+                                        "Upload a CSV to set per-well cutoffs that override the shared values above. "
+                                        "Required column: 'uwi'. Optional columns: 'cutoff_ft', 'vertical_cutoff_ft', "
+                                        "'overlap_pct_k_min'. Leave cells blank to fall back to the shared value. "
+                                        "Applies to DBN and Avg Spacing only (WPS has no per-well overrides).",
+                                        className="text-muted small mb-2",
+                                    ),
                                     dbc.RadioItems(
                                         id="overrides-mode",
                                         options=[
@@ -705,7 +741,18 @@ layout = dbc.Container(
                             # ── Directional Bench Neighbors ──
                             dbc.Accordion([
                                 dbc.AccordionItem([
-                                    html.P("Uses shared parameters above.", className="text-muted small mb-2"),
+                                    html.P(
+                                        "Reduces the pairwise IK spacing table to one row per well. "
+                                        "For each well_i, picks up to 4 nearest neighbors: "
+                                        "same-bench closest (same_1), same-bench opposite direction (same_2), "
+                                        "different-bench closest (near_1), different-bench opposite (near_2). "
+                                        "Also classifies each well as Unbounded / Partially / Mostly / Fully Bounded.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    html.P(
+                                        "Uses the shared cutoff, vertical cutoff, overlap, and axis parameters above.",
+                                        className="text-muted small mb-2 fst-italic",
+                                    ),
                                     dbc.Button("Run Neighbor Summary", id="btn-run-dbn",
                                                color="primary", size="sm", className="mb-2"),
                                     dcc.Loading(
@@ -730,15 +777,28 @@ layout = dbc.Container(
 
                                 # ── Average Spacing ──
                                 dbc.AccordionItem([
+                                    html.P(
+                                        "Computes the average well spacing for each well by building a "
+                                        "neighborhood of eligible neighbors and computing chain or dense "
+                                        "spacing metrics. Output: one row per well with avg_hz_spacing_ft "
+                                        "and avg_vt_spacing_ft.",
+                                        className="text-muted small mb-2",
+                                    ),
                                     dbc.Row([
                                         dbc.Col([
-                                            dbc.Label("Neighborhood", size="sm"),
+                                            dbc.Label("Neighborhood mode", size="sm"),
                                             dbc.Select(id="avg-neighborhood-mode", size="sm", value="chain",
                                                        options=[
                                                            {"label": "Chain", "value": "chain"},
                                                            {"label": "i2nbr", "value": "i2nbr"},
                                                            {"label": "Dense", "value": "dense"},
                                                        ]),
+                                            dbc.FormText(
+                                                "Chain (default): orders neighbors A-B-C-D along a line and "
+                                                "averages consecutive edge distances. Best for parallel wells. "
+                                                "i2nbr: simple mean of all i-to-neighbor distances. "
+                                                "Dense: mean of all unique member-member pairs."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Chain sort", size="sm"),
@@ -747,6 +807,12 @@ layout = dbc.Container(
                                                            {"label": "PCA", "value": "pca"},
                                                            {"label": "X", "value": "x"},
                                                        ]),
+                                            dbc.FormText(
+                                                "How to order members along the chain. "
+                                                "PCA (default): project onto first principal component "
+                                                "(handles angled well groups). X: sort by UTM x-coordinate "
+                                                "(faster, fine for E-W wells)."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Edge pick", size="sm"),
@@ -756,6 +822,11 @@ layout = dbc.Container(
                                                            {"label": "Mean", "value": "mean"},
                                                            {"label": "Forward", "value": "forward"},
                                                        ]),
+                                            dbc.FormText(
+                                                "How to pick the spacing value for each chain edge (A-B). "
+                                                "Min: use min(A->B, B->A). Mean: average of both directions. "
+                                                "Forward: use A->B only (directional)."
+                                            ),
                                         ], md=4),
                                     ], className="mb-2"),
                                     dbc.Button("Run Avg Spacing", id="btn-run-avg",
@@ -782,21 +853,45 @@ layout = dbc.Container(
 
                                 # ── Floating Section WPS ──
                                 dbc.AccordionItem([
+                                    html.P(
+                                        "Counts how many wells have lateral inside a floating rectangular "
+                                        "section centered on each well (Wells Per Section). Computes counts "
+                                        "in three orientations: Cardinal (north-up box), I-Frame (box aligned "
+                                        "to well azimuth), and Corridor (lateral-following rectangle). "
+                                        "Also reports anisotropy ratio (i-frame / cardinal). "
+                                        "No per-well overrides \u2014 all parameters are global.",
+                                        className="text-muted small mb-2",
+                                    ),
                                     dbc.Row([
                                         dbc.Col([
                                             dbc.Label("Box half-width (ft)", size="sm"),
                                             dbc.Input(id="wps-box-hw", type="number",
                                                       value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "East-west half-extent of the floating section. "
+                                                "2,640 ft = half mile (standard DSU). The full box is "
+                                                "2 x half-width wide."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Box half-height (ft)", size="sm"),
                                             dbc.Input(id="wps-box-hh", type="number",
                                                       value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "North-south half-extent. 2,640 ft = half mile. "
+                                                "Together with half-width, defines a 1-mile x 1-mile "
+                                                "section (standard DSU)."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Min inside (ft)", size="sm"),
                                             dbc.Input(id="wps-min-inside", type="number",
                                                       value=660, min=0, step=50, size="sm"),
+                                            dbc.FormText(
+                                                "Minimum lateral length inside the box to count a well. "
+                                                "660 ft = 1/8 mile. Filters out wells that barely clip "
+                                                "the section edge."
+                                            ),
                                         ], md=4),
                                     ], className="mb-2"),
                                     dbc.Row([
@@ -804,16 +899,31 @@ layout = dbc.Container(
                                             dbc.Label("Corridor half-width (ft)", size="sm"),
                                             dbc.Input(id="wps-corr-hw", type="number",
                                                       value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "Cross-well half-width for corridor mode. The corridor "
+                                                "follows the reference lateral and extends this far on "
+                                                "each side perpendicular to it."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Corridor extra along (ft)", size="sm"),
                                             dbc.Input(id="wps-corr-ea", type="number",
                                                       value=0, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "Extra margin beyond heel and toe along the lateral "
+                                                "direction. 0 = corridor ends at heel/toe. Positive "
+                                                "values extend the corridor."
+                                            ),
                                         ], md=4),
                                         dbc.Col([
                                             dbc.Label("Exclude self", size="sm"),
                                             dbc.Switch(id="wps-exclude-self", value=True,
                                                        className="mt-1"),
+                                            dbc.FormText(
+                                                "When ON (default), the reference well is not counted "
+                                                "in its own WPS. Turn OFF to include the well itself "
+                                                "in the count."
+                                            ),
                                         ], md=4),
                                     ], className="mb-2"),
                                     dbc.Button("Run WPS", id="btn-run-wps",

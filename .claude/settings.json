@@ -61,7 +61,11 @@
       "Bash(find 'c:/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer/venv/Lib/site-packages/dash_leaflet' -name *.js -not -path *node_modules*)",
       "Bash(mv assets/dashExtensions_default.js dashboard/assets/dashExtensions_default.js)",
       "Bash(rmdir assets:*)",
-      "Bash(find 'c:\\\\Users\\\\ApoorvaSaxen_ipcqp18\\\\OneDrive - Bandera Group\\\\Desktop\\\\Project AP\\\\02.Python\\\\well-spacing-analyzer\\\\dashboard' -type f \\\\\\(-name *.js -o -name assets -o -name *.html \\\\\\))"
+      "Bash(find 'c:\\\\Users\\\\ApoorvaSaxen_ipcqp18\\\\OneDrive - Bandera Group\\\\Desktop\\\\Project AP\\\\02.Python\\\\well-spacing-analyzer\\\\dashboard' -type f \\\\\\(-name *.js -o -name assets -o -name *.html \\\\\\))",
+      "WebFetch(domain:dash.gallery)",
+      "WebFetch(domain:github.com)",
+      "Bash(curl -s \"https://api.github.com/search/repositories?q=ternary+map+explorer+dash+plotly&per_page=5\")",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [
       "Bash(git push --force*)",

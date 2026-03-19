@@ -427,8 +427,8 @@ layout = dbc.Container(
                                     center=[31.5, -101.9],
                                     zoom=10,
                                     scrollWheelZoom=True,
-                                    wheelDebounceTime=80,
-                                    wheelPxPerZoomLevel=120,
+                                    wheelDebounceTime=200,
+                                    wheelPxPerZoomLevel=300,
                                     style={"height": "60vh"},
                                 ),
                                 className="p-0",
@@ -1734,7 +1734,14 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
-    lateral_df = data["lateral_df"]
+    # Prefer full directional survey for map (shows vertical + build sections);
+    # fall back to lateral-only for caches created before this change.
+    survey_df = data.get("directional_df")
+    if survey_df is None or survey_df.empty:
+        survey_df = data["lateral_df"]
+    elif "uwi" in survey_df.columns and "uwi" in header_df.columns:
+        valid_uwis = set(header_df["uwi"].astype(str).unique())
+        survey_df = survey_df[survey_df["uwi"].astype(str).isin(valid_uwis)]
     mask = pd.Series(True, index=header_df.index)
 
     # Text search
@@ -1781,8 +1788,8 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
     logger.info("apply_filters: %d/%d wells pass filters", shown, total)
 
     # Rebuild GeoJSON with only filtered wells
-    filtered_lateral = lateral_df[lateral_df["uwi"].isin(filtered["uwi"])]
-    gdf_traj = build_trajectory_geodataframe(filtered_lateral, filtered)
+    filtered_survey = survey_df[survey_df["uwi"].isin(filtered["uwi"])]
+    gdf_traj = build_trajectory_geodataframe(filtered_survey, filtered)
     gdf_bh = build_bottomhole_geodataframe(gdf_traj)
     logger.info("apply_filters: %d trajectories, %d bottomholes rebuilt", len(gdf_traj), len(gdf_bh))
 

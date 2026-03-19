@@ -58,14 +58,6 @@ layout = dbc.Container(
             id="calc-progress-area",
             style={"display": "none"},
         ),
-        # Spinner shown immediately on click (before background job updates progress)
-        dcc.Loading(
-            id="calc-loading-spinner",
-            type="default",
-            children=html.Div(id="calc-loading-target"),
-            fullscreen=False,
-        ),
-
         dbc.Alert(id="calc-error", color="danger", is_open=False, dismissable=True, className="mt-3"),
 
         # Pipeline funnel report — shown after successful calculation

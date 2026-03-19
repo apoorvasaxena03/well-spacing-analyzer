@@ -350,8 +350,13 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-trajectories",
                                                         data=_EMPTY_GEOJSON,
-                                                        options={
-                                                            "style": {"weight": 3, "opacity": 0.9},
+                                                        style={"variable": "dashExtensions.default.style0"},
+                                                        hideout={
+                                                            "colorMap": {},
+                                                            "colorProp": "bench",
+                                                            "weight": 3,
+                                                            "opacity": 0.9,
+                                                            "defaultColor": "#3388ff",
                                                         },
                                                         hoverStyle={"weight": 6, "color": "#ff7800"},
                                                         onEachFeature={"variable": "dashExtensions.default.oef0"},
@@ -363,7 +368,14 @@ layout = dbc.Container(
                                                     dl.GeoJSON(
                                                         id="geojson-bottomholes",
                                                         data=_EMPTY_GEOJSON,
-                                                        pointToLayer={"variable": "dashExtensions.default.ptl0"},
+                                                        pointToLayer={"variable": "dashExtensions.default.ptl_colored"},
+                                                        hideout={
+                                                            "colorMap": {},
+                                                            "colorProp": "spud_year",
+                                                            "radius": 4,
+                                                            "opacity": 0.8,
+                                                            "defaultColor": "#e74c3c",
+                                                        },
                                                         onEachFeature={"variable": "dashExtensions.default.oef1"},
                                                     ),
                                                     name="Bottom Holes",
@@ -423,8 +435,9 @@ layout = dbc.Container(
                             ),
                         ),
 
-                        # ── Legend ──
+                        # ── Legends ──
                         html.Div(id="map-legend", className="mt-1"),
+                        html.Div(id="bh-legend", className="mt-1"),
                     ],
                     md=5,
                 ),
@@ -791,15 +804,15 @@ def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipelin
         "defaultColor": "#3388ff",
     }
 
-    # Build legend from trajectory color map (primary layer)
     legend = _build_legend(color_map, traj_color_by)
 
     return hideout, legend
 
 
-# -- Bottomhole style → hideout --
+# -- Bottomhole style → hideout + legend --
 @callback(
     Output("geojson-bottomholes", "hideout"),
+    Output("bh-legend", "children"),
     Input("bh-color-by", "value"),
     Input("bh-radius", "value"),
     Input("bh-opacity", "value"),
@@ -822,13 +835,17 @@ def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
         elif bh_color_by in header_df.columns:
             color_map = _build_color_map(header_df[bh_color_by].dropna().astype(str).tolist())
 
-    return {
+    hideout = {
         "colorMap": color_map,
         "colorProp": bh_color_by if bh_color_by != "_uniform" else "bench",
         "radius": radius or 4,
         "opacity": opacity or 0.8,
         "defaultColor": "#e74c3c",
     }
+
+    legend = _build_legend(color_map, f"Bottom Holes: {bh_color_by or 'spud_year'}")
+
+    return hideout, legend
 
 
 def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
@@ -1011,7 +1028,11 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
     if "tvd_k" in IK_filtered.columns and "elevation_k" not in IK_filtered.columns:
         IK_filtered["elevation_k"] = IK_filtered["tvd_k"] * -1
 
-    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
+    # Enrich GB with header data (bench, operator, etc.)
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+
+    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered, header_df=header_df)
     show_lines = "lines" in (lines_toggle or [])
     show_labels = show_lines and "labels" in (labels_toggle or [])
     return build_gun_barrel_figure(
@@ -1401,20 +1422,11 @@ def update_gb_table(selected, pipeline_result, current_selection):
         return [], [], [], []
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
         IK_filtered["elevation_i"] = IK_filtered["tvd_i"] * -1
-    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered)
-    if GB.empty:
-        return [], [], [], []
-    # Enrich GB with header data (operator, rsv_cat, etc.)
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
-    if not header_df.empty and "uwi" in header_df.columns:
-        header_cols_to_add = [c for c in header_df.columns
-                              if c not in GB.columns and c != "uwi"]
-        if header_cols_to_add:
-            GB = GB.merge(
-                header_df[["uwi"] + header_cols_to_add].rename(columns={"uwi": "well_i"}),
-                on="well_i", how="left",
-            )
+    GB = compute_gun_barrel(IK_filtered, HeelToe_filtered, header_df=header_df)
+    if GB.empty:
+        return [], [], [], []
     # Round numeric columns
     all_cols = list(GB.columns)
     for col in GB.select_dtypes(include="number").columns:

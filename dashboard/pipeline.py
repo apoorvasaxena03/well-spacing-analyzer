@@ -551,6 +551,7 @@ def load_cached_ik_heeltoe(
 def compute_gun_barrel(
     IK: pd.DataFrame,
     HeelToe: pd.DataFrame,
+    header_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Compute gun barrel positioning data.
@@ -558,10 +559,11 @@ def compute_gun_barrel(
     Replicates the Spotfire GB Python data function exactly.
 
     Args:
-        IK: Filtered spacing pairs DataFrame (intra-neighborhood only).
+        IK: Filtered spacing pairs DataFrame (well_i in selected wells).
             Required columns: well_i, well_k, horizontal_dist, vertical_dist,
             dist3d (or 3D_dist), elevation_i, drill_direction_i
         HeelToe: Midpoint data. Required columns: uwi, mid_Lat, mid_Lon
+        header_df: Optional well header for enriching GB with bench, operator, etc.
 
     Returns:
         GB DataFrame with cum_dist and sectionDist for x-axis positioning.
@@ -574,14 +576,22 @@ def compute_gun_barrel(
     HeelToe["mid_Lat"] = np.round(HeelToe["mid_Lat"], 9)
     HeelToe["mid_Lon"] = np.round(HeelToe["mid_Lon"], 9)
 
-    # Unique well_i entries — carry bench column if present (set by enrichment step)
+    # One row per unique well_i (core columns from IK)
     base_cols = ["well_i", "elevation_i", "drill_direction_i"]
-    optional_cols = [c for c in ["bench", "well_name", "first_prod_date"] if c in IK.columns]
     GB = (
         IK.drop_duplicates(subset=["well_i"])
-        [base_cols + optional_cols]
+        [base_cols]
         .copy()
     )
+
+    # Enrich with header data (bench, well_name, operator, etc.)
+    if header_df is not None and not header_df.empty and "uwi" in header_df.columns:
+        hdr_cols = [c for c in header_df.columns if c not in GB.columns and c != "uwi"]
+        if hdr_cols:
+            GB = GB.merge(
+                header_df[["uwi"] + hdr_cols].rename(columns={"uwi": "well_i"}),
+                on="well_i", how="left",
+            )
 
     # Join heel/toe midpoints
     GB = pd.merge(

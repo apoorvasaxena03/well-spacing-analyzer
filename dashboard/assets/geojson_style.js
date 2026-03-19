@@ -4,7 +4,48 @@ window.dashExtensions.default = window.dashExtensions.default || {};
 // Flag used by draw_clear.js to distinguish well clicks from empty-map clicks
 window._wellFeatureClicked = false;
 
-// Bottomhole: solid filled circle markers
+// Trajectory style — reads colorMap/colorProp/weight/opacity from hideout dict
+// set by the update_trajectory_style callback in 05_explore.py.
+window.dashExtensions.default.style0 = function(feature, context) {
+    var h = context.hideout || {};
+    var colorMap = h.colorMap || {};
+    var colorProp = h.colorProp || "bench";
+    var weight = h.weight || 3;
+    var opacity = h.opacity || 0.9;
+    var defaultColor = h.defaultColor || "#3388ff";
+
+    var val = (feature.properties || {})[colorProp];
+    var color = (val !== undefined && val !== null && val !== "")
+        ? (colorMap[String(val)] || defaultColor)
+        : defaultColor;
+
+    return {color: color, weight: weight, opacity: opacity};
+};
+
+// Bottomhole style — reads colorMap/colorProp/radius/opacity from hideout
+window.dashExtensions.default.ptl_colored = function(feature, latlng, context) {
+    var h = context.hideout || {};
+    var colorMap = h.colorMap || {};
+    var colorProp = h.colorProp || "spud_year";
+    var size = h.radius || 4;
+    var opacity = h.opacity || 0.8;
+    var defaultColor = h.defaultColor || "#e74c3c";
+
+    var val = (feature.properties || {})[colorProp];
+    var color = (val !== undefined && val !== null && val !== "")
+        ? (colorMap[String(val)] || defaultColor)
+        : defaultColor;
+
+    return L.circleMarker(latlng, {
+        radius: size,
+        fillColor: color,
+        color: "#333",
+        weight: 1,
+        fillOpacity: opacity
+    });
+};
+
+// Bottomhole: solid filled circle markers (legacy — no color-by)
 window.dashExtensions.default.ptl0 = function(feature, latlng) {
     return L.circleMarker(latlng, {
         radius: 5,

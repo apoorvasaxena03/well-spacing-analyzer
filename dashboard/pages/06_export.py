@@ -59,6 +59,8 @@ layout = dbc.Container(
                                             {"label": "Valid IK pairs (reject-filtered)",       "value": "ik_valid"},
                                             {"label": "IK pairs — all, including rejected",     "value": "ik_raw"},
                                             {"label": "Neighbor summary (1 row/well)",          "value": "neighbor_summary"},
+                                            {"label": "Average spacing (1 row/well)",           "value": "avg_spacing"},
+                                            {"label": "WPS floating section (1 row/well)",      "value": "wps"},
                                             {"label": "Well header (processed)",                "value": "header"},
                                             {"label": "Production data",                        "value": "production"},
                                         ],
@@ -213,6 +215,10 @@ def _do_export_inner(pipeline_result, fmt, include):
         sheets["IK_Pairs_All"] = data["df_ik_pairs_raw"]
     if "neighbor_summary" in include and data.get("df_spacing") is not None:
         sheets["Neighbor_Summary"] = data["df_spacing"]
+    if "avg_spacing" in include and data.get("df_avg_spacing") is not None:
+        sheets["Avg_Spacing"] = data["df_avg_spacing"]
+    if "wps" in include and data.get("df_wps") is not None:
+        sheets["WPS_FloatingSection"] = data["df_wps"]
     if "header" in include and data.get("header_df") is not None:
         sheets["Header"] = data["header_df"]
     if "production" in include and data.get("production_df") is not None:
@@ -287,6 +293,8 @@ def export_session_package(n_clicks, pipeline_result):
                 ("df_ik_pairs", "ik_pairs"),
                 ("df_ik_pairs_raw", "ik_pairs_raw"),
                 ("df_spacing", "neighbor_summary"),
+                ("df_avg_spacing", "avg_spacing"),
+                ("df_wps", "wps"),
                 ("header_df", "header"),
                 ("lateral_df", "lateral"),
                 ("directional_df", "directional"),

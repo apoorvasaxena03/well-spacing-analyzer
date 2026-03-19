@@ -65,7 +65,8 @@
       "WebFetch(domain:dash.gallery)",
       "WebFetch(domain:github.com)",
       "Bash(curl -s \"https://api.github.com/search/repositories?q=ternary+map+explorer+dash+plotly&per_page=5\")",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(python -c \"import json; nb = json.load\\(open\\(''notebooks/RingEnergy/well_spacing_RingEnergy_v2.ipynb''\\)\\); [print\\(''Cell'', i, '':'', cell.get\\(''source'', ''''\\)[0][:100] if cell.get\\(''source''\\) else ''''\\) for i, cell in enumerate\\(nb[''cells'']\\) if ''overrides'' in str\\(cell.get\\(''source'', ''''\\)\\)]\")"
     ],
     "deny": [
       "Bash(git push --force*)",

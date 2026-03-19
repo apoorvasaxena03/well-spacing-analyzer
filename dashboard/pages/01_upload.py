@@ -413,6 +413,8 @@ def import_session_package(contents, filename):
             "ik_pairs.parquet": "df_ik_pairs",
             "ik_pairs_raw.parquet": "df_ik_pairs_raw",
             "neighbor_summary.parquet": "df_spacing",
+            "avg_spacing.parquet": "df_avg_spacing",
+            "wps.parquet": "df_wps",
             "header.parquet": "header_df",
             "lateral.parquet": "lateral_df",
             "directional.parquet": "directional_df",

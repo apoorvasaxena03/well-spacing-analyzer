@@ -263,7 +263,173 @@ layout = dbc.Container(
             className="mb-3",
         ),
 
-        # ---- Card 2: RSV Classification ----
+        # ---- Card 2: Advanced Spacing Engine ----
+        dbc.Card(
+            dbc.CardBody(
+                [
+                    html.H6("Advanced Spacing Engine", className="mb-1"),
+                    html.P(
+                        "Fine-tune the pairwise spacing computation. These affect how well pairs "
+                        "are sampled, classified (parallel/oblique/perpendicular), and measured. "
+                        "Defaults match the validated notebook settings.",
+                        className="text-muted small mb-3",
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("Step size (ft)"),
+                                    dbc.Input(
+                                        id="cfg-step-ft", type="number",
+                                        value=100, min=10, max=500, step=10,
+                                    ),
+                                    dbc.FormText(
+                                        "Sampling interval along each lateral. Smaller = higher resolution "
+                                        "but slower. 100 ft is the tested default."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Max crossline distance (ft)"),
+                                    dbc.Input(
+                                        id="cfg-max-crossline-ft", type="number",
+                                        value=2000, min=100, max=10000, step=100,
+                                    ),
+                                    dbc.FormText(
+                                        "Reject parallel pairs whose crossline distance exceeds this. "
+                                        "Acts as a quality gate to discard far-apart wells that happen "
+                                        "to overlap along the x-axis."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Crossline percentile"),
+                                    dbc.Input(
+                                        id="cfg-crossline-percentile", type="number",
+                                        value=5.0, min=0, max=50, step=1,
+                                    ),
+                                    dbc.FormText(
+                                        "Percentile of the crossline distance series used as a secondary "
+                                        "metric (dy_p5). 5 = 5th percentile (near-minimum). Useful for "
+                                        "detecting the closest approach point between two laterals."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                        ],
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("Parallel angle threshold (\u00b0)"),
+                                    dbc.Input(
+                                        id="cfg-theta-parallel-deg", type="number",
+                                        value=25.0, min=0, max=90, step=1,
+                                    ),
+                                    dbc.FormText(
+                                        "Wells with angle \u2264 this are classified PARALLEL_LIKE and use "
+                                        "the crossline algorithm (\u0394y along overlap). Default: 25\u00b0."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Perpendicular angle threshold (\u00b0)"),
+                                    dbc.Input(
+                                        id="cfg-theta-perp-deg", type="number",
+                                        value=65.0, min=0, max=90, step=1,
+                                    ),
+                                    dbc.FormText(
+                                        "Wells with angle \u2265 this are classified PERPENDICULAR. Between "
+                                        "the parallel and perpendicular thresholds, wells are OBLIQUE. "
+                                        "Both oblique and perpendicular use nearest-projection. Default: 65\u00b0."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Contact threshold (ft)"),
+                                    dbc.Input(
+                                        id="cfg-contact-threshold-ft", type="number",
+                                        value=300.0, min=0, max=5000, step=50,
+                                    ),
+                                    dbc.FormText(
+                                        "For oblique/perpendicular pairs: the 3D distance T below which "
+                                        "a sample is counted as 'in contact'. Used to compute contact_len "
+                                        "and contact_pct metrics. Default: 300 ft."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                        ],
+                        className="mt-3",
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Label("PCA axis"),
+                                    dbc.Switch(
+                                        id="cfg-use-pca-axis", value=True,
+                                        label="Use PCA for local i-frame",
+                                        className="mt-1",
+                                    ),
+                                    dbc.FormText(
+                                        "When ON (default), the reference well's local x-axis is computed via "
+                                        "PCA — handles curved laterals well. When OFF, uses the heel-to-toe "
+                                        "vector (faster, fine for straight wells)."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Emit rejected pairs"),
+                                    dbc.Switch(
+                                        id="cfg-emit-rejected", value=True,
+                                        label="Include rejected pairs in output",
+                                        className="mt-1",
+                                    ),
+                                    dbc.FormText(
+                                        "When ON (default), pairs that fail quality checks are still "
+                                        "written to the output with a reject_reason column. Useful for "
+                                        "debugging. When OFF, only valid pairs are returned."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Label("Reject misaligned"),
+                                    dbc.Switch(
+                                        id="cfg-reject-misaligned", value=False,
+                                        label="Reject misaligned pairs",
+                                        className="mt-1",
+                                    ),
+                                    dbc.FormText(
+                                        "When ON, pairs classified as MISALIGNED (failing internal "
+                                        "quality checks) are rejected. Default: OFF (keep them with "
+                                        "reject_reason for review)."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                        ],
+                        className="mt-3",
+                    ),
+                ]
+            ),
+            className="mb-3",
+        ),
+
+        # ---- Card 3: RSV Classification ----
         dbc.Card(
             dbc.CardBody(
                 [
@@ -564,12 +730,25 @@ def detect_utm_zones(upload_store):
     State("cfg-prod-cutoff-months", "value"),
     State("cfg-duc-age-years", "value"),
     State("cfg-permit-window-years", "value"),
+    # Advanced Spacing Engine
+    State("cfg-step-ft", "value"),
+    State("cfg-max-crossline-ft", "value"),
+    State("cfg-crossline-percentile", "value"),
+    State("cfg-theta-parallel-deg", "value"),
+    State("cfg-theta-perp-deg", "value"),
+    State("cfg-contact-threshold-ft", "value"),
+    State("cfg-use-pca-axis", "value"),
+    State("cfg-emit-rejected", "value"),
+    State("cfg-reject-misaligned", "value"),
     State("column-map-store", "data"),
     prevent_initial_call=True,
 )
 def save_config(
     n_clicks, utm_zone, max_dist, cutoff_ft, batch_size,
     dir_source, bench_filter, rsv_cats, prod_cutoff, duc_age, permit_window,
+    step_ft, max_crossline_ft, crossline_percentile,
+    theta_parallel_deg, theta_perp_deg, contact_threshold_ft,
+    use_pca_axis, emit_rejected, reject_misaligned,
     col_map_store,
 ):
     # utm_zone: blank = auto-detect, or user-typed EPSG override
@@ -585,6 +764,16 @@ def save_config(
         "prod_cutoff_months": int(prod_cutoff or 6),
         "duc_age_years": int(duc_age or 3),
         "permit_window_years": int(permit_window or 2),
+        # Advanced spacing engine
+        "step_ft": int(step_ft or 100),
+        "max_crossline_ft": float(max_crossline_ft or 2000),
+        "crossline_percentile": float(crossline_percentile or 5.0),
+        "theta_parallel_deg": float(theta_parallel_deg or 25.0),
+        "theta_perp_deg": float(theta_perp_deg or 65.0),
+        "contact_threshold_ft": float(contact_threshold_ft or 300.0),
+        "use_pca_axis": bool(use_pca_axis),
+        "emit_rejected": bool(emit_rejected),
+        "reject_misaligned": bool(reject_misaligned),
         "_mapping_version": (col_map_store or {}).get("_version"),
     }
     return cfg, "Configuration saved. Click 'Calculate & Next →' to proceed.", True, False

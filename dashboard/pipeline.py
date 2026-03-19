@@ -24,6 +24,9 @@ from src.well_data.well_spacing_stats import (
     WellSpacingCalculator,
     DirectionalBenchNeighbors,
     AvgSpacingCalculator,
+    FloatingSectionWPS,
+    BoxSpec,
+    CorridorSpec,
 )
 from src.utils.custom_logger import get_logger, new_run_id, set_run_id
 from src.utils.utils import drop_uwi_duplicates_keep_max_last_prod, compute_rsv_cat
@@ -413,6 +416,16 @@ def run_spacing_calculation(
     stats: PipelineStats | None = None,
     production_df: pd.DataFrame | None = None,
     directional_df: pd.DataFrame | None = None,
+    # Advanced spacing engine params
+    step_ft: int = 100,
+    max_crossline_ft: float | None = 2000.0,
+    crossline_percentile: float = 5.0,
+    theta_parallel_deg: float = 25.0,
+    theta_perp_deg: float = 65.0,
+    contact_threshold_ft: float = 300.0,
+    use_pca_axis: bool = True,
+    emit_rejected: bool = True,
+    reject_misaligned: bool = False,
 ) -> str:
     """
     Run the full spacing pipeline and cache results to disk.
@@ -453,6 +466,15 @@ def run_spacing_calculation(
     df_spacing = calculator._calculate_spacing_statistics(
         batch_size=batch_size,
         max_distance_miles=max_distance_miles,
+        step_ft=step_ft,
+        max_crossline_ft=max_crossline_ft,
+        crossline_percentile=crossline_percentile,
+        theta_parallel_deg=theta_parallel_deg,
+        theta_perp_deg=theta_perp_deg,
+        contact_threshold_ft=contact_threshold_ft,
+        use_pca_axis=use_pca_axis,
+        emit_rejected=emit_rejected,
+        reject_misaligned=reject_misaligned,
     )
     total_pairs = len(df_spacing)
     stats.record_independent("Spacing pairs computed (raw)", total_pairs, unit="pairs")
@@ -470,23 +492,13 @@ def run_spacing_calculation(
         if rejected_count:
             logger.info("Reject filter: removed %d pairs → %d valid remain", rejected_count, len(df_spacing))
 
-    t1 = time.perf_counter()
-    neighbors = DirectionalBenchNeighbors(logger=logger)
-    df_enriched = neighbors.summarize(
-        spacing_df=df_spacing,
-        header_df=header_df,
-        cutoff_ft=cutoff_ft,
-    )
-    stats.record_independent("Neighbor-enriched wells", len(df_enriched), unit="wells")
-    logger.info("Neighbor enrichment done: %d enriched rows in %.1fs",
-                len(df_enriched), time.perf_counter() - t1)
-
     # Cache to disk (include stats)
+    # NOTE: DirectionalBenchNeighbors, AvgSpacingCalculator, and FloatingSectionWPS
+    # are now run on-demand from the Explore page (not during batch calculation).
     cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
     with open(cache_key, "wb") as f:
         pickle.dump(
             {
-                "df_spacing": df_enriched,       # enriched neighbor summary (well_i + uwi_same/near)
                 "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
                 "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
                 "header_df": header_df,
@@ -634,3 +646,115 @@ def compute_gun_barrel(
     GB["sectionDist"] = GB["cum_dist"] - (max_cum / 2 if max_cum else 0)
 
     return GB
+
+
+# ---------------------------------------------------------------------------
+# On-demand analysis functions (called from Explore page, NOT batch calc)
+# ---------------------------------------------------------------------------
+
+def run_directional_bench_neighbors(
+    df_ik_pairs: pd.DataFrame,
+    header_df: pd.DataFrame,
+    *,
+    cutoff_ft: float,
+    vertical_cutoff_ft: float | None = None,
+    overlap_pct_k_min: float | None = None,
+    axis_mode: str = "any",
+    prefer_axis: str | None = None,
+    proj_coverage_min: float | None = None,
+    overrides_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Run DirectionalBenchNeighbors.summarize() with full parameters.
+
+    Called on-demand from the Explore page Analysis tab.
+    """
+    t0 = time.perf_counter()
+    neighbors = DirectionalBenchNeighbors(logger=logger)
+    result = neighbors.summarize(
+        spacing_df=df_ik_pairs,
+        header_df=header_df,
+        cutoff_ft=cutoff_ft,
+        vertical_cutoff_ft=vertical_cutoff_ft,
+        overlap_pct_k_min=overlap_pct_k_min,
+        axis_mode=axis_mode,
+        prefer_axis=prefer_axis,
+        proj_coverage_min=proj_coverage_min,
+        overrides_df=overrides_df,
+    )
+    logger.info("DirectionalBenchNeighbors done: %d rows in %.1fs",
+                len(result), time.perf_counter() - t0)
+    return result
+
+
+def run_avg_spacing(
+    df_ik_pairs: pd.DataFrame,
+    lateral_df: pd.DataFrame,
+    *,
+    cutoff_ft: float,
+    vertical_cutoff_ft: float | None = None,
+    overlap_pct_k_min: float | None = None,
+    overrides_df: pd.DataFrame | None = None,
+    axis_mode: str = "any",
+    neighborhood_mode: str = "chain",
+    chain_sort_mode: str = "pca",
+    edge_pick: str = "min",
+) -> pd.DataFrame:
+    """Run AvgSpacingCalculator.summarize() with full parameters.
+
+    Called on-demand from the Explore page Analysis tab.
+    """
+    t0 = time.perf_counter()
+    calc = AvgSpacingCalculator(logger=logger)
+    result = calc.summarize(
+        spacing_df=df_ik_pairs,
+        cutoff_ft=cutoff_ft,
+        vertical_cutoff_ft=vertical_cutoff_ft,
+        overlap_pct_k_min=overlap_pct_k_min,
+        overrides_df=overrides_df,
+        axis_mode=axis_mode,
+        neighborhood_mode=neighborhood_mode,
+        chain_sort_mode=chain_sort_mode,
+        trajectories=lateral_df,
+        edge_pick=edge_pick,
+    )
+    logger.info("AvgSpacingCalculator done: %d rows in %.1fs",
+                len(result), time.perf_counter() - t0)
+    return result
+
+
+def run_floating_wps(
+    lateral_df: pd.DataFrame,
+    *,
+    box_half_width_ft: float = 2640.0,
+    box_half_height_ft: float = 2640.0,
+    corridor_half_width_ft: float = 2640.0,
+    corridor_extra_along_ft: float = 0.0,
+    min_inside_ft: float = 660.0,
+    exclude_self: bool = True,
+) -> pd.DataFrame:
+    """Run FloatingSectionWPS.summarize_per_well().
+
+    Called on-demand from the Explore page Analysis tab.
+    """
+    t0 = time.perf_counter()
+    wells_df = FloatingSectionWPS.ds_to_lateral_endpoints(lateral_df)
+    box = BoxSpec(
+        half_width_ft=box_half_width_ft,
+        half_height_ft=box_half_height_ft,
+    )
+    corridor = CorridorSpec(
+        half_width_ft=corridor_half_width_ft,
+        extra_along_ft=corridor_extra_along_ft,
+    )
+    wps = FloatingSectionWPS(
+        wells_df=wells_df,
+        box=box,
+        min_inside_ft=min_inside_ft,
+        exclude_self=exclude_self,
+        corridor=corridor,
+        logger=logger,
+    )
+    result = wps.summarize_per_well()
+    logger.info("FloatingSectionWPS done: %d rows in %.1fs",
+                len(result), time.perf_counter() - t0)
+    return result

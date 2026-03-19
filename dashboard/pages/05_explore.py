@@ -30,6 +30,9 @@ from dashboard.pipeline import (
 from dashboard.components.gun_barrel import build_gun_barrel_figure, empty_figure
 from dashboard.components.map_panel import build_trajectory_geodataframe, build_bottomhole_geodataframe
 
+# Import analysis callbacks so Dash registers them (they reference component IDs in this layout)
+import dashboard.callbacks.explore_analysis  # noqa: F401
+
 dash.register_page(__name__, path="/explore", name="5 Explore", order=5)
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,9 @@ layout = dbc.Container(
         # Store for active filter state (list of UWIs that pass filters)
         dcc.Store(id="filter-uwis-store"),
         dcc.Store(id="clear-draw-trigger", data=0),
+        dcc.Store(id="dbn-result-store"),
+        dcc.Store(id="avg-spacing-result-store"),
+        dcc.Store(id="wps-result-store"),
         html.Div(id="_draw-clear-dummy", style={"display": "none"}),
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
@@ -442,8 +448,10 @@ layout = dbc.Container(
                     md=5,
                 ),
 
-                # ── Right: Charts ───────────────────────────────────────────
+                # ── Right: Charts + Analysis ───────────────────────────────
                 dbc.Col([
+                  dbc.Tabs([
+                    dbc.Tab(label="Charts", tab_id="tab-charts", children=[
                     dbc.Card(
                         [
                             dbc.CardHeader(
@@ -582,6 +590,257 @@ layout = dbc.Container(
                             ),
                         ]
                     ),
+                    ]),  # end Charts tab
+
+                    # ── Analysis Tab ─────────────────────────────────────
+                    dbc.Tab(label="Analysis", tab_id="tab-analysis", children=[
+                        dbc.Card(dbc.CardBody([
+                            # -- Shared Parameters --
+                            html.H6("Shared Parameters", className="mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Cutoff (ft)", size="sm"),
+                                    dbc.Input(id="dbn-cutoff-ft", type="number",
+                                              value=1800, min=0, step=100, size="sm"),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Vertical cutoff (ft)", size="sm"),
+                                    dbc.Input(id="dbn-vertical-cutoff-ft", type="number",
+                                              placeholder="None", min=0, step=50, size="sm"),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Overlap % min", size="sm"),
+                                    dbc.Input(id="dbn-overlap-pct-min", type="number",
+                                              placeholder="None", min=0, max=1, step=0.05, size="sm"),
+                                ], md=4),
+                            ], className="mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Axis mode", size="sm"),
+                                    dbc.Select(id="dbn-axis-mode", size="sm", value="any",
+                                               options=[
+                                                   {"label": "Any", "value": "any"},
+                                                   {"label": "EW only", "value": "EW"},
+                                                   {"label": "NS only", "value": "NS"},
+                                               ]),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Prefer axis", size="sm"),
+                                    dbc.Select(id="dbn-prefer-axis", size="sm", value="",
+                                               options=[
+                                                   {"label": "None", "value": ""},
+                                                   {"label": "EW", "value": "EW"},
+                                                   {"label": "NS", "value": "NS"},
+                                               ]),
+                                ], md=4),
+                            ], className="mb-3"),
+
+                            html.Hr(),
+
+                            # -- Overrides --
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H6("Overrides", className="mb-1"),
+                                    dbc.RadioItems(
+                                        id="overrides-mode",
+                                        options=[
+                                            {"label": "Shared (DBN + Avg)", "value": "shared"},
+                                            {"label": "Separate per class", "value": "separate"},
+                                        ],
+                                        value="shared",
+                                        inline=True,
+                                        className="small mb-2",
+                                    ),
+                                ]),
+                            ]),
+                            html.Div(id="overrides-shared-div", children=[
+                                dcc.Upload(
+                                    id="overrides-upload",
+                                    children=dbc.Button("Upload overrides CSV", size="sm",
+                                                        color="secondary", outline=True),
+                                    accept=".csv",
+                                ),
+                            ]),
+                            html.Div(id="overrides-separate-div", style={"display": "none"}, children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("DBN overrides", size="sm"),
+                                        dcc.Upload(
+                                            id="overrides-dbn-upload",
+                                            children=dbc.Button("Upload CSV", size="sm",
+                                                                color="secondary", outline=True),
+                                            accept=".csv",
+                                        ),
+                                    ], md=6),
+                                    dbc.Col([
+                                        dbc.Label("Avg overrides", size="sm"),
+                                        dcc.Upload(
+                                            id="overrides-avg-upload",
+                                            children=dbc.Button("Upload CSV", size="sm",
+                                                                color="secondary", outline=True),
+                                            accept=".csv",
+                                        ),
+                                    ], md=6),
+                                ]),
+                            ]),
+                            dash_table.DataTable(
+                                id="overrides-table",
+                                columns=[
+                                    {"name": "uwi", "id": "uwi"},
+                                    {"name": "cutoff_ft", "id": "cutoff_ft", "type": "numeric"},
+                                    {"name": "vertical_cutoff_ft", "id": "vertical_cutoff_ft", "type": "numeric"},
+                                    {"name": "overlap_pct_k_min", "id": "overlap_pct_k_min", "type": "numeric"},
+                                ],
+                                data=[],
+                                editable=True,
+                                row_deletable=True,
+                                page_size=5,
+                                style_table={"overflowX": "auto", "maxHeight": "15vh"},
+                                style_cell={"fontSize": "11px", "padding": "2px 6px"},
+                                style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                            ),
+
+                            html.Hr(),
+
+                            # ── Directional Bench Neighbors ──
+                            dbc.Accordion([
+                                dbc.AccordionItem([
+                                    html.P("Uses shared parameters above.", className="text-muted small mb-2"),
+                                    dbc.Button("Run Neighbor Summary", id="btn-run-dbn",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="dbn-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="dbn-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={"textAlign": "left", "fontSize": "11px",
+                                                    "padding": "3px 6px", "minWidth": "70px",
+                                                    "maxWidth": "200px", "overflow": "hidden",
+                                                    "textOverflow": "ellipsis"},
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], title="Directional Bench Neighbors", item_id="acc-dbn"),
+
+                                # ── Average Spacing ──
+                                dbc.AccordionItem([
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Neighborhood", size="sm"),
+                                            dbc.Select(id="avg-neighborhood-mode", size="sm", value="chain",
+                                                       options=[
+                                                           {"label": "Chain", "value": "chain"},
+                                                           {"label": "i2nbr", "value": "i2nbr"},
+                                                           {"label": "Dense", "value": "dense"},
+                                                       ]),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Chain sort", size="sm"),
+                                            dbc.Select(id="avg-chain-sort-mode", size="sm", value="pca",
+                                                       options=[
+                                                           {"label": "PCA", "value": "pca"},
+                                                           {"label": "X", "value": "x"},
+                                                       ]),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Edge pick", size="sm"),
+                                            dbc.Select(id="avg-edge-pick", size="sm", value="min",
+                                                       options=[
+                                                           {"label": "Min", "value": "min"},
+                                                           {"label": "Mean", "value": "mean"},
+                                                           {"label": "Forward", "value": "forward"},
+                                                       ]),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Run Avg Spacing", id="btn-run-avg",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="avg-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="avg-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={"textAlign": "left", "fontSize": "11px",
+                                                    "padding": "3px 6px", "minWidth": "70px",
+                                                    "maxWidth": "200px", "overflow": "hidden",
+                                                    "textOverflow": "ellipsis"},
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], title="Average Spacing", item_id="acc-avg"),
+
+                                # ── Floating Section WPS ──
+                                dbc.AccordionItem([
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Box half-width (ft)", size="sm"),
+                                            dbc.Input(id="wps-box-hw", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Box half-height (ft)", size="sm"),
+                                            dbc.Input(id="wps-box-hh", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Min inside (ft)", size="sm"),
+                                            dbc.Input(id="wps-min-inside", type="number",
+                                                      value=660, min=0, step=50, size="sm"),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Corridor half-width (ft)", size="sm"),
+                                            dbc.Input(id="wps-corr-hw", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Corridor extra along (ft)", size="sm"),
+                                            dbc.Input(id="wps-corr-ea", type="number",
+                                                      value=0, min=0, step=100, size="sm"),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Exclude self", size="sm"),
+                                            dbc.Switch(id="wps-exclude-self", value=True,
+                                                       className="mt-1"),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Run WPS", id="btn-run-wps",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="wps-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dash_table.DataTable(
+                                        id="wps-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={"textAlign": "left", "fontSize": "11px",
+                                                    "padding": "3px 6px", "minWidth": "70px",
+                                                    "maxWidth": "200px", "overflow": "hidden",
+                                                    "textOverflow": "ellipsis"},
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], title="Floating Section WPS", item_id="acc-wps"),
+                            ], start_collapsed=False, always_open=True),
+                        ]), className="mt-0"),
+                    ]),  # end Analysis tab
+                  ], id="right-panel-tabs", active_tab="tab-charts"),
                     # ── Data Tables ────────────────────────────────────────
                     dbc.Card(
                         dbc.CardBody(

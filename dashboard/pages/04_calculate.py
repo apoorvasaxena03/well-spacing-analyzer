@@ -211,6 +211,13 @@ def show_summary(upload_store, config_store, col_map_store):
         items.append(f"RSV filter: {', '.join(config_store['rsv_categories'])}")
     if config_store.get("bench_filter"):
         items.append(f"Benches: {', '.join(config_store['bench_filter'])}")
+    # Advanced engine params (only show non-defaults)
+    if config_store.get("step_ft", 100) != 100:
+        items.append(f"Step: {config_store['step_ft']} ft")
+    if config_store.get("theta_parallel_deg", 25.0) != 25.0:
+        items.append(f"Parallel angle: {config_store['theta_parallel_deg']}\u00b0")
+    if config_store.get("theta_perp_deg", 65.0) != 65.0:
+        items.append(f"Perp angle: {config_store['theta_perp_deg']}\u00b0")
 
     return html.Ul([html.Li(i, className="small") for i in items]), False, *clear
 
@@ -299,6 +306,16 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             stats=stats,
             production_df=data.get("production_df"),
             directional_df=data.get("directional_df"),
+            # Advanced spacing engine params
+            step_ft=config_store.get("step_ft", 100),
+            max_crossline_ft=config_store.get("max_crossline_ft", 2000.0),
+            crossline_percentile=config_store.get("crossline_percentile", 5.0),
+            theta_parallel_deg=config_store.get("theta_parallel_deg", 25.0),
+            theta_perp_deg=config_store.get("theta_perp_deg", 65.0),
+            contact_threshold_ft=config_store.get("contact_threshold_ft", 300.0),
+            use_pca_axis=config_store.get("use_pca_axis", True),
+            emit_rejected=config_store.get("emit_rejected", True),
+            reject_misaligned=config_store.get("reject_misaligned", False),
         )
     except Exception as exc:
         return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)

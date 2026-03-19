@@ -996,14 +996,11 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
     if IK.empty:
         return empty_figure("Pipeline results not loaded.")
 
-    # Expand selection to include all direct IK neighbours (Spotfire data-limiting)
-    neighborhood = _expand_neighborhood(IK, uwis)
-    # Keep pairs where BOTH well_i AND well_k are in the neighbourhood
-    IK_filtered = IK[
-        IK["well_i"].astype(str).isin(neighborhood)
-        & IK["well_k"].astype(str).isin(neighborhood)
-    ].copy()
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(neighborhood)]
+    # Spotfire data-limiting: IK filtered to well_i in selected wells only.
+    # GB will contain only the selected wells — NOT their neighbours.
+    uwi_set = set(str(u) for u in uwis)
+    IK_filtered = IK[IK["well_i"].astype(str).isin(uwi_set)].copy()
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(uwi_set)]
 
     if IK_filtered.empty:
         return empty_figure("No spacing pairs found for selected well. Try selecting multiple wells.")
@@ -1353,18 +1350,15 @@ _HDR_DEFAULT_COLS = [
     prevent_initial_call=True,
 )
 def update_ik_table(selected, pipeline_result, current_selection):
-    """Populate IK pairs table for selected wells (expanded neighbourhood)."""
+    """Populate IK pairs table — well_i in selected wells (Spotfire data-limiting)."""
     if not selected or not pipeline_result:
         return [], [], [], []
     uwis = selected.get("neighborhood_uwis", [])
     IK, _ = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
         return [], [], [], []
-    neighborhood = _expand_neighborhood(IK, uwis)
-    ik_sel = IK[
-        IK["well_i"].astype(str).isin(neighborhood)
-        & IK["well_k"].astype(str).isin(neighborhood)
-    ]
+    uwi_set = set(str(u) for u in uwis)
+    ik_sel = IK[IK["well_i"].astype(str).isin(uwi_set)]
     if ik_sel.empty:
         return [], [], [], []
     # Round numeric columns
@@ -1400,12 +1394,9 @@ def update_gb_table(selected, pipeline_result, current_selection):
     IK, HeelToe = load_cached_ik_heeltoe(pipeline_result)
     if IK.empty:
         return [], [], [], []
-    neighborhood = _expand_neighborhood(IK, uwis)
-    IK_filtered = IK[
-        IK["well_i"].astype(str).isin(neighborhood)
-        & IK["well_k"].astype(str).isin(neighborhood)
-    ].copy()
-    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(neighborhood)]
+    uwi_set = set(str(u) for u in uwis)
+    IK_filtered = IK[IK["well_i"].astype(str).isin(uwi_set)].copy()
+    HeelToe_filtered = HeelToe[HeelToe["uwi"].astype(str).isin(uwi_set)]
     if IK_filtered.empty:
         return [], [], [], []
     if "tvd_i" in IK_filtered.columns and "elevation_i" not in IK_filtered.columns:
@@ -1448,20 +1439,16 @@ def update_gb_table(selected, pipeline_result, current_selection):
     prevent_initial_call=True,
 )
 def update_header_table(selected, pipeline_result, current_selection):
-    """Populate header data table for the expanded neighbourhood (all columns)."""
+    """Populate header data table for selected wells (all columns)."""
     if not selected or not pipeline_result:
         return [], [], [], []
     uwis = selected.get("neighborhood_uwis", [])
-    IK, _ = load_cached_ik_heeltoe(pipeline_result)
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
     if header_df.empty:
         return [], [], [], []
-    if not IK.empty:
-        neighborhood = _expand_neighborhood(IK, uwis)
-    else:
-        neighborhood = set(str(u) for u in uwis)
-    hdr_sel = header_df[header_df["uwi"].astype(str).isin(neighborhood)]
+    uwi_set = set(str(u) for u in uwis)
+    hdr_sel = header_df[header_df["uwi"].astype(str).isin(uwi_set)]
     if hdr_sel.empty:
         return [], [], [], []
     # Expose ALL columns; user picks which to show via dropdown

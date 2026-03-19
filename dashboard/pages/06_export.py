@@ -270,6 +270,7 @@ def export_session_package(n_clicks, pipeline_result):
                 ("df_spacing", "neighbor_summary"),
                 ("header_df", "header"),
                 ("lateral_df", "lateral"),
+                ("directional_df", "directional"),
                 ("production_df", "production"),
             ]
             for cache_key, file_name in dataset_keys:

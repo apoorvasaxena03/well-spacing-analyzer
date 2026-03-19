@@ -411,9 +411,11 @@ def import_session_package(contents, filename):
         cache_data = {}
         parquet_map = {
             "ik_pairs.parquet": "df_ik_pairs",
+            "ik_pairs_raw.parquet": "df_ik_pairs_raw",
             "neighbor_summary.parquet": "df_spacing",
             "header.parquet": "header_df",
             "lateral.parquet": "lateral_df",
+            "directional.parquet": "directional_df",
             "production.parquet": "production_df",
         }
         for zip_name, cache_key in parquet_map.items():

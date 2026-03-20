@@ -131,6 +131,21 @@ layout = dbc.Container(
             dbc.ModalBody(id="modal-avg-viz-body"),
         ], id="modal-avg-viz", size="xl", fullscreen="xl-down", is_open=False,
            scrollable=True),
+
+        # Fullscreen modals for Plotly charts
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Gun Barrel — Cross-Section View"), close_button=True),
+            dbc.ModalBody(dcc.Graph(id="modal-gb-chart", style={"height": "85vh"})),
+        ], id="modal-gb", size="xl", fullscreen="xl-down", is_open=False),
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Cumulative Production"), close_button=True),
+            dbc.ModalBody(dcc.Graph(id="modal-cum-chart", style={"height": "85vh"})),
+        ], id="modal-cum", size="xl", fullscreen="xl-down", is_open=False),
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Daily Production"), close_button=True),
+            dbc.ModalBody(dcc.Graph(id="modal-daily-chart", style={"height": "85vh"})),
+        ], id="modal-daily", size="xl", fullscreen="xl-down", is_open=False),
+
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
 
@@ -547,6 +562,10 @@ layout = dbc.Container(
                             dbc.CardBody(
                                 [
                                     # Gun Barrel (standalone)
+                                    dbc.Button("⛶", id="btn-expand-gb",
+                                               color="link", size="sm",
+                                               className="float-end p-0",
+                                               title="Fullscreen"),
                                     dcc.Graph(
                                         id="gun-barrel-chart",
                                         style={"height": "40vh"},
@@ -570,6 +589,12 @@ layout = dbc.Container(
                                                     inline=True,
                                                     className="small",
                                                 ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.Button("⛶", id="btn-expand-cum",
+                                                           color="link", size="sm",
+                                                           className="p-0", title="Fullscreen"),
                                                 width="auto",
                                             ),
                                         ],
@@ -599,6 +624,12 @@ layout = dbc.Container(
                                                     inline=True,
                                                     className="small",
                                                 ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.Button("⛶", id="btn-expand-daily",
+                                                           color="link", size="sm",
+                                                           className="p-0", title="Fullscreen"),
                                                 width="auto",
                                             ),
                                         ],
@@ -2496,3 +2527,46 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
         gdf_traj.__geo_interface__ if not gdf_traj.empty else _EMPTY_GEOJSON,
         gdf_bh.__geo_interface__ if not gdf_bh.empty else _EMPTY_GEOJSON,
     )
+
+
+# ---------------------------------------------------------------------------
+# Fullscreen expand modals for Plotly charts
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("modal-gb", "is_open"),
+    Output("modal-gb-chart", "figure"),
+    Input("btn-expand-gb", "n_clicks"),
+    State("gun-barrel-chart", "figure"),
+    prevent_initial_call=True,
+)
+def expand_gb(n_clicks, fig):
+    if not fig:
+        return False, empty_figure("No gun barrel data.")
+    return True, fig
+
+
+@callback(
+    Output("modal-cum", "is_open"),
+    Output("modal-cum-chart", "figure"),
+    Input("btn-expand-cum", "n_clicks"),
+    State("cum-oil-chart", "figure"),
+    prevent_initial_call=True,
+)
+def expand_cum(n_clicks, fig):
+    if not fig:
+        return False, empty_figure("No production data.")
+    return True, fig
+
+
+@callback(
+    Output("modal-daily", "is_open"),
+    Output("modal-daily-chart", "figure"),
+    Input("btn-expand-daily", "n_clicks"),
+    State("daily-oil-chart", "figure"),
+    prevent_initial_call=True,
+)
+def expand_daily(n_clicks, fig):
+    if not fig:
+        return False, empty_figure("No production data.")
+    return True, fig

@@ -464,7 +464,7 @@ layout = dbc.Container(
                                     id="main-map",
                                     center=[31.5, -101.9],
                                     zoom=10,
-                                    scrollWheelZoom=False,
+                                    scrollWheelZoom=True,
                                     style={"height": "60vh"},
                                 ),
                                 className="p-0",

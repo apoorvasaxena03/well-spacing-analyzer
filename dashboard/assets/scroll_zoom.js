@@ -7,7 +7,7 @@
  * scroll events — only 1 wheel event per THROTTLE_MS passes through.
  */
 (function () {
-    var THROTTLE_MS = 400;
+    var THROTTLE_MS = 1000;
     var attachedContainers = new WeakSet();
 
     function throttleContainer(container) {

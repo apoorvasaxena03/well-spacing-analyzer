@@ -49,6 +49,7 @@ def _color_map_for(GB: pd.DataFrame, color_by: str) -> dict[str, str]:
 
 def _add_well_points(
     fig: go.Figure, GB: pd.DataFrame, x_col: str, color_by: str = "bench",
+    marker_size: int = 12,
 ) -> None:
     """Layer 1 — scatter points colored by variable, labeled with UWI."""
     col = color_by if color_by in GB.columns else "bench"
@@ -69,7 +70,7 @@ def _add_well_points(
             text=grp["well_i"].astype(str),
             textposition="top center",
             textfont=dict(size=8),
-            marker=dict(size=12, color=color, line=dict(width=1, color="white")),
+            marker=dict(size=marker_size, color=color, line=dict(width=1, color="white")),
             hovertemplate=(
                 "<b>%{text}</b><br>"
                 "TVD: %{y:,.0f} ft<br>"
@@ -226,6 +227,7 @@ def build_gun_barrel_figure(
     show_lines: bool = True,
     show_labels: bool = True,
     df_formation_tops: pd.DataFrame | None = None,
+    marker_size: int = 12,
 ) -> go.Figure:
     """
     Build the enhanced gun barrel figure.
@@ -238,13 +240,14 @@ def build_gun_barrel_figure(
         show_lines: Show zigzag connector lines.
         show_labels: Show H/V/3D distance labels.
         df_formation_tops: Optional formation top data.
+        marker_size: Scatter dot size in pixels (default 12).
     """
     if GB.empty:
         return empty_figure("No gun barrel data available.")
 
     fig = go.Figure()
 
-    _add_well_points(fig, GB, x_col, color_by=color_by)
+    _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size)
     _add_spacing_zigzag(fig, GB, IK, x_col, show_lines=show_lines, show_labels=show_labels)
 
     if df_formation_tops is not None and not df_formation_tops.empty:

@@ -758,3 +758,144 @@ def run_floating_wps(
     logger.info("FloatingSectionWPS done: %d rows in %.1fs",
                 len(result), time.perf_counter() - t0)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Phase B: Diagnostic visualization wrappers
+# ---------------------------------------------------------------------------
+
+def run_debug_pair_spacing(
+    lateral_df: pd.DataFrame,
+    header_df: pd.DataFrame,
+    uwi_i: str,
+    uwi_k: str,
+    *,
+    step_ft: int = 100,
+    use_pca_axis: bool = True,
+    theta_parallel_deg: float = 25.0,
+    theta_perp_deg: float = 65.0,
+    contact_threshold_ft: float = 300.0,
+) -> tuple[dict, "list[plt.Figure]"]:
+    """Run WellSpacingCalculator.debug_pair_spacing() and capture figures.
+
+    Returns:
+        (metrics_dict, list_of_matplotlib_figures)
+    """
+    import matplotlib.pyplot as plt
+
+    plt.close("all")  # start clean
+    calculator = WellSpacingCalculator(
+        trajectories=lateral_df,
+        header_df=header_df,
+        logger=logger,
+    )
+    metrics = calculator.debug_pair_spacing(
+        uwi_i=uwi_i,
+        uwi_k=uwi_k,
+        step_ft=step_ft,
+        use_pca_axis=use_pca_axis,
+        theta_parallel_deg=theta_parallel_deg,
+        theta_perp_deg=theta_perp_deg,
+        contact_threshold_ft=contact_threshold_ft,
+        show=False,       # don't call plt.show() in server
+        save_dir=None,    # don't save to disk
+    )
+    # Capture all figures the method created
+    figs = [plt.figure(n) for n in plt.get_fignums()]
+    return metrics, figs
+
+
+def run_wps_visualize(
+    lateral_df: pd.DataFrame,
+    uwi_ref: str,
+    *,
+    orientation: str = "cardinal",
+    box_half_width_ft: float = 2640.0,
+    box_half_height_ft: float = 2640.0,
+    corridor_half_width_ft: float = 2640.0,
+    corridor_extra_along_ft: float = 0.0,
+    min_inside_ft: float = 660.0,
+    exclude_self: bool = True,
+    figsize: tuple[float, float] = (10.0, 10.0),
+) -> "plt.Figure":
+    """Run FloatingSectionWPS.visualize() for a single well.
+
+    Returns:
+        matplotlib Figure showing the floating section + neighbors.
+    """
+    wells_df = FloatingSectionWPS.ds_to_lateral_endpoints(lateral_df)
+    box = BoxSpec(
+        half_width_ft=box_half_width_ft,
+        half_height_ft=box_half_height_ft,
+    )
+    corridor = CorridorSpec(
+        half_width_ft=corridor_half_width_ft,
+        extra_along_ft=corridor_extra_along_ft,
+    )
+    wps = FloatingSectionWPS(
+        wells_df=wells_df,
+        box=box,
+        min_inside_ft=min_inside_ft,
+        exclude_self=exclude_self,
+        corridor=corridor,
+        logger=logger,
+    )
+    fig = wps.visualize(
+        uwi_ref=uwi_ref,
+        orientation=orientation,
+        figsize=figsize,
+    )
+    return fig
+
+
+def run_avg_spacing_plot(
+    df_ik_pairs: pd.DataFrame,
+    lateral_df: pd.DataFrame,
+    well_i: str,
+    *,
+    cutoff_ft: float,
+    vertical_cutoff_ft: float | None = None,
+    overlap_pct_k_min: float | None = None,
+    overrides_df: pd.DataFrame | None = None,
+    axis_mode: str = "any",
+    neighborhood_mode: str = "chain",
+    chain_sort_mode: str = "pca",
+    edge_pick: str = "min",
+    plot_mode: str = "both",
+    figsize: tuple[float, float] = (12.5, 8.0),
+) -> "plt.Figure":
+    """Run AvgSpacingCalculator.summarize() then plot_neighborhood() for one well.
+
+    Must run summarize() first (plot_neighborhood requires it).
+
+    Returns:
+        matplotlib Figure showing the neighborhood diagnostic.
+    """
+    import matplotlib.pyplot as plt
+
+    calc = AvgSpacingCalculator(logger=logger)
+    calc.summarize(
+        spacing_df=df_ik_pairs,
+        cutoff_ft=cutoff_ft,
+        vertical_cutoff_ft=vertical_cutoff_ft,
+        overlap_pct_k_min=overlap_pct_k_min,
+        overrides_df=overrides_df,
+        axis_mode=axis_mode,
+        neighborhood_mode=neighborhood_mode,
+        chain_sort_mode=chain_sort_mode,
+        trajectories=lateral_df,
+        edge_pick=edge_pick,
+    )
+    plt.close("all")
+    calc.plot_neighborhood(
+        well_i=well_i,
+        trajectories=lateral_df,
+        mode=plot_mode,
+        show=False,
+        figsize=figsize,
+    )
+    # plot_neighborhood creates a figure — grab it
+    figs = plt.get_fignums()
+    if figs:
+        return plt.figure(figs[-1])
+    raise ValueError(f"No plot generated for well {well_i}")

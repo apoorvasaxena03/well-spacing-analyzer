@@ -782,26 +782,45 @@ def run_debug_pair_spacing(
         (metrics_dict, list_of_matplotlib_figures)
     """
     import matplotlib.pyplot as plt
+    import matplotlib.figure
 
     plt.close("all")  # start clean
-    calculator = WellSpacingCalculator(
-        trajectories=lateral_df,
-        header_df=header_df,
-        logger=logger,
-    )
-    metrics = calculator.debug_pair_spacing(
-        uwi_i=uwi_i,
-        uwi_k=uwi_k,
-        step_ft=step_ft,
-        use_pca_axis=use_pca_axis,
-        theta_parallel_deg=theta_parallel_deg,
-        theta_perp_deg=theta_perp_deg,
-        contact_threshold_ft=contact_threshold_ft,
-        show=False,       # don't call plt.show() in server
-        save_dir=None,    # don't save to disk
-    )
-    # Capture all figures the method created
-    figs = [plt.figure(n) for n in plt.get_fignums()]
+
+    # debug_pair_spacing calls plt.close(fig) after each panel,
+    # so intercept close to capture figures before they're destroyed.
+    captured_figs: list[plt.Figure] = []
+    _original_close = plt.close
+
+    def _intercept_close(fig_or_num=None):
+        if fig_or_num is not None and fig_or_num != "all":
+            if isinstance(fig_or_num, matplotlib.figure.Figure):
+                captured_figs.append(fig_or_num)
+                return  # keep figure alive
+        _original_close(fig_or_num)
+
+    plt.close = _intercept_close
+    try:
+        calculator = WellSpacingCalculator(
+            trajectories=lateral_df,
+            header_df=header_df,
+            logger=logger,
+        )
+        metrics = calculator.debug_pair_spacing(
+            uwi_i=uwi_i,
+            uwi_k=uwi_k,
+            step_ft=step_ft,
+            use_pca_axis=use_pca_axis,
+            theta_parallel_deg=theta_parallel_deg,
+            theta_perp_deg=theta_perp_deg,
+            contact_threshold_ft=contact_threshold_ft,
+            show=False,       # don't call plt.show() in server
+            save_dir=None,    # don't save to disk
+        )
+    finally:
+        plt.close = _original_close
+
+    # Use captured figures; fall back to any still-open figures
+    figs = captured_figs or [plt.figure(n) for n in plt.get_fignums()]
     return metrics, figs
 
 
@@ -887,14 +906,34 @@ def run_avg_spacing_plot(
         edge_pick=edge_pick,
     )
     plt.close("all")
-    calc.plot_neighborhood(
-        well_i=well_i,
-        trajectories=lateral_df,
-        mode=plot_mode,
-        show=False,
-        figsize=figsize,
-    )
-    # plot_neighborhood creates a figure — grab it
+    # plot_neighborhood() calls plt.close(fig) internally, so we
+    # intercept close to capture the figure before it's destroyed.
+    captured_figs = []
+    _original_close = plt.close
+
+    def _intercept_close(fig_or_num=None):
+        if fig_or_num is not None and fig_or_num != "all":
+            import matplotlib.figure
+            if isinstance(fig_or_num, matplotlib.figure.Figure):
+                captured_figs.append(fig_or_num)
+                return  # don't actually close — we need it
+        _original_close(fig_or_num)
+
+    plt.close = _intercept_close
+    try:
+        calc.plot_neighborhood(
+            well_i=well_i,
+            trajectories=lateral_df,
+            mode=plot_mode,
+            show=False,
+            figsize=figsize,
+        )
+    finally:
+        plt.close = _original_close
+
+    if captured_figs:
+        return captured_figs[-1]
+    # Fallback: check if any figures are still open
     figs = plt.get_fignums()
     if figs:
         return plt.figure(figs[-1])

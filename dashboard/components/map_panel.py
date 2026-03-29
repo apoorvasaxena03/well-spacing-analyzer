@@ -49,7 +49,8 @@ def build_trajectory_geodataframe(
     gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
 
     keep_cols = ["uwi", "well_name", "bench", "first_prod_date", "operator",
-                 "hole_direction", "spud_date", "rsv_cat", "lateral_length_ft"]
+                 "hole_direction", "spud_date", "rsv_cat", "lateral_length_ft",
+                 "role"]
     header_cols = [c for c in keep_cols if c in df_header.columns]
     gdf = gdf.merge(df_header[header_cols], on="uwi", how="left")
 

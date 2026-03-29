@@ -28,6 +28,7 @@ from src.well_data.well_spacing_stats import (
     BoxSpec,
     CorridorSpec,
 )
+from src.well_data.well_role_assignment import OverlappingNeighborhoodRoles
 from src.utils.custom_logger import get_logger, new_run_id, set_run_id
 from src.utils.utils import drop_uwi_duplicates_keep_max_last_prod, compute_rsv_cat
 
@@ -426,6 +427,16 @@ def run_spacing_calculation(
     use_pca_axis: bool = True,
     emit_rejected: bool = True,
     reject_misaligned: bool = False,
+    # Role assignment params
+    role_parallel_eps_ft: float = 1_320,
+    role_perp_eps_ft: float = 1_000,
+    role_oblique_eps_ft: float = 1_100,
+    role_cross_bench_eps_ft: float = 1_320,
+    role_cross_bench_vertical_gate_ft: float = 200,
+    role_inner_zone_ft: float = 660,
+    role_child_window_months: float = 18,
+    role_infill_min_older: int = 2,
+    role_pair_types: dict[str, bool] | None = None,
 ) -> str:
     """
     Run the full spacing pipeline and cache results to disk.
@@ -492,6 +503,32 @@ def run_spacing_calculation(
         if rejected_count:
             logger.info("Reject filter: removed %d pairs → %d valid remain", rejected_count, len(df_spacing))
 
+    # --- Run role assignment (V2 — all pair types) ---
+    logger.info("Running overlapping neighborhood role assignment...")
+    t_roles = time.perf_counter()
+    df_well_roles = assign_well_roles(
+        df_spacing_raw, header_df,
+        parallel_eps_ft=role_parallel_eps_ft,
+        perp_eps_ft=role_perp_eps_ft,
+        oblique_eps_ft=role_oblique_eps_ft,
+        cross_bench_eps_ft=role_cross_bench_eps_ft,
+        cross_bench_vertical_gate_ft=role_cross_bench_vertical_gate_ft,
+        inner_zone_ft=role_inner_zone_ft,
+        child_window_months=role_child_window_months,
+        infill_min_older=role_infill_min_older,
+        role_pair_types=role_pair_types,
+        logger=logger,
+    )
+    logger.info("Role assignment done in %.1fs — %d wells assigned",
+                time.perf_counter() - t_roles, len(df_well_roles))
+
+    # Merge role into header_df so it's available as a GeoJSON property on the map
+    role_cols = ["uwi", "role"]
+    header_df = header_df.merge(
+        df_well_roles[role_cols], on="uwi", how="left",
+    )
+    header_df["role"] = header_df["role"].fillna("no_eligible_neighbor")
+
     # Cache to disk (include stats)
     # NOTE: DirectionalBenchNeighbors, AvgSpacingCalculator, and FloatingSectionWPS
     # are now run on-demand from the Explore page (not during batch calculation).
@@ -501,10 +538,11 @@ def run_spacing_calculation(
             {
                 "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
                 "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
-                "header_df": header_df,
+                "header_df": header_df,            # now includes 'role' column
                 "lateral_df": lateral_df,
                 "directional_df": directional_df, # full survey (for map trajectories)
                 "production_df": production_df,   # may be None if not uploaded
+                "df_well_roles": df_well_roles,   # full role table (parent info, confidence, etc.)
                 "stats": stats.to_list(),
             },
             f,
@@ -513,6 +551,49 @@ def run_spacing_calculation(
                 time.perf_counter() - t0, cache_key.name)
 
     return str(cache_key)
+
+
+# ---------------------------------------------------------------------------
+# Role assignment (V2 — overlapping neighborhoods)
+# ---------------------------------------------------------------------------
+
+def assign_well_roles(
+    df_ik_pairs_raw: pd.DataFrame,
+    header_df: pd.DataFrame,
+    *,
+    parallel_eps_ft: float = 1_320,
+    perp_eps_ft: float = 1_000,
+    oblique_eps_ft: float = 1_100,
+    cross_bench_eps_ft: float = 1_320,
+    cross_bench_vertical_gate_ft: float = 200,
+    inner_zone_ft: float = 660,
+    child_window_months: float = 18,
+    infill_min_older: int = 2,
+    role_pair_types: dict[str, bool] | None = None,
+    logger: Any = None,
+) -> pd.DataFrame:
+    """
+    Assign parent / child / infill_candidate roles to every well.
+
+    Wraps OverlappingNeighborhoodRoles from src/. Uses the raw IK pairs
+    (including rejected) so the class can filter internally.
+
+    Returns one-row-per-well DataFrame with role, parent info, confidence, etc.
+    """
+    roles_engine = OverlappingNeighborhoodRoles(logger=logger)
+    return roles_engine.assign_roles(
+        pairs_df=df_ik_pairs_raw,
+        header_df=header_df,
+        parallel_eps_ft=parallel_eps_ft,
+        perp_eps_ft=perp_eps_ft,
+        oblique_eps_ft=oblique_eps_ft,
+        cross_bench_eps_ft=cross_bench_eps_ft,
+        cross_bench_vertical_gate_ft=cross_bench_vertical_gate_ft,
+        inner_zone_ft=inner_zone_ft,
+        child_window_months=child_window_months,
+        infill_min_older=infill_min_older,
+        role_pair_types=role_pair_types,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -41,9 +41,22 @@ dash.register_page(__name__, path="/explore", name="5 Explore", order=5)
 _PALETTE = px.colors.qualitative.Alphabet
 
 
-def _build_color_map(values: list[str]) -> dict[str, str]:
-    """Map each unique value to a hex color from the palette."""
+_ROLE_COLORS: dict[str, str] = {
+    "parent":              "#2196F3",  # blue
+    "child":               "#FF9800",  # orange
+    "infill_candidate":    "#F44336",  # red
+    "no_eligible_neighbor": "#9E9E9E", # grey
+}
+
+
+def _build_color_map(values: list[str], prop: str = "") -> dict[str, str]:
+    """Map each unique value to a hex color from the palette.
+
+    For the 'role' property, use fixed colors consistent with notebooks.
+    """
     unique = sorted(set(str(v) for v in values if v and str(v).strip()))
+    if prop == "role":
+        return {v: _ROLE_COLORS.get(v, "#607D8B") for v in unique}
     return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(unique)}
 
 _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
@@ -291,6 +304,7 @@ layout = dbc.Container(
                                                         id="traj-color-by",
                                                         options=[
                                                             {"label": "Bench",    "value": "bench"},
+                                                            {"label": "Role",     "value": "role"},
                                                             {"label": "Spud Year","value": "spud_year"},
                                                             {"label": "Operator", "value": "operator"},
                                                             {"label": "RSV Cat",  "value": "rsv_cat"},
@@ -323,6 +337,7 @@ layout = dbc.Container(
                                                         id="bh-color-by",
                                                         options=[
                                                             {"label": "Bench",    "value": "bench"},
+                                                            {"label": "Role",     "value": "role"},
                                                             {"label": "Spud Year","value": "spud_year"},
                                                             {"label": "Operator", "value": "operator"},
                                                             {"label": "RSV Cat",  "value": "rsv_cat"},
@@ -513,6 +528,7 @@ layout = dbc.Container(
                                                     id="gb-color-by",
                                                     options=[
                                                         {"label": "Bench",    "value": "bench"},
+                                                        {"label": "Role",     "value": "role"},
                                                         {"label": "Operator", "value": "operator"},
                                                         {"label": "Year",     "value": "spud_year"},
                                                     ],
@@ -1512,11 +1528,11 @@ def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipelin
         elif traj_color_by == "spud_year" and "spud_date" in header_df.columns:
             try:
                 years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year.dropna().astype(int).astype(str).tolist()
-                color_map = _build_color_map(years)
+                color_map = _build_color_map(years, prop="spud_year")
             except Exception:
                 color_map = {}
         elif traj_color_by in header_df.columns:
-            color_map = _build_color_map(header_df[traj_color_by].dropna().astype(str).tolist())
+            color_map = _build_color_map(header_df[traj_color_by].dropna().astype(str).tolist(), prop=traj_color_by)
 
     hideout = {
         "colorMap": color_map,
@@ -1551,11 +1567,11 @@ def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
         elif bh_color_by == "spud_year" and "spud_date" in header_df.columns:
             try:
                 years = pd.to_datetime(header_df["spud_date"], errors="coerce").dt.year.dropna().astype(int).astype(str).tolist()
-                color_map = _build_color_map(years)
+                color_map = _build_color_map(years, prop="spud_year")
             except Exception:
                 color_map = {}
         elif bh_color_by in header_df.columns:
-            color_map = _build_color_map(header_df[bh_color_by].dropna().astype(str).tolist())
+            color_map = _build_color_map(header_df[bh_color_by].dropna().astype(str).tolist(), prop=bh_color_by)
 
     hideout = {
         "colorMap": color_map,

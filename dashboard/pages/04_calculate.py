@@ -316,6 +316,16 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             use_pca_axis=config_store.get("use_pca_axis", True),
             emit_rejected=config_store.get("emit_rejected", True),
             reject_misaligned=config_store.get("reject_misaligned", False),
+            # Role assignment params
+            role_parallel_eps_ft=config_store.get("role_parallel_eps_ft", 1320),
+            role_perp_eps_ft=config_store.get("role_perp_eps_ft", 1000),
+            role_oblique_eps_ft=config_store.get("role_oblique_eps_ft", 1100),
+            role_cross_bench_eps_ft=config_store.get("role_cross_bench_eps_ft", 1320),
+            role_cross_bench_vertical_gate_ft=config_store.get("role_cross_bench_vertical_gate_ft", 200),
+            role_inner_zone_ft=config_store.get("role_inner_zone_ft", 660),
+            role_child_window_months=config_store.get("role_child_window_months", 18),
+            role_infill_min_older=config_store.get("role_infill_min_older", 2),
+            role_pair_types=config_store.get("role_pair_types"),
         )
     except Exception as exc:
         return (no_show, 0, "", str(exc), True, None, "", False, dash.no_update, True, False)

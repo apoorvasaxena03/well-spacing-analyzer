@@ -6,3 +6,17 @@
     border-radius: 3px;
     white-space: nowrap;
 }
+
+/* Fix: Dash dropdowns must render ABOVE the Leaflet map and its controls.
+   Leaflet controls sit at z-index ~1000; the dropdown menu needs to be higher. */
+.Select-menu-outer,
+.dash-dropdown .Select-menu-outer,
+div[class*="css-"][class*="-menu"] {
+    z-index: 1100 !important;
+}
+
+/* Ensure the style-settings panel itself is above map controls */
+#style-collapse {
+    z-index: 1050;
+    position: relative;
+}

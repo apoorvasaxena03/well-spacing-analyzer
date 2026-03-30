@@ -459,10 +459,13 @@ layout = dbc.Container(
                                         dl.MeasureControl(
                                             position="topleft",
                                             primaryLengthUnit="feet",
-                                            secondaryLengthUnit="miles",
+                                            secondaryLengthUnit="kilometers",
                                             primaryAreaUnit="acres",
+                                            secondaryAreaUnit="sqmeters",
                                             activeColor="#ff7800",
                                             completedColor="#00C853",
+                                            captureMarker=False,
+                                            clearMeasurementsOnStop=True,
                                         ),
                                         # ── Draw tools (line / polygon / rectangle / circle selection) ──
                                         dl.FeatureGroup(
@@ -487,18 +490,36 @@ layout = dbc.Container(
                                     scrollWheelZoom=True,
                                             style={"height": "60vh"},
                                         ),
-                                        # ── Legend overlay (inside map, bottom-left) ──
+                                        # ── Legend overlay (inside map, top-right, collapsible) ──
                                         html.Div(
                                             [
-                                                html.Div(id="map-legend"),
-                                                html.Div(id="bh-legend", className="mt-1"),
+                                                html.Button(
+                                                    "Legend",
+                                                    id="btn-toggle-legend",
+                                                    style={
+                                                        "fontSize": "0.7rem",
+                                                        "padding": "2px 8px",
+                                                        "backgroundColor": "rgba(255,255,255,0.9)",
+                                                        "border": "1px solid #ccc",
+                                                        "borderRadius": "3px",
+                                                        "cursor": "pointer",
+                                                        "marginBottom": "4px",
+                                                    },
+                                                ),
+                                                html.Div(
+                                                    [
+                                                        html.Div(id="map-legend"),
+                                                        html.Div(id="bh-legend", className="mt-1"),
+                                                    ],
+                                                    id="legend-content",
+                                                ),
                                             ],
                                             style={
                                                 "position": "absolute",
-                                                "bottom": "30px",
-                                                "left": "10px",
+                                                "top": "10px",
+                                                "right": "55px",
                                                 "zIndex": "1000",
-                                                "maxHeight": "40vh",
+                                                "maxHeight": "50vh",
                                                 "overflowY": "auto",
                                                 "pointerEvents": "auto",
                                             },
@@ -1687,6 +1708,20 @@ def on_color_picker_change(colors, ids, existing_overrides):
             key = id_dict["value"]  # the legend value (e.g., "parent", "Wolfcamp A")
             overrides[key] = color_val
     return overrides
+
+
+# -- Toggle legend visibility --
+@callback(
+    Output("legend-content", "style"),
+    Input("btn-toggle-legend", "n_clicks"),
+    State("legend-content", "style"),
+    prevent_initial_call=True,
+)
+def toggle_legend(n_clicks, current_style):
+    current_style = current_style or {}
+    if current_style.get("display") == "none":
+        return {k: v for k, v in current_style.items() if k != "display"}
+    return {**current_style, "display": "none"}
 
 
 # -- Dynamically populate color-by dropdowns with all header columns --

@@ -56,32 +56,61 @@ window.dashExtensions.default.ptl0 = function(feature, latlng) {
     });
 };
 
-// Trajectory tooltip + popup
+// User-configurable tooltip fields — updated from Python via clientside callback
+window._tooltipFields = ["well_name", "uwi", "bench", "operator", "role"];
+
+// Helper: format a property key as a readable label
+function _formatLabel(key) {
+    return key.replace(/_/g, " ").replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+// Helper: format a property value for display
+function _formatValue(val) {
+    if (val === null || val === undefined || val === "" || val === "nan" || val === "NaT" || val === "None") return null;
+    var s = String(val);
+    // Truncate ISO timestamps to date only
+    if (s.length >= 10 && s[4] === "-" && s[7] === "-") return s.substring(0, 10);
+    // Format numbers with commas
+    var n = Number(val);
+    if (!isNaN(n) && s === String(n)) return n.toLocaleString(undefined, {maximumFractionDigits: 1});
+    return s;
+}
+
+// Trajectory tooltip + popup (reads fields from window._tooltipFields)
 window.dashExtensions.default.oef0 = function(feature, layer) {
     // Signal that a well feature was clicked (checked by draw_clear.js)
     layer.on('click', function() { window._wellFeatureClicked = true; });
 
     var p = feature.properties || {};
-    // Tooltip on hover
-    var tip = (p.well_name || p.uwi || "Well");
-    if (p.bench) tip += " | " + p.bench;
-    if (p.operator) tip += " | " + p.operator;
-    layer.bindTooltip(tip, {sticky: true, direction: "top"});
-    // Popup on click
-    var rows = [];
-    rows.push("<b>" + (p.well_name || "-") + "</b>");
-    var fields = [
-        ["UWI", p.uwi], ["Operator", p.operator], ["Bench", p.bench],
-        ["RSV Cat", p.rsv_cat], ["Spud", p.spud_date ? String(p.spud_date).substring(0,10) : null],
-        ["First Prod", p.first_prod_date ? String(p.first_prod_date).substring(0,10) : null],
-        ["Lateral (ft)", p.lateral_length_ft ? Math.round(p.lateral_length_ft).toLocaleString() : null],
-    ];
+    var fields = window._tooltipFields || ["well_name", "uwi", "bench"];
+
+    // Tooltip on hover — show selected fields separated by " | "
+    var tipParts = [];
     for (var i = 0; i < fields.length; i++) {
-        if (fields[i][1] && fields[i][1] !== "" && fields[i][1] !== "nan")
-            rows.push("<tr><td style='padding:1px 6px;color:#666'>" + fields[i][0] + "</td><td style='padding:1px 6px'>" + fields[i][1] + "</td></tr>");
+        var v = _formatValue(p[fields[i]]);
+        if (v) tipParts.push(v);
     }
-    var title = rows.shift();
-    layer.bindPopup("<div style='font-size:12px'>" + title + "<table style='margin-top:4px'>" + rows.join("") + "</table></div>", {maxWidth: 300});
+    var tip = tipParts.join(" | ") || (p.uwi || "Well");
+    layer.bindTooltip(tip, {sticky: true, direction: "top"});
+
+    // Popup on click — show all selected fields as a table
+    var title = "<b>" + (p.well_name || p.uwi || "Well") + "</b>";
+    var rows = [];
+    for (var j = 0; j < fields.length; j++) {
+        var label = _formatLabel(fields[j]);
+        var val = _formatValue(p[fields[j]]);
+        if (val) {
+            rows.push(
+                "<tr><td style='padding:1px 6px;color:#666'>" + label +
+                "</td><td style='padding:1px 6px'>" + val + "</td></tr>"
+            );
+        }
+    }
+    layer.bindPopup(
+        "<div style='font-size:12px'>" + title +
+        "<table style='margin-top:4px'>" + rows.join("") + "</table></div>",
+        {maxWidth: 350}
+    );
 };
 
 // Bottomhole tooltip + popup (same as trajectory)

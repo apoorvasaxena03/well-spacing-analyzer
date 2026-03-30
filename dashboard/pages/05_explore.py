@@ -361,6 +361,21 @@ layout = dbc.Container(
                                                                marks={0.1: ".1", 0.5: ".5", 1.0: "1"}),
                                                 ], md=4),
                                             ]),
+                                            # -- Tooltip fields row --
+                                            html.Hr(className="my-2"),
+                                            html.H6("Tooltip Fields", className="mb-2", style={"fontSize": "0.82rem"}),
+                                            html.P(
+                                                "Select which fields appear when hovering over wells on the map.",
+                                                className="text-muted small mb-1",
+                                            ),
+                                            dcc.Dropdown(
+                                                id="tooltip-fields",
+                                                options=[],  # populated dynamically
+                                                value=["well_name", "uwi", "bench", "operator", "role"],
+                                                multi=True,
+                                                placeholder="Select fields to show on hover...",
+                                                style={"fontSize": "0.8rem"},
+                                            ),
                                         ],
                                         className="py-2",
                                     ),
@@ -1523,6 +1538,19 @@ dash.clientside_callback(
     prevent_initial_call=True,
 )
 
+# -- Sync tooltip fields to JS global (no server round-trip needed) --
+dash.clientside_callback(
+    """
+    function(fields) {
+        window._tooltipFields = fields || ["well_name", "uwi", "bench"];
+        return null;
+    }
+    """,
+    Output("tooltip-fields", "title"),  # dummy output (title attr, unused)
+    Input("tooltip-fields", "value"),
+    prevent_initial_call=False,
+)
+
 
 # -- Toggle style settings panel --
 @callback(
@@ -1731,6 +1759,7 @@ _SKIP_COLS = {"uwi", "surface_lat", "surface_lon", "latitude", "longitude", "geo
     Output("traj-color-by", "options"),
     Output("bh-color-by", "options"),
     Output("gb-color-by", "options"),
+    Output("tooltip-fields", "options"),
     Input("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
@@ -1740,7 +1769,7 @@ def populate_color_by_options(pipeline_result):
     base = [{"label": "Uniform", "value": "_uniform"}]
 
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return base, base, base[:0]  # GB doesn't have Uniform option
+        return base, base, base[:0], []
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -1769,7 +1798,23 @@ def populate_color_by_options(pipeline_result):
     map_options = options + base  # map dropdowns get Uniform at the end
     gb_options = options           # gun barrel doesn't need Uniform
 
-    return map_options, map_options, gb_options
+    # Tooltip fields: ALL header columns (including numeric) — user picks what to show
+    tooltip_skip = {"geometry"}
+    tooltip_priority = ["well_name", "uwi", "bench", "operator", "role", "rsv_cat"]
+    tooltip_all = [c for c in tooltip_priority if c in header_df.columns]
+    tooltip_rest = sorted([
+        c for c in header_df.columns
+        if c not in tooltip_skip and c not in tooltip_all
+    ])
+    tooltip_all += tooltip_rest
+    if "spud_year" not in tooltip_all and "spud_date" in header_df.columns:
+        tooltip_all.append("spud_year")
+    tooltip_options = [
+        {"label": col.replace("_", " ").title(), "value": col}
+        for col in tooltip_all
+    ]
+
+    return map_options, map_options, gb_options, tooltip_options
 
 
 @callback(

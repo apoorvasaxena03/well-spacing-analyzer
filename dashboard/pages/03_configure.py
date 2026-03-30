@@ -566,6 +566,28 @@ layout = dbc.Container(
                         [
                             dbc.Col(
                                 [
+                                    dbc.Label("No-neighbor wells"),
+                                    dbc.Switch(
+                                        id="cfg-role-no-neighbor-as-parent", value=False,
+                                        label="Treat as parent",
+                                        className="mt-1",
+                                    ),
+                                    dbc.FormText(
+                                        "When ON, wells with no eligible neighbors are labeled 'parent' "
+                                        "(they were drilled in isolation — parent by nature). "
+                                        "When OFF (default), they get a separate 'no_eligible_neighbor' label "
+                                        "so you can distinguish them in production analysis."
+                                    ),
+                                ],
+                                md=4,
+                            ),
+                        ],
+                        className="mt-3",
+                    ),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
                                     dbc.Label("Pair types for role assignment", className="mb-1"),
                                     dbc.Checklist(
                                         id="cfg-role-pair-types",
@@ -919,6 +941,7 @@ def detect_utm_zones(upload_store):
     State("cfg-role-inner-zone", "value"),
     State("cfg-role-child-window", "value"),
     State("cfg-role-infill-min-older", "value"),
+    State("cfg-role-no-neighbor-as-parent", "value"),
     State("cfg-role-pair-types", "value"),
     State("column-map-store", "data"),
     prevent_initial_call=True,
@@ -931,7 +954,8 @@ def save_config(
     use_pca_axis, emit_rejected, reject_misaligned,
     role_parallel_eps, role_perp_eps, role_oblique_eps,
     role_cross_bench_eps, role_vert_gate, role_inner_zone,
-    role_child_window, role_infill_min_older, role_pair_types,
+    role_child_window, role_infill_min_older, role_no_neighbor_as_parent,
+    role_pair_types,
     col_map_store,
 ):
     # utm_zone: blank = auto-detect, or user-typed EPSG override
@@ -966,6 +990,7 @@ def save_config(
         "role_inner_zone_ft": float(role_inner_zone or 660),
         "role_child_window_months": float(role_child_window or 18),
         "role_infill_min_older": int(role_infill_min_older or 2),
+        "role_treat_no_neighbor_as_parent": bool(role_no_neighbor_as_parent),
         "role_pair_types": {
             "parallel_same_bench": "parallel_same_bench" in (role_pair_types or []),
             "cross_formation": "cross_formation" in (role_pair_types or []),

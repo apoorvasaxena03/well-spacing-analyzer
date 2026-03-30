@@ -403,6 +403,7 @@ class OverlappingNeighborhoodRoles:
         child_window_months: float = 18,
         infill_min_older: int = 2,
         role_pair_types: Optional[Dict[str, bool]] = None,
+        treat_no_neighbor_as_parent: bool = False,
         overrides_df: Optional[pd.DataFrame] = None,
         header_join_cols: Optional[List[str]] = None,
     ) -> pd.DataFrame:
@@ -472,6 +473,7 @@ class OverlappingNeighborhoodRoles:
         self.logger.info(f"  inner_zone_ft:                 {inner_zone_ft:,.0f}")
         self.logger.info(f"  child_window_months:           {child_window_months}")
         self.logger.info(f"  infill_min_older:              {infill_min_older}")
+        self.logger.info(f"  treat_no_neighbor_as_parent: {treat_no_neighbor_as_parent}")
         self.logger.info(f"  Enabled pair types:  {enabled_types}")
         if disabled_types:
             self.logger.info(f"  Disabled pair types: {disabled_types}")
@@ -704,6 +706,8 @@ class OverlappingNeighborhoodRoles:
         # --- Assign role ---
         def _assign_role(row: pd.Series) -> str:
             if row["n_eligible_neighbors"] == 0:
+                if treat_no_neighbor_as_parent:
+                    return self.ROLE_PARENT
                 return self.ROLE_NO_NEIGHBOR
             if row["n_older_eligible"] == 0:
                 return self.ROLE_PARENT
@@ -712,6 +716,9 @@ class OverlappingNeighborhoodRoles:
             return self.ROLE_CHILD
 
         df_roles["role"] = df_roles.apply(_assign_role, axis=1)
+
+        # Tag isolated wells so they can be filtered even when treated as parent
+        df_roles["isolated"] = df_roles["n_eligible_neighbors"] == 0
 
         # --- Child generation sub-label ---
         child_window_days = child_window_months * 30.44

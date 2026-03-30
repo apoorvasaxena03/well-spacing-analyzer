@@ -325,6 +325,7 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             role_inner_zone_ft=config_store.get("role_inner_zone_ft", 660),
             role_child_window_months=config_store.get("role_child_window_months", 18),
             role_infill_min_older=config_store.get("role_infill_min_older", 2),
+            role_treat_no_neighbor_as_parent=config_store.get("role_treat_no_neighbor_as_parent", False),
             role_pair_types=config_store.get("role_pair_types"),
         )
     except Exception as exc:

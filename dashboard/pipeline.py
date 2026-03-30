@@ -436,6 +436,7 @@ def run_spacing_calculation(
     role_inner_zone_ft: float = 660,
     role_child_window_months: float = 18,
     role_infill_min_older: int = 2,
+    role_treat_no_neighbor_as_parent: bool = False,
     role_pair_types: dict[str, bool] | None = None,
 ) -> str:
     """
@@ -516,6 +517,7 @@ def run_spacing_calculation(
         inner_zone_ft=role_inner_zone_ft,
         child_window_months=role_child_window_months,
         infill_min_older=role_infill_min_older,
+        treat_no_neighbor_as_parent=role_treat_no_neighbor_as_parent,
         role_pair_types=role_pair_types,
         logger=logger,
     )
@@ -569,6 +571,7 @@ def assign_well_roles(
     inner_zone_ft: float = 660,
     child_window_months: float = 18,
     infill_min_older: int = 2,
+    treat_no_neighbor_as_parent: bool = False,
     role_pair_types: dict[str, bool] | None = None,
     logger: Any = None,
 ) -> pd.DataFrame:
@@ -592,6 +595,7 @@ def assign_well_roles(
         inner_zone_ft=inner_zone_ft,
         child_window_months=child_window_months,
         infill_min_older=infill_min_older,
+        treat_no_neighbor_as_parent=treat_no_neighbor_as_parent,
         role_pair_types=role_pair_types,
     )
 

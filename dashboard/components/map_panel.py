@@ -48,10 +48,11 @@ def build_trajectory_geodataframe(
 
     gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
 
-    keep_cols = ["uwi", "well_name", "bench", "first_prod_date", "operator",
-                 "hole_direction", "spud_date", "rsv_cat", "lateral_length_ft",
-                 "role"]
-    header_cols = [c for c in keep_cols if c in df_header.columns]
+    # Merge ALL header columns into GeoJSON features so any column
+    # can be used for color-by on the map (dynamic dropdown).
+    skip_cols = {"latitude", "longitude", "geometry"}
+    header_cols = ["uwi"] + [c for c in df_header.columns if c != "uwi" and c not in skip_cols]
+    header_cols = [c for c in header_cols if c in df_header.columns]
     gdf = gdf.merge(df_header[header_cols], on="uwi", how="left")
 
     # Ensure uwi is string for proper GeoJSON serialization / tooltip display

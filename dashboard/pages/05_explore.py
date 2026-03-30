@@ -16,7 +16,7 @@ suppress_callback_exceptions for these specific components.
 import dash
 import pandas as pd
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback, dcc, html, dash_table
+from dash import Input, Output, State, ALL, callback, dcc, html, dash_table
 import dash_leaflet as dl
 import plotly.graph_objects as go
 import plotly.express as px
@@ -126,6 +126,7 @@ layout = dbc.Container(
         dcc.Store(id="dbn-result-store"),
         dcc.Store(id="avg-spacing-result-store"),
         dcc.Store(id="wps-result-store"),
+        dcc.Store(id="user-color-overrides", data={}),
         html.Div(id="_draw-clear-dummy", style={"display": "none"}),
 
         # Fullscreen modals for diagnostic plots
@@ -300,7 +301,7 @@ layout = dbc.Container(
                                             dbc.Row([
                                                 dbc.Col([
                                                     dbc.Label("Color by", className="small mb-0"),
-                                                    dbc.Select(
+                                                    dcc.Dropdown(
                                                         id="traj-color-by",
                                                         options=[
                                                             {"label": "Bench",    "value": "bench"},
@@ -311,7 +312,8 @@ layout = dbc.Container(
                                                             {"label": "Uniform",  "value": "_uniform"},
                                                         ],
                                                         value="bench",
-                                                        size="sm",
+                                                        clearable=False,
+                                                        style={"fontSize": "0.8rem"},
                                                     ),
                                                 ], md=4),
                                                 dbc.Col([
@@ -333,7 +335,7 @@ layout = dbc.Container(
                                             dbc.Row([
                                                 dbc.Col([
                                                     dbc.Label("Color by", className="small mb-0"),
-                                                    dbc.Select(
+                                                    dcc.Dropdown(
                                                         id="bh-color-by",
                                                         options=[
                                                             {"label": "Bench",    "value": "bench"},
@@ -344,7 +346,8 @@ layout = dbc.Container(
                                                             {"label": "Uniform",  "value": "_uniform"},
                                                         ],
                                                         value="bench",
-                                                        size="sm",
+                                                        clearable=False,
+                                                        style={"fontSize": "0.8rem"},
                                                     ),
                                                 ], md=4),
                                                 dbc.Col([
@@ -482,13 +485,26 @@ layout = dbc.Container(
                                     scrollWheelZoom=True,
                                     style={"height": "60vh"},
                                 ),
+                                # ── Legend overlay (inside map, bottom-left) ──
+                                html.Div(
+                                    [
+                                        html.Div(id="map-legend"),
+                                        html.Div(id="bh-legend", className="mt-1"),
+                                    ],
+                                    style={
+                                        "position": "absolute",
+                                        "bottom": "30px",
+                                        "left": "10px",
+                                        "zIndex": "1000",
+                                        "maxHeight": "40vh",
+                                        "overflowY": "auto",
+                                        "pointerEvents": "auto",
+                                    },
+                                ),
                                 className="p-0",
+                                style={"position": "relative"},
                             ),
                         ),
-
-                        # ── Legends ──
-                        html.Div(id="map-legend", className="mt-1"),
-                        html.Div(id="bh-legend", className="mt-1"),
                     ],
                     md=5,
                 ),
@@ -1515,10 +1531,11 @@ def toggle_labels_enabled(lines_value):
     Input("traj-weight", "value"),
     Input("traj-opacity", "value"),
     Input("bh-color-by", "value"),
+    Input("user-color-overrides", "data"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
-def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipeline_result):
+def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, user_overrides, pipeline_result):
     color_map = {}
     if pipeline_result and pipeline_result.get("cache_path"):
         data = load_cached_pipeline(pipeline_result["cache_path"])
@@ -1533,6 +1550,12 @@ def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipelin
                 color_map = {}
         elif traj_color_by in header_df.columns:
             color_map = _build_color_map(header_df[traj_color_by].dropna().astype(str).tolist(), prop=traj_color_by)
+
+    # Apply user color overrides on top of auto-generated palette
+    if user_overrides and color_map:
+        for val, custom_color in user_overrides.items():
+            if val in color_map:
+                color_map[val] = custom_color
 
     hideout = {
         "colorMap": color_map,
@@ -1554,10 +1577,11 @@ def update_trajectory_style(traj_color_by, weight, opacity, bh_color_by, pipelin
     Input("bh-color-by", "value"),
     Input("bh-radius", "value"),
     Input("bh-opacity", "value"),
+    Input("user-color-overrides", "data"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
-def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
+def update_bottomhole_style(bh_color_by, radius, opacity, user_overrides, pipeline_result):
     color_map = {}
     if pipeline_result and pipeline_result.get("cache_path"):
         data = load_cached_pipeline(pipeline_result["cache_path"])
@@ -1573,6 +1597,12 @@ def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
         elif bh_color_by in header_df.columns:
             color_map = _build_color_map(header_df[bh_color_by].dropna().astype(str).tolist(), prop=bh_color_by)
 
+    # Apply user color overrides
+    if user_overrides and color_map:
+        for val, custom_color in user_overrides.items():
+            if val in color_map:
+                color_map[val] = custom_color
+
     hideout = {
         "colorMap": color_map,
         "colorProp": bh_color_by if bh_color_by != "_uniform" else "bench",
@@ -1587,7 +1617,12 @@ def update_bottomhole_style(bh_color_by, radius, opacity, pipeline_result):
 
 
 def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
-    """Build a compact color legend from a color map."""
+    """Build a compact color legend with clickable color swatches.
+
+    Each swatch is an <input type='color'> so the user can pick custom colors
+    (Spotfire-style). The color-picker inputs share a pattern-matching ID
+    so a single callback can capture changes.
+    """
     if not color_map:
         return None
     items = []
@@ -1595,20 +1630,25 @@ def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
         items.append(
             html.Div(
                 [
-                    html.Span(
+                    dbc.Input(
+                        type="color",
+                        value=color,
+                        id={"type": "legend-color-picker", "label": label, "value": val},
                         style={
-                            "display": "inline-block",
-                            "width": "12px",
-                            "height": "12px",
-                            "backgroundColor": color,
+                            "width": "16px",
+                            "height": "16px",
+                            "padding": "0",
+                            "border": "1px solid #ccc",
                             "borderRadius": "2px",
                             "marginRight": "4px",
                             "verticalAlign": "middle",
-                        }
+                            "cursor": "pointer",
+                            "display": "inline-block",
+                        },
                     ),
                     html.Span(val, style={"fontSize": "0.72rem", "verticalAlign": "middle"}),
                 ],
-                style={"lineHeight": "1.4"},
+                style={"lineHeight": "1.6", "display": "flex", "alignItems": "center"},
             )
         )
     return dbc.Card(
@@ -1617,8 +1657,82 @@ def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
             + items,
             className="py-1 px-2",
         ),
-        style={"maxHeight": "200px", "overflowY": "auto"},
+        style={
+            "maxHeight": "200px",
+            "overflowY": "auto",
+            "backgroundColor": "rgba(255, 255, 255, 0.88)",
+            "backdropFilter": "blur(4px)",
+            "boxShadow": "0 1px 4px rgba(0,0,0,0.2)",
+        },
     )
+
+
+# -- Color picker callback: capture user overrides from legend swatches --
+@callback(
+    Output("user-color-overrides", "data"),
+    Input({"type": "legend-color-picker", "label": ALL, "value": ALL}, "value"),
+    State({"type": "legend-color-picker", "label": ALL, "value": ALL}, "id"),
+    State("user-color-overrides", "data"),
+    prevent_initial_call=True,
+)
+def on_color_picker_change(colors, ids, existing_overrides):
+    """Capture color picker changes into the user-color-overrides store."""
+    overrides = dict(existing_overrides or {})
+    for color_val, id_dict in zip(colors, ids):
+        if color_val:
+            key = id_dict["value"]  # the legend value (e.g., "parent", "Wolfcamp A")
+            overrides[key] = color_val
+    return overrides
+
+
+# -- Dynamically populate color-by dropdowns with all header columns --
+_PRIORITY_COLOR_COLS = ["bench", "role", "spud_year", "operator", "rsv_cat"]
+_SKIP_COLS = {"uwi", "surface_lat", "surface_lon", "latitude", "longitude", "geometry"}
+
+
+@callback(
+    Output("traj-color-by", "options"),
+    Output("bh-color-by", "options"),
+    Output("gb-color-by", "options"),
+    Input("pipeline-result-store", "data"),
+    prevent_initial_call=False,
+)
+def populate_color_by_options(pipeline_result):
+    """Build color-by dropdown options from all header columns + spud_year."""
+    # Base options always available
+    base = [{"label": "Uniform", "value": "_uniform"}]
+
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return base, base, base[:0]  # GB doesn't have Uniform option
+
+    data = load_cached_pipeline(pipeline_result["cache_path"])
+    header_df = data["header_df"]
+
+    # Gather all string/categorical columns + spud_year (derived)
+    candidates = set()
+    for col in header_df.columns:
+        if col in _SKIP_COLS:
+            continue
+        if header_df[col].dtype == "object" or col in _PRIORITY_COLOR_COLS:
+            candidates.add(col)
+    # spud_year is derived from spud_date — always offer it if spud_date exists
+    if "spud_date" in header_df.columns:
+        candidates.add("spud_year")
+
+    # Build options: priority cols first, then rest alphabetically
+    priority = [c for c in _PRIORITY_COLOR_COLS if c in candidates]
+    rest = sorted(candidates - set(priority))
+    all_cols = priority + rest
+
+    options = [
+        {"label": col.replace("_", " ").title(), "value": col}
+        for col in all_cols
+    ]
+
+    map_options = options + base  # map dropdowns get Uniform at the end
+    gb_options = options           # gun barrel doesn't need Uniform
+
+    return map_options, map_options, gb_options
 
 
 @callback(

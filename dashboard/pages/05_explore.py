@@ -464,8 +464,6 @@ layout = dbc.Container(
                                             secondaryAreaUnit="sqmeters",
                                             activeColor="#ff7800",
                                             completedColor="#00C853",
-                                            captureMarker=False,
-                                            clearMeasurementsOnStop=True,
                                         ),
                                         # ── Draw tools (line / polygon / rectangle / circle selection) ──
                                         dl.FeatureGroup(

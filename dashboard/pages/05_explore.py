@@ -2043,10 +2043,10 @@ def update_cum_production(selected, product, hover_fields, pipeline_result):
         _hf = hover_fields or []
         header_df = data.get("header_df")
         _hdr_lookup = {}
-        if header_df is not None and _hf:
-            avail = [f for f in _hf if f in header_df.columns]
+        if header_df is not None and _hf and "uwi" in header_df.columns:
+            avail = [f for f in _hf if f in header_df.columns and f != "uwi"]
             if avail:
-                _hdr_lookup = header_df.set_index("uwi")[avail].to_dict("index")
+                _hdr_lookup = header_df.set_index("uwi")[avail].astype(str).to_dict("index")
 
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
@@ -2115,10 +2115,10 @@ def update_daily_production(selected, product, hover_fields, pipeline_result):
         _hf = hover_fields or []
         header_df = data.get("header_df")
         _hdr_lookup = {}
-        if header_df is not None and _hf:
-            avail = [f for f in _hf if f in header_df.columns]
+        if header_df is not None and _hf and "uwi" in header_df.columns:
+            avail = [f for f in _hf if f in header_df.columns and f != "uwi"]
             if avail:
-                _hdr_lookup = header_df.set_index("uwi")[avail].to_dict("index")
+                _hdr_lookup = header_df.set_index("uwi")[avail].astype(str).to_dict("index")
 
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):

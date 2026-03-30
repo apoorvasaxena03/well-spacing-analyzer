@@ -76,24 +76,20 @@ function _formatValue(val) {
     return s;
 }
 
-// Trajectory tooltip + popup (reads fields from window._tooltipFields)
-window.dashExtensions.default.oef0 = function(feature, layer) {
-    // Signal that a well feature was clicked (checked by draw_clear.js)
-    layer.on('click', function() { window._wellFeatureClicked = true; });
-
-    var p = feature.properties || {};
+// Build tooltip text from current fields selection
+function _buildTooltipText(p) {
     var fields = window._tooltipFields || ["well_name", "uwi", "bench"];
-
-    // Tooltip on hover — show selected fields separated by " | "
-    var tipParts = [];
+    var parts = [];
     for (var i = 0; i < fields.length; i++) {
         var v = _formatValue(p[fields[i]]);
-        if (v) tipParts.push(v);
+        if (v) parts.push(v);
     }
-    var tip = tipParts.join(" | ") || (p.uwi || "Well");
-    layer.bindTooltip(tip, {sticky: true, direction: "top"});
+    return parts.join(" | ") || (p.uwi || "Well");
+}
 
-    // Popup on click — show all selected fields as a table
+// Build popup HTML from current fields selection
+function _buildPopupHtml(p) {
+    var fields = window._tooltipFields || ["well_name", "uwi", "bench"];
     var title = "<b>" + (p.well_name || p.uwi || "Well") + "</b>";
     var rows = [];
     for (var j = 0; j < fields.length; j++) {
@@ -106,11 +102,28 @@ window.dashExtensions.default.oef0 = function(feature, layer) {
             );
         }
     }
-    layer.bindPopup(
-        "<div style='font-size:12px'>" + title +
-        "<table style='margin-top:4px'>" + rows.join("") + "</table></div>",
-        {maxWidth: 350}
-    );
+    return "<div style='font-size:12px'>" + title +
+        "<table style='margin-top:4px'>" + rows.join("") + "</table></div>";
+}
+
+// Trajectory tooltip + popup (dynamically reads window._tooltipFields on each hover/click)
+window.dashExtensions.default.oef0 = function(feature, layer) {
+    // Signal that a well feature was clicked (checked by draw_clear.js)
+    layer.on('click', function() { window._wellFeatureClicked = true; });
+
+    var p = feature.properties || {};
+
+    // Bind tooltip with dynamic content — re-reads _tooltipFields each time
+    layer.bindTooltip("", {sticky: true, direction: "top"});
+    layer.on('mouseover', function() {
+        layer.setTooltipContent(_buildTooltipText(p));
+    });
+
+    // Bind popup with dynamic content — re-reads _tooltipFields on each click
+    layer.bindPopup("", {maxWidth: 350});
+    layer.on('click', function() {
+        layer.setPopupContent(_buildPopupHtml(p));
+    });
 };
 
 // Bottomhole tooltip + popup (same as trajectory)

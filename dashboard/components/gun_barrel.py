@@ -47,9 +47,14 @@ def _color_map_for(GB: pd.DataFrame, color_by: str) -> dict[str, str]:
     return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(vals)}
 
 
+def _format_label(key: str) -> str:
+    """Convert column name to a readable label."""
+    return key.replace("_", " ").replace("  ", " ").title()
+
+
 def _add_well_points(
     fig: go.Figure, GB: pd.DataFrame, x_col: str, color_by: str = "bench",
-    marker_size: int = 12,
+    marker_size: int = 12, hover_fields: list[str] | None = None,
 ) -> None:
     """Layer 1 — scatter points colored by variable, labeled with UWI."""
     col = color_by if color_by in GB.columns else "bench"
@@ -59,9 +64,28 @@ def _add_well_points(
 
     cmap = _color_map_for(GB, col)
 
+    # Build customdata + hovertemplate from user-selected fields
+    fields = hover_fields or []
+    available_fields = [f for f in fields if f in GB.columns]
+
     for val, grp in GB.groupby(col, dropna=False):
         val_str = str(val) if pd.notna(val) else "Unknown"
         color = cmap.get(val_str, "#7f7f7f")
+
+        # Base hover lines (always shown)
+        hover_lines = [
+            "<b>%{text}</b>",
+            "TVD: %{y:,.0f} ft",
+            f"{'Section' if x_col == 'sectionDist' else 'Cumulative'} dist: %{{x:,.0f}} ft",
+        ]
+
+        # Add user-selected fields via customdata
+        customdata = None
+        if available_fields:
+            customdata = grp[available_fields].astype(str).values
+            for i, f in enumerate(available_fields):
+                hover_lines.append(f"{_format_label(f)}: %{{customdata[{i}]}}")
+
         fig.add_trace(go.Scatter(
             x=grp[x_col],
             y=grp["elevation_i"],
@@ -71,12 +95,8 @@ def _add_well_points(
             textposition="top center",
             textfont=dict(size=8),
             marker=dict(size=marker_size, color=color, line=dict(width=1, color="white")),
-            hovertemplate=(
-                "<b>%{text}</b><br>"
-                "TVD: %{y:,.0f} ft<br>"
-                f"{'Section' if x_col == 'sectionDist' else 'Cumulative'} dist: %{{x:,.0f}} ft"
-                "<extra></extra>"
-            ),
+            customdata=customdata,
+            hovertemplate="<br>".join(hover_lines) + "<extra></extra>",
         ))
 
 
@@ -228,6 +248,7 @@ def build_gun_barrel_figure(
     show_labels: bool = True,
     df_formation_tops: pd.DataFrame | None = None,
     marker_size: int = 12,
+    hover_fields: list[str] | None = None,
 ) -> go.Figure:
     """
     Build the enhanced gun barrel figure.
@@ -247,7 +268,7 @@ def build_gun_barrel_figure(
 
     fig = go.Figure()
 
-    _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size)
+    _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size, hover_fields=hover_fields)
     _add_spacing_zigzag(fig, GB, IK, x_col, show_lines=show_lines, show_labels=show_labels)
 
     if df_formation_tops is not None and not df_formation_tops.empty:

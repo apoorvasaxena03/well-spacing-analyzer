@@ -625,6 +625,20 @@ layout = dbc.Container(
                                         align="center",
                                         className="mt-1",
                                     ),
+                                    # Chart hover fields
+                                    dbc.Row(
+                                        dbc.Col(
+                                            dcc.Dropdown(
+                                                id="chart-hover-fields",
+                                                options=[],  # populated dynamically
+                                                value=["well_name", "bench", "role", "operator"],
+                                                multi=True,
+                                                placeholder="Select fields for chart hover...",
+                                                style={"fontSize": "0.75rem"},
+                                            ),
+                                        ),
+                                        className="mt-1",
+                                    ),
                                 ]
                             ),
                             dbc.CardBody(
@@ -1760,6 +1774,7 @@ _SKIP_COLS = {"uwi", "surface_lat", "surface_lon", "latitude", "longitude", "geo
     Output("bh-color-by", "options"),
     Output("gb-color-by", "options"),
     Output("tooltip-fields", "options"),
+    Output("chart-hover-fields", "options"),
     Input("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
@@ -1769,7 +1784,7 @@ def populate_color_by_options(pipeline_result):
     base = [{"label": "Uniform", "value": "_uniform"}]
 
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return base, base, base[:0], []
+        return base, base, base[:0], [], []
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -1814,7 +1829,7 @@ def populate_color_by_options(pipeline_result):
         for col in tooltip_all
     ]
 
-    return map_options, map_options, gb_options, tooltip_options
+    return map_options, map_options, gb_options, tooltip_options, tooltip_options
 
 
 @callback(
@@ -1925,20 +1940,21 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     Input("gb-toggle-lines", "value"),
     Input("gb-toggle-labels", "value"),
     Input("gb-marker-size", "value"),
+    Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, pipeline_result):
+def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
-        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, pipeline_result)
+        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result)
     except Exception as exc:
         _log.exception("Gun barrel error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
-def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, pipeline_result):
+def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -1977,6 +1993,7 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
         show_lines=show_lines,
         show_labels=show_labels,
         marker_size=int(marker_size or 12),
+        hover_fields=hover_fields,
     )
 
 
@@ -1984,10 +2001,11 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
     Output("cum-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
     Input("cum-prod-product", "value"),
+    Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_cum_production(selected, product, pipeline_result):
+def update_cum_production(selected, product, hover_fields, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -2021,11 +2039,27 @@ def update_cum_production(selected, product, pipeline_result):
         unit_map = {"oil": "BBL", "gas": "MCF", "water": "BBL"}
         unit = unit_map.get(product, "")
 
+        # Build enriched trace names from hover_fields
+        _hf = hover_fields or []
+        header_df = data.get("header_df")
+        _hdr_lookup = {}
+        if header_df is not None and _hf:
+            avail = [f for f in _hf if f in header_df.columns]
+            if avail:
+                _hdr_lookup = header_df.set_index("uwi")[avail].to_dict("index")
+
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
+            parts = [str(uwi)]
+            info = _hdr_lookup.get(str(uwi), {})
+            for f in _hf:
+                v = info.get(f)
+                if v is not None and str(v) not in ("", "nan", "NaT", "None"):
+                    parts.append(str(v))
+            trace_name = " | ".join(parts)
             fig.add_trace(go.Scatter(
                 x=grp["months"], y=grp[cum_col],
-                mode="lines", name=str(uwi),
+                mode="lines", name=trace_name,
             ))
         fig.update_layout(
             xaxis_title="Months since first production",
@@ -2045,10 +2079,11 @@ def update_cum_production(selected, product, pipeline_result):
     Output("daily-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
     Input("daily-prod-product", "value"),
+    Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_daily_production(selected, product, pipeline_result):
+def update_daily_production(selected, product, hover_fields, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -2076,11 +2111,27 @@ def update_daily_production(selected, product, pipeline_result):
         if prod_sel.empty:
             return empty_figure("No production data for selected wells.")
 
+        # Build enriched trace names from hover_fields
+        _hf = hover_fields or []
+        header_df = data.get("header_df")
+        _hdr_lookup = {}
+        if header_df is not None and _hf:
+            avail = [f for f in _hf if f in header_df.columns]
+            if avail:
+                _hdr_lookup = header_df.set_index("uwi")[avail].to_dict("index")
+
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
+            parts = [str(uwi)]
+            info = _hdr_lookup.get(str(uwi), {})
+            for f in _hf:
+                v = info.get(f)
+                if v is not None and str(v) not in ("", "nan", "NaT", "None"):
+                    parts.append(str(v))
+            trace_name = " | ".join(parts)
             fig.add_trace(go.Scatter(
                 x=grp["prod_date"], y=grp[col],
-                mode="lines", name=str(uwi),
+                mode="lines", name=trace_name,
             ))
         fig.update_layout(
             xaxis_title="Production Date",

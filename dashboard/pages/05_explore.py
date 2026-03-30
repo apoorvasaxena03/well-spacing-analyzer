@@ -374,7 +374,9 @@ layout = dbc.Container(
                         # ── Map ──
                         dbc.Card(
                             dbc.CardBody(
-                                dl.Map(
+                                html.Div(
+                                    [
+                                        dl.Map(
                                     [
                                         # ── Base layers (radio toggle) ──
                                         dl.LayersControl(
@@ -483,26 +485,28 @@ layout = dbc.Container(
                                     center=[31.5, -101.9],
                                     zoom=10,
                                     scrollWheelZoom=True,
-                                    style={"height": "60vh"},
-                                ),
-                                # ── Legend overlay (inside map, bottom-left) ──
-                                html.Div(
-                                    [
-                                        html.Div(id="map-legend"),
-                                        html.Div(id="bh-legend", className="mt-1"),
+                                            style={"height": "60vh"},
+                                        ),
+                                        # ── Legend overlay (inside map, bottom-left) ──
+                                        html.Div(
+                                            [
+                                                html.Div(id="map-legend"),
+                                                html.Div(id="bh-legend", className="mt-1"),
+                                            ],
+                                            style={
+                                                "position": "absolute",
+                                                "bottom": "30px",
+                                                "left": "10px",
+                                                "zIndex": "1000",
+                                                "maxHeight": "40vh",
+                                                "overflowY": "auto",
+                                                "pointerEvents": "auto",
+                                            },
+                                        ),
                                     ],
-                                    style={
-                                        "position": "absolute",
-                                        "bottom": "30px",
-                                        "left": "10px",
-                                        "zIndex": "1000",
-                                        "maxHeight": "40vh",
-                                        "overflowY": "auto",
-                                        "pointerEvents": "auto",
-                                    },
+                                    style={"position": "relative"},
                                 ),
                                 className="p-0",
-                                style={"position": "relative"},
                             ),
                         ),
                     ],

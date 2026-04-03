@@ -64,6 +64,18 @@ def _build_color_map(values: list[str], prop: str = "") -> dict[str, str]:
 _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
 
 
+def _clean_dates_for_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert datetime columns to YYYY-MM-DD strings for DataTable display."""
+    df = df.copy()
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            # Strip timezone, format as date only
+            if hasattr(df[col].dt, "tz") and df[col].dt.tz is not None:
+                df[col] = df[col].dt.tz_localize(None)
+            df[col] = df[col].dt.strftime("%Y-%m-%d").replace("NaT", "")
+    return df
+
+
 def _expand_neighborhood(IK: pd.DataFrame, uwis: list[str]) -> set[str]:
     """
     Expand selected wells to include all direct IK neighbors.
@@ -2703,7 +2715,7 @@ def update_ik_table(selected, pipeline_result, current_selection):
     else:
         visible = [c for c in _IK_DEFAULT_COLS if c in all_cols]
     columns = [{"name": c, "id": c} for c in visible]
-    return columns, ik_display.to_dict("records"), options, visible
+    return columns, _clean_dates_for_table(ik_display).to_dict("records"), options, visible
 
 
 @callback(
@@ -2746,7 +2758,7 @@ def update_gb_table(selected, pipeline_result, current_selection):
     else:
         visible = [c for c in _GB_DEFAULT_COLS if c in all_cols]
     columns = [{"name": c, "id": c} for c in visible]
-    return columns, GB.to_dict("records"), options, visible
+    return columns, _clean_dates_for_table(GB).to_dict("records"), options, visible
 
 
 @callback(
@@ -2783,7 +2795,7 @@ def update_header_table(selected, pipeline_result, current_selection):
     else:
         visible = [c for c in _HDR_DEFAULT_COLS if c in all_cols]
     columns = [{"name": c, "id": c} for c in visible]
-    return columns, hdr_display.to_dict("records"), options, visible
+    return columns, _clean_dates_for_table(hdr_display).to_dict("records"), options, visible
 
 
 # -- Column selector callbacks (update visible columns without reloading data) --

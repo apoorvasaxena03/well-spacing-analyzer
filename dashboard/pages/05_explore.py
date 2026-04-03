@@ -1959,20 +1959,21 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     Input("gb-line-width", "value"),
     Input("gb-label-size", "value"),
     Input("chart-hover-fields", "value"),
+    Input("user-color-overrides", "data"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result):
+def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, user_overrides, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
-        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result)
+        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, user_overrides, pipeline_result)
     except Exception as exc:
         _log.exception("Gun barrel error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
-def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result):
+def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, user_overrides, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -2014,6 +2015,7 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
         line_width=float(line_width or 1.5),
         label_size=int(label_size or 9),
         hover_fields=hover_fields,
+        user_color_overrides=user_overrides,
     )
 
 

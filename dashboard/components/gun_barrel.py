@@ -19,6 +19,13 @@ import plotly.express as px
 
 _PALETTE = px.colors.qualitative.Alphabet
 
+_ROLE_COLORS: dict[str, str] = {
+    "parent":              "#2196F3",
+    "child":               "#FF9800",
+    "infill_candidate":    "#F44336",
+    "no_eligible_neighbor": "#9E9E9E",
+}
+
 
 def empty_figure(message: str = "No data") -> go.Figure:
     """Return a blank figure with a centred annotation message."""
@@ -39,12 +46,29 @@ def empty_figure(message: str = "No data") -> go.Figure:
     return fig
 
 
-def _color_map_for(GB: pd.DataFrame, color_by: str) -> dict[str, str]:
-    """Build a value → hex color mapping for a given column."""
+def _color_map_for(
+    GB: pd.DataFrame,
+    color_by: str,
+    user_overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Build a value → hex color mapping for a given column.
+
+    Uses fixed role colors when color_by=='role', then applies
+    user overrides on top.
+    """
     if color_by not in GB.columns:
         return {}
     vals = sorted(GB[color_by].dropna().astype(str).unique())
-    return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(vals)}
+    if color_by == "role":
+        cmap = {v: _ROLE_COLORS.get(v, "#607D8B") for v in vals}
+    else:
+        cmap = {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(vals)}
+    # Apply user overrides
+    if user_overrides:
+        for val, custom_color in user_overrides.items():
+            if val in cmap:
+                cmap[val] = custom_color
+    return cmap
 
 
 def _format_label(key: str) -> str:
@@ -55,6 +79,7 @@ def _format_label(key: str) -> str:
 def _add_well_points(
     fig: go.Figure, GB: pd.DataFrame, x_col: str, color_by: str = "bench",
     marker_size: int = 12, hover_fields: list[str] | None = None,
+    user_color_overrides: dict[str, str] | None = None,
 ) -> None:
     """Layer 1 — scatter points colored by variable, labeled with UWI."""
     col = color_by if color_by in GB.columns else "bench"
@@ -62,7 +87,7 @@ def _add_well_points(
         GB = GB.copy()
         GB[col] = "Unknown"
 
-    cmap = _color_map_for(GB, col)
+    cmap = _color_map_for(GB, col, user_overrides=user_color_overrides)
 
     # Build customdata + hovertemplate from user-selected fields
     fields = hover_fields or []
@@ -253,6 +278,7 @@ def build_gun_barrel_figure(
     line_width: float = 1.5,
     label_size: int = 9,
     hover_fields: list[str] | None = None,
+    user_color_overrides: dict[str, str] | None = None,
 ) -> go.Figure:
     """
     Build the enhanced gun barrel figure.
@@ -272,7 +298,8 @@ def build_gun_barrel_figure(
 
     fig = go.Figure()
 
-    _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size, hover_fields=hover_fields)
+    _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size,
+                     hover_fields=hover_fields, user_color_overrides=user_color_overrides)
     _add_spacing_zigzag(fig, GB, IK, x_col, show_lines=show_lines, show_labels=show_labels,
                         line_width=line_width, label_size=label_size)
 

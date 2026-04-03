@@ -381,18 +381,42 @@ def toggle_next_button(store, active_tab):
 PIPELINE_CACHE_DIR = Path("./dashboard/.pipeline_cache")
 
 
+_UI_STATE_OUTPUTS = [
+    Output("traj-color-by", "value", allow_duplicate=True),
+    Output("bh-color-by", "value", allow_duplicate=True),
+    Output("traj-weight", "value", allow_duplicate=True),
+    Output("traj-opacity", "value", allow_duplicate=True),
+    Output("bh-radius", "value", allow_duplicate=True),
+    Output("bh-opacity", "value", allow_duplicate=True),
+    Output("tooltip-fields", "value", allow_duplicate=True),
+    Output("gb-xaxis-mode", "value", allow_duplicate=True),
+    Output("gb-color-by", "value", allow_duplicate=True),
+    Output("gb-toggle-lines", "value", allow_duplicate=True),
+    Output("gb-toggle-labels", "value", allow_duplicate=True),
+    Output("gb-marker-size", "value", allow_duplicate=True),
+    Output("gb-line-width", "value", allow_duplicate=True),
+    Output("gb-label-size", "value", allow_duplicate=True),
+    Output("chart-hover-fields", "value", allow_duplicate=True),
+    Output("user-color-overrides", "data", allow_duplicate=True),
+    Output("config-store", "data", allow_duplicate=True),
+]
+_N_UI = len(_UI_STATE_OUTPUTS)
+
+
 @callback(
     Output("session-import-status", "children"),
     Output("pipeline-result-store", "data", allow_duplicate=True),
     Output("session-redirect", "href"),
+    *_UI_STATE_OUTPUTS,
     Input("upload-session-zip", "contents"),
     State("upload-session-zip", "filename"),
     prevent_initial_call=True,
 )
 def import_session_package(contents, filename):
     """Import a session package ZIP and redirect to Explore."""
+    _no = [dash.no_update] * _N_UI  # no_update for all UI state outputs
     if not contents:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, *_no
 
     try:
         # Decode uploaded ZIP
@@ -434,6 +458,7 @@ def import_session_package(contents, filename):
                 dbc.Alert("Invalid session package: missing header or lateral data.", color="danger"),
                 dash.no_update,
                 dash.no_update,
+                *_no,
             )
 
         # Save as pipeline cache pickle
@@ -446,7 +471,34 @@ def import_session_package(contents, filename):
         datasets = metadata.get("datasets", [])
         summary_items = [f"{d['name']}: {d['rows']:,} rows" for d in datasets]
 
-        logger.info("Session imported: %s → %s (%d datasets)", filename, cache_path.name, len(datasets))
+        # Read UI state if present
+        ui = {}
+        if "ui_state.json" in zf.namelist():
+            ui = json.loads(zf.read("ui_state.json"))
+
+        logger.info("Session imported: %s → %s (%d datasets, ui_state=%s)",
+                     filename, cache_path.name, len(datasets), bool(ui))
+
+        # Build UI state outputs (same order as _UI_STATE_OUTPUTS)
+        ui_values = [
+            ui.get("traj_color_by", dash.no_update),
+            ui.get("bh_color_by", dash.no_update),
+            ui.get("traj_weight", dash.no_update),
+            ui.get("traj_opacity", dash.no_update),
+            ui.get("bh_radius", dash.no_update),
+            ui.get("bh_opacity", dash.no_update),
+            ui.get("tooltip_fields", dash.no_update),
+            ui.get("gb_xaxis_mode", dash.no_update),
+            ui.get("gb_color_by", dash.no_update),
+            ui.get("gb_toggle_lines", dash.no_update),
+            ui.get("gb_toggle_labels", dash.no_update),
+            ui.get("gb_marker_size", dash.no_update),
+            ui.get("gb_line_width", dash.no_update),
+            ui.get("gb_label_size", dash.no_update),
+            ui.get("chart_hover_fields", dash.no_update),
+            ui.get("user_color_overrides", dash.no_update),
+            ui.get("config_store", dash.no_update),
+        ]
 
         return (
             dbc.Alert(
@@ -455,12 +507,13 @@ def import_session_package(contents, filename):
                     html.Br(),
                     html.Small(" | ".join(summary_items)),
                     html.Br(),
-                    html.Small("Redirecting to Explore..."),
+                    html.Small("Redirecting to Explore — settings restored." if ui else "Redirecting to Explore..."),
                 ],
                 color="success",
             ),
             {"cache_path": str(cache_path), "run_id": run_id, "crs_used": metadata.get("crs_used")},
             "/explore",
+            *ui_values,
         )
 
     except Exception as exc:
@@ -469,4 +522,5 @@ def import_session_package(contents, filename):
             dbc.Alert(f"Import failed: {exc}", color="danger"),
             dash.no_update,
             dash.no_update,
+            *_no,
         )

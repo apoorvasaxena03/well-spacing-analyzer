@@ -264,9 +264,34 @@ def _do_export_inner(pipeline_result, fmt, include):
     Output("export-error", "is_open", allow_duplicate=True),
     Input("btn-export-session", "n_clicks"),
     State("pipeline-result-store", "data"),
+    # UI state to persist in session
+    State("traj-color-by", "value"),
+    State("bh-color-by", "value"),
+    State("traj-weight", "value"),
+    State("traj-opacity", "value"),
+    State("bh-radius", "value"),
+    State("bh-opacity", "value"),
+    State("tooltip-fields", "value"),
+    State("gb-xaxis-mode", "value"),
+    State("gb-color-by", "value"),
+    State("gb-toggle-lines", "value"),
+    State("gb-toggle-labels", "value"),
+    State("gb-marker-size", "value"),
+    State("gb-line-width", "value"),
+    State("gb-label-size", "value"),
+    State("chart-hover-fields", "value"),
+    State("user-color-overrides", "data"),
+    State("config-store", "data"),
     prevent_initial_call=True,
 )
-def export_session_package(n_clicks, pipeline_result):
+def export_session_package(
+    n_clicks, pipeline_result,
+    traj_color_by, bh_color_by, traj_weight, traj_opacity,
+    bh_radius, bh_opacity, tooltip_fields,
+    gb_xaxis_mode, gb_color_by, gb_toggle_lines, gb_toggle_labels,
+    gb_marker_size, gb_line_width, gb_label_size,
+    chart_hover_fields, user_color_overrides, config_store,
+):
     if not pipeline_result or not pipeline_result.get("cache_path"):
         return dash.no_update, "No pipeline results available.", True
 
@@ -318,6 +343,28 @@ def export_session_package(n_clicks, pipeline_result):
                 zf.writestr("stats.json", json.dumps(stats, indent=2))
 
             zf.writestr("metadata.json", json.dumps(metadata, indent=2))
+
+            # Save UI state for session restore
+            ui_state = {
+                "traj_color_by": traj_color_by,
+                "bh_color_by": bh_color_by,
+                "traj_weight": traj_weight,
+                "traj_opacity": traj_opacity,
+                "bh_radius": bh_radius,
+                "bh_opacity": bh_opacity,
+                "tooltip_fields": tooltip_fields,
+                "gb_xaxis_mode": gb_xaxis_mode,
+                "gb_color_by": gb_color_by,
+                "gb_toggle_lines": gb_toggle_lines,
+                "gb_toggle_labels": gb_toggle_labels,
+                "gb_marker_size": gb_marker_size,
+                "gb_line_width": gb_line_width,
+                "gb_label_size": gb_label_size,
+                "chart_hover_fields": chart_hover_fields,
+                "user_color_overrides": user_color_overrides or {},
+                "config_store": config_store or {},
+            }
+            zf.writestr("ui_state.json", json.dumps(ui_state, indent=2))
 
         buf.seek(0)
         filename = f"spacing_session_{run_id}.zip"

@@ -67,7 +67,12 @@
       "Bash(curl -s \"https://api.github.com/search/repositories?q=ternary+map+explorer+dash+plotly&per_page=5\")",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(python -c \"import json; nb = json.load\\(open\\(''notebooks/RingEnergy/well_spacing_RingEnergy_v2.ipynb''\\)\\); [print\\(''Cell'', i, '':'', cell.get\\(''source'', ''''\\)[0][:100] if cell.get\\(''source''\\) else ''''\\) for i, cell in enumerate\\(nb[''cells'']\\) if ''overrides'' in str\\(cell.get\\(''source'', ''''\\)\\)]\")",
-      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/OneDrive/**)"
+      "Read(//c/Users/ApoorvaSaxen_ct6z7vh/OneDrive/**)",
+      "Read(//c/Users/ApoorvaSaxen_ipcqp18/OneDrive/**)",
+      "Bash(find /c/Users/ApoorvaSaxen_ipcqp18/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer -type f \\\\\\(-name *1800* -o -name *200* -o -name *0.4* \\\\\\))",
+      "Bash(ls -la \"c:/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer/dashboard/.pipeline_cache/\"*.json)",
+      "Bash(rm -f dashboard/.pipeline_cache/*.ui_state.json)",
+      "Bash(rm -f dashboard/.pipeline_cache/*.pkl)"
     ],
     "deny": [
       "Bash(git push --force*)",

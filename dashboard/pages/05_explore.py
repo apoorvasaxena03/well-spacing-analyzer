@@ -388,6 +388,15 @@ layout = dbc.Container(
                                                 placeholder="Select fields to show on hover...",
                                                 style={"fontSize": "0.8rem"},
                                             ),
+                                            # -- Neighbor edges row --
+                                            html.Hr(className="my-2"),
+                                            html.H6("Neighbor Edges", className="mb-2", style={"fontSize": "0.82rem"}),
+                                            dbc.Switch(
+                                                id="edge-toggle",
+                                                label="Show neighbor edge lines when wells are selected",
+                                                value=True,
+                                                className="small",
+                                            ),
                                         ],
                                         className="py-2",
                                     ),
@@ -546,6 +555,7 @@ layout = dbc.Container(
                                                     [
                                                         html.Div(id="map-legend"),
                                                         html.Div(id="bh-legend", className="mt-1"),
+                                                        html.Div(id="edge-legend", className="mt-1"),
                                                     ],
                                                     id="legend-content",
                                                 ),
@@ -2509,14 +2519,16 @@ def highlight_selected_wells(selected, pipeline_result):
 
 @callback(
     Output("geojson-edges", "data"),
+    Output("edge-legend", "children"),
     Input("selected-wells-store", "data"),
+    Input("edge-toggle", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def build_neighborhood_edges(selected, pipeline_result):
+def build_neighborhood_edges(selected, edge_enabled, pipeline_result):
     """Draw lines from selected wells to their spacing neighbors on the map."""
-    if not selected or not selected.get("neighborhood_uwis") or not pipeline_result:
-        return _EMPTY_GEOJSON
+    if not edge_enabled or not selected or not selected.get("neighborhood_uwis") or not pipeline_result:
+        return _EMPTY_GEOJSON, None
 
     uwis = [str(u) for u in selected["neighborhood_uwis"]]
 
@@ -2524,7 +2536,7 @@ def build_neighborhood_edges(selected, pipeline_result):
         data = load_cached_pipeline(pipeline_result["cache_path"])
         IK = data.get("df_ik_pairs")
         if IK is None or IK.empty:
-            return _EMPTY_GEOJSON
+            return _EMPTY_GEOJSON, None
 
         # Find all pairs involving selected wells
         IK = IK.copy()
@@ -2534,23 +2546,25 @@ def build_neighborhood_edges(selected, pipeline_result):
         pairs = IK[mask]
 
         if pairs.empty:
-            return _EMPTY_GEOJSON
+            return _EMPTY_GEOJSON, None
 
-        # Get bottom-hole coordinates from trajectory GeoDataFrame
+        # Build UWI → (mid_lon, mid_lat) lookup from lateral midpoint
+        # Midpoint = mean of all lateral survey stations per well
+        lateral_df = data.get("lateral_df")
         survey_df = data.get("directional_df")
-        if survey_df is None or survey_df.empty:
-            survey_df = data["lateral_df"]
+        # Prefer lateral_df (lateral-only) for midpoints; fall back to full survey
+        mid_src = lateral_df if lateral_df is not None and not lateral_df.empty else survey_df
+        if mid_src is None or mid_src.empty:
+            return _EMPTY_GEOJSON, None
 
-        # Build UWI → (bh_lon, bh_lat) lookup from last survey station per well
-        survey_df = survey_df.copy()
-        survey_df["uwi"] = survey_df["uwi"].astype(str)
-        bh = (
-            survey_df.sort_values("md")
-            .groupby("uwi")
-            .last()[["longitude", "latitude"]]
-            .rename(columns={"longitude": "bh_lon", "latitude": "bh_lat"})
+        mid_src = mid_src.copy()
+        mid_src["uwi"] = mid_src["uwi"].astype(str)
+        midpoints = (
+            mid_src.groupby("uwi")[["longitude", "latitude"]]
+            .mean()
+            .rename(columns={"longitude": "mid_lon", "latitude": "mid_lat"})
         )
-        bh_lookup = bh.to_dict("index")
+        mid_lookup = midpoints.to_dict("index")
 
         # Determine pair_alignment column name (varies by pipeline version)
         align_col = "pair_alignment" if "pair_alignment" in pairs.columns else "alignment_type"
@@ -2558,23 +2572,24 @@ def build_neighborhood_edges(selected, pipeline_result):
 
         # Build GeoJSON features — one LineString per pair
         features = []
+        alignment_types_seen = set()
         for _, row in pairs.iterrows():
             wi, wk = str(row["well_i"]), str(row["well_k"])
-            bh_i = bh_lookup.get(wi)
-            bh_k = bh_lookup.get(wk)
-            if not bh_i or not bh_k:
+            mid_i = mid_lookup.get(wi)
+            mid_k = mid_lookup.get(wk)
+            if not mid_i or not mid_k:
                 continue
 
             coords = [
-                [bh_i["bh_lon"], bh_i["bh_lat"]],
-                [bh_k["bh_lon"], bh_k["bh_lat"]],
+                [mid_i["mid_lon"], mid_i["mid_lat"]],
+                [mid_k["mid_lon"], mid_k["mid_lat"]],
             ]
 
             alignment = str(row.get(align_col, "unknown"))
+            alignment_types_seen.add(alignment)
             h_dist = row.get(dist_col, 0)
             v_dist = row.get("vertical_dist", 0)
 
-            # Determine bench relationship
             bench_i = str(row.get("bench_i", ""))
             bench_k = str(row.get("bench_k", ""))
             same_bench = bench_i == bench_k
@@ -2594,12 +2609,45 @@ def build_neighborhood_edges(selected, pipeline_result):
                 },
             })
 
-        return {"type": "FeatureCollection", "features": features}
+        # Build edge legend
+        edge_colors = {
+            "parallel_like": ("#2196F3", "Parallel"),
+            "perpendicular": ("#4CAF50", "Perpendicular"),
+            "oblique": ("#FF5722", "Oblique"),
+        }
+        legend_items = []
+        for align_key, (color, label) in edge_colors.items():
+            if align_key in alignment_types_seen:
+                legend_items.append(
+                    html.Div([
+                        html.Span(style={
+                            "display": "inline-block", "width": "20px", "height": "3px",
+                            "backgroundColor": color, "marginRight": "6px",
+                            "verticalAlign": "middle", "borderTop": f"2px dashed {color}",
+                        }),
+                        html.Span(f"{label} ({sum(1 for f in features if f['properties']['alignment'] == align_key)})",
+                                  style={"fontSize": "0.72rem", "verticalAlign": "middle"}),
+                    ], style={"lineHeight": "1.6"})
+                )
+
+        edge_legend = dbc.Card(
+            dbc.CardBody(
+                [html.H6("Edges", className="mb-1", style={"fontSize": "0.78rem"})] + legend_items,
+                className="py-1 px-2",
+            ),
+            style={
+                "backgroundColor": "rgba(255, 255, 255, 0.88)",
+                "backdropFilter": "blur(4px)",
+                "boxShadow": "0 1px 4px rgba(0,0,0,0.2)",
+            },
+        ) if legend_items else None
+
+        return {"type": "FeatureCollection", "features": features}, edge_legend
 
     except Exception:
         import logging
         logging.getLogger("dashboard").exception("build_neighborhood_edges failed")
-        return _EMPTY_GEOJSON
+        return _EMPTY_GEOJSON, None
 
 
 # ---------------------------------------------------------------------------

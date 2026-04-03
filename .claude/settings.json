@@ -72,7 +72,8 @@
       "Bash(find /c/Users/ApoorvaSaxen_ipcqp18/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer -type f \\\\\\(-name *1800* -o -name *200* -o -name *0.4* \\\\\\))",
       "Bash(ls -la \"c:/Users/ApoorvaSaxen_ct6z7vh/OneDrive - Bandera Group/Desktop/Project AP/02.Python/well-spacing-analyzer/dashboard/.pipeline_cache/\"*.json)",
       "Bash(rm -f dashboard/.pipeline_cache/*.ui_state.json)",
-      "Bash(rm -f dashboard/.pipeline_cache/*.pkl)"
+      "Bash(rm -f dashboard/.pipeline_cache/*.pkl)",
+      "Bash(DASHBOARD_LOG_LEVEL=DEBUG timeout 10 python dashboard/app.py)"
     ],
     "deny": [
       "Bash(git push --force*)",

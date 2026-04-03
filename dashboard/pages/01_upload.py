@@ -448,17 +448,18 @@ def import_session_package(contents, filename):
 
         # UI state: prefer locally saved settings (from Save button) over
         # what's in the ZIP. Only use ZIP's ui_state if no local save exists.
-        from dashboard.pipeline import save_ui_state, load_ui_state, _ui_state_path
+        from dashboard.pipeline import save_ui_state, load_ui_state
         existing_ui = load_ui_state(str(cache_path))
         if existing_ui:
             logger.info("Using locally saved UI settings (companion JSON exists)")
         elif "ui_state.json" in zf.namelist():
-            ui = json.loads(zf.read("ui_state.json"))
-            save_ui_state(str(cache_path), ui)
+            zip_ui = json.loads(zf.read("ui_state.json"))
+            save_ui_state(str(cache_path), zip_ui)
             logger.info("Using UI settings from ZIP (no local save found)")
 
+        has_ui = bool(existing_ui) or ("ui_state.json" in zf.namelist())
         logger.info("Session imported: %s → %s (%d datasets, ui_state=%s)",
-                     filename, cache_path.name, len(datasets), bool(ui))
+                     filename, cache_path.name, len(datasets), has_ui)
 
         return (
             dbc.Alert(
@@ -467,7 +468,7 @@ def import_session_package(contents, filename):
                     html.Br(),
                     html.Small(" | ".join(summary_items)),
                     html.Br(),
-                    html.Small("Redirecting to Explore — settings restored." if ui else "Redirecting to Explore..."),
+                    html.Small("Redirecting to Explore — settings restored." if has_ui else "Redirecting to Explore..."),
                 ],
                 color="success",
             ),

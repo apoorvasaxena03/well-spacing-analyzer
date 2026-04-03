@@ -473,6 +473,7 @@ layout = dbc.Container(
                                                         options={
                                                             "style": {"color": "#ff7800", "weight": 5, "opacity": 1.0},
                                                         },
+                                                        onEachFeature={"variable": "dashExtensions.default.oef0"},
                                                     ),
                                                     name="Selected Wells",
                                                     checked=True,

@@ -451,11 +451,11 @@ def import_session_package(contents, filename):
         from dashboard.pipeline import save_ui_state, load_ui_state
         existing_ui = load_ui_state(str(cache_path))
         if existing_ui:
-            logger.info("Using locally saved UI settings (companion JSON exists)")
+            logger.debug("Using locally saved UI settings (companion JSON exists)")
         elif "ui_state.json" in zf.namelist():
             zip_ui = json.loads(zf.read("ui_state.json"))
             save_ui_state(str(cache_path), zip_ui)
-            logger.info("Using UI settings from ZIP (no local save found)")
+            logger.debug("Using UI settings from ZIP (no local save found)")
 
         has_ui = bool(existing_ui) or ("ui_state.json" in zf.namelist())
         logger.info("Session imported: %s → %s (%d datasets, ui_state=%s)",

@@ -34,9 +34,13 @@ from src.utils.utils import drop_uwi_duplicates_keep_max_last_prod, compute_rsv_
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to logs/dashboard.log + terminal
+# Log level controlled by DASHBOARD_LOG_LEVEL env var (default: INFO)
+# Set DASHBOARD_LOG_LEVEL=DEBUG for development / troubleshooting
 # ---------------------------------------------------------------------------
-logger = get_logger("dashboard", log_to_console=True)
-logger.info("Dashboard pipeline ready — logging to logs/dashboard.log")
+import os
+_LOG_LEVEL = os.environ.get("DASHBOARD_LOG_LEVEL", "INFO").upper()
+logger = get_logger("dashboard", log_to_console=True, level=_LOG_LEVEL)
+logger.info("Dashboard pipeline ready — log level=%s, file=logs/dashboard.log", _LOG_LEVEL)
 
 # ---------------------------------------------------------------------------
 # Cache directory for pipeline outputs
@@ -147,10 +151,10 @@ def load_from_files(
             directional_source = "enverus"
         else:
             directional_source = "ihs"
-        logger.info("Auto-detected directional_source=%s from column mapping", directional_source)
+        logger.debug("Auto-detected directional_source=%s from column mapping", directional_source)
 
     # --- Step 1: Load header ---
-    logger.info("Loading header from: %s", Path(header_path).name)
+    logger.debug("Loading header from: %s", Path(header_path).name)
     loader = WellDataLoader(directional_source=directional_source)
     header_df = loader.get_header_data(
         source=header_path,
@@ -158,7 +162,7 @@ def load_from_files(
         dtype_map=dtype_map_header or None,
     )
     stats.record("Header loaded (raw)", len(header_df))
-    logger.info("Header loaded: %d wells", len(header_df))
+    logger.debug("Header loaded: %d wells", len(header_df))
 
     # --- Step 2: Deduplicate header ---
     if "uwi" in header_df.columns and "last_prod_date" in header_df.columns:
@@ -167,11 +171,11 @@ def load_from_files(
         removed = before - len(header_df)
         stats.record("After UWI deduplication", len(header_df))
         if removed:
-            logger.info("Deduplication: removed %d duplicate UWIs → %d remain", removed, len(header_df))
+            logger.debug("Deduplication: removed %d duplicate UWIs → %d remain", removed, len(header_df))
         else:
-            logger.info("Deduplication: no duplicates found (%d wells)", len(header_df))
+            logger.debug("Deduplication: no duplicates found (%d wells)", len(header_df))
     else:
-        logger.info("Skipping deduplication (missing 'uwi' or 'last_prod_date' column)")
+        logger.debug("Skipping deduplication (missing 'uwi' or 'last_prod_date' column)")
 
     # --- Step 3: Compute RSV category ---
     has_rsv_cols = (
@@ -187,13 +191,13 @@ def load_from_files(
                 duc_age_years=duc_age_years,
                 permit_window_years=permit_window_years,
             )
-            logger.info("RSV categorization computed (cutoffs: prod=%d mo, DUC=%d yr, permit=%d yr): %s",
+            logger.debug("RSV categorization computed (cutoffs: prod=%d mo, DUC=%d yr, permit=%d yr): %s",
                         prod_cutoff_months, duc_age_years, permit_window_years,
                         header_df["rsv_cat"].value_counts().to_dict())
         else:
-            logger.info("RSV category already present: %s", header_df["rsv_cat"].value_counts().to_dict())
+            logger.debug("RSV category already present: %s", header_df["rsv_cat"].value_counts().to_dict())
     else:
-        logger.info("Skipping RSV categorization (missing 'well_status' or 'spud_date')")
+        logger.debug("Skipping RSV categorization (missing 'well_status' or 'spud_date')")
 
     # --- Step 4: Filter by RSV category ---
     if rsv_categories and "rsv_cat" in header_df.columns:
@@ -202,13 +206,13 @@ def load_from_files(
         header_df = header_df[header_df["rsv_cat"].isin(rsv_set)].copy()
         removed = before - len(header_df)
         stats.record("After RSV category filter", len(header_df))
-        logger.info("RSV filter (keep %s): removed %d → %d remain",
+        logger.debug("RSV filter (keep %s): removed %d → %d remain",
                      sorted(rsv_set), removed, len(header_df))
     elif "rsv_cat" in header_df.columns:
         stats.record("RSV computed (no filter)", len(header_df))
 
     # --- Step 5: Load directional ---
-    logger.info("Loading directional survey from: %s", Path(directional_path).name)
+    logger.debug("Loading directional survey from: %s", Path(directional_path).name)
     directional_df = loader.get_directional_data(
         source=directional_path,
         column_map=column_map_directional or None,
@@ -224,13 +228,13 @@ def load_from_files(
                 .drop_duplicates(subset=["uwi12"], keep="first")
             )
             directional_df = directional_df.merge(uwi_map, on="uwi12", how="left")
-            logger.info("Merged uwi from header into directional via uwi12 (%d matched)",
+            logger.debug("Merged uwi from header into directional via uwi12 (%d matched)",
                         directional_df["uwi"].notna().sum())
 
     uwi_col = "uwi" if "uwi" in directional_df.columns else "uwi12"
     dir_well_count = directional_df[uwi_col].nunique() if uwi_col in directional_df.columns else 0
     stats.record_independent("Directional surveys loaded", dir_well_count)
-    logger.info("Directional loaded: %d survey stations across %d wells",
+    logger.debug("Directional loaded: %d survey stations across %d wells",
                 len(directional_df), dir_well_count)
 
     # Report wells in header but missing from directional
@@ -245,7 +249,7 @@ def load_from_files(
     # --- Step 6: Load production (optional) ---
     production_df = None
     if production_path and column_map_production:
-        logger.info("Loading production from: %s", Path(production_path).name)
+        logger.debug("Loading production from: %s", Path(production_path).name)
         # Build dtype dict — separate datetime columns (pd.read_csv dtype doesn't accept "datetime")
         prod_dtypes = {}
         prod_date_cols = []
@@ -271,7 +275,7 @@ def load_from_files(
         production_df = raw.rename(columns=column_map_production)
         prod_wells = production_df["uwi"].nunique() if "uwi" in production_df.columns else 0
         stats.record_independent("Production data loaded", prod_wells)
-        logger.info("Production loaded: %d rows, %d wells", len(production_df), prod_wells)
+        logger.debug("Production loaded: %d rows, %d wells", len(production_df), prod_wells)
 
     return {
         "header_df": header_df,
@@ -361,7 +365,7 @@ def project_and_extract_laterals(
         stats = PipelineStats()
 
     crs_used = crs_to or _auto_detect_utm(header_df)
-    logger.info("UTM projection: %s (inclination filter: %.1f°)", crs_used, inclination_filter)
+    logger.debug("UTM projection: %s (inclination filter: %.1f°)", crs_used, inclination_filter)
 
     wells_before = header_df["uwi"].nunique() if "uwi" in header_df.columns else len(header_df)
 
@@ -379,9 +383,9 @@ def project_and_extract_laterals(
     wells_lost = wells_before - wells_after
     stats.record("After UTM + lateral extraction", wells_after)
     if wells_lost > 0:
-        logger.info("Lateral extraction: %d wells lost (no heel point or missing data) → %d remain",
+        logger.debug("Lateral extraction: %d wells lost (no heel point or missing data) → %d remain",
                      wells_lost, wells_after)
-    logger.info("Lateral extraction complete: %d stations, %d wells",
+    logger.debug("Lateral extraction complete: %d stations, %d wells",
                 len(lateral_df), wells_after)
     return header_aligned, lateral_df, crs_used
 
@@ -399,7 +403,7 @@ def _auto_detect_utm(header_df: pd.DataFrame) -> str:
     zone = int((lon + 180) / 6) + 1
     hemisphere = "326" if lat >= 0 else "327"
     crs = f"EPSG:{hemisphere}{zone:02d}"
-    logger.info("Auto-detected UTM zone: %s (centroid lat=%.4f, lon=%.4f)", crs, lat, lon)
+    logger.debug("Auto-detected UTM zone: %s (centroid lat=%.4f, lon=%.4f)", crs, lat, lon)
     return crs
 
 
@@ -502,7 +506,7 @@ def run_spacing_calculation(
         df_spacing = df_spacing[valid_mask].copy()
         stats.record_independent("Valid pairs (reject_reason filtered)", len(df_spacing), unit="pairs")
         if rejected_count:
-            logger.info("Reject filter: removed %d pairs → %d valid remain", rejected_count, len(df_spacing))
+            logger.debug("Reject filter: removed %d pairs → %d valid remain", rejected_count, len(df_spacing))
 
     # --- Run role assignment (V2 — all pair types) ---
     logger.info("Running overlapping neighborhood role assignment...")
@@ -801,7 +805,7 @@ def run_directional_bench_neighbors(
         proj_coverage_min=proj_coverage_min,
         overrides_df=overrides_df,
     )
-    logger.info("DirectionalBenchNeighbors done: %d rows in %.1fs",
+    logger.debug("DirectionalBenchNeighbors done: %d rows in %.1fs",
                 len(result), time.perf_counter() - t0)
     return result
 
@@ -837,7 +841,7 @@ def run_avg_spacing(
         trajectories=lateral_df,
         edge_pick=edge_pick,
     )
-    logger.info("AvgSpacingCalculator done: %d rows in %.1fs",
+    logger.debug("AvgSpacingCalculator done: %d rows in %.1fs",
                 len(result), time.perf_counter() - t0)
     return result
 
@@ -875,7 +879,7 @@ def run_floating_wps(
         logger=logger,
     )
     result = wps.summarize_per_well()
-    logger.info("FloatingSectionWPS done: %d rows in %.1fs",
+    logger.debug("FloatingSectionWPS done: %d rows in %.1fs",
                 len(result), time.perf_counter() - t0)
     return result
 

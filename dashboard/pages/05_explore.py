@@ -1886,7 +1886,7 @@ def populate_and_restore(pipeline_result):
 
     if ui:
         import logging
-        logging.getLogger("dashboard").info(
+        logging.getLogger("dashboard").debug(
             "populate_and_restore: traj_color_by=%s, gb_marker_size=%s",
             ui.get("traj_color_by"), ui.get("gb_marker_size"),
         )
@@ -2026,7 +2026,7 @@ def load_map_layers(pipeline_result):
         logger.warning("load_map_layers: no pipeline result")
         return _EMPTY_GEOJSON, _EMPTY_GEOJSON, [31.5, -101.9], 10
 
-    logger.info("load_map_layers: loading from %s", pipeline_result["cache_path"])
+    logger.debug("load_map_layers: loading from %s", pipeline_result["cache_path"])
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
     # Prefer full directional survey for map (shows vertical + build sections);
@@ -2044,7 +2044,7 @@ def load_map_layers(pipeline_result):
 
     traj_data = gdf_traj.__geo_interface__
     bh_data = gdf_bh.__geo_interface__
-    logger.info("load_map_layers: %d trajectories, %d bottomholes", len(gdf_traj), len(gdf_bh))
+    logger.debug("load_map_layers: %d trajectories, %d bottomholes", len(gdf_traj), len(gdf_bh))
 
     import math
 
@@ -2096,7 +2096,7 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
 
     props = click_data.get("properties") or {}
     clicked_uwi = props.get("uwi")
-    _log.info("on_well_click: triggered=%s uwi=%s type=%s", triggered, clicked_uwi, type(clicked_uwi).__name__)
+    _log.debug("on_well_click: triggered=%s uwi=%s type=%s", triggered, clicked_uwi, type(clicked_uwi).__name__)
     if not clicked_uwi:
         return no_change, click_counts
     # Ensure string
@@ -2105,7 +2105,7 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     # Only return the clicked well — no neighborhood expansion.
     # The GB uses Spotfire data-limiting: selected wells = well_i set.
     # Shape selection (polygon/line/circle) selects multiple wells.
-    _log.info("on_well_click: uwi=%s selected=1 well", clicked_uwi)
+    _log.debug("on_well_click: uwi=%s selected=1 well", clicked_uwi)
     return {"clicked_uwi": clicked_uwi, "neighborhood_uwis": [clicked_uwi]}, click_counts
 
 
@@ -2345,7 +2345,7 @@ def select_wells_by_shape(geojson, pipeline_result):
     drawn = features[-1]
     props = drawn.get("properties", {}) or {}
     geom_type = drawn.get("geometry", {}).get("type", "")
-    _log.info("select_wells_by_shape: geom=%s props=%s", geom_type, props)
+    _log.debug("select_wells_by_shape: geom=%s props=%s", geom_type, props)
     drawn_geom = shape(drawn["geometry"])
 
     # For circles: Leaflet stores center as Point + radius in properties.
@@ -2368,7 +2368,7 @@ def select_wells_by_shape(geojson, pipeline_result):
 
     # Build trajectory LineStrings per well and check intersection with drawn shape
     from shapely.geometry import LineString as ShapelyLineString
-    _log.info("select_wells_by_shape: checking trajectories against %s (bounds=%s)",
+    _log.debug("select_wells_by_shape: checking trajectories against %s (bounds=%s)",
               drawn_geom.geom_type, drawn_geom.bounds)
     selected_uwis = []
     for uwi, grp in survey_df.groupby("uwi"):
@@ -2384,7 +2384,7 @@ def select_wells_by_shape(geojson, pipeline_result):
         except Exception:
             continue
 
-    _log.info("select_wells_by_shape: %d wells found in shape (geom_type=%s)",
+    _log.debug("select_wells_by_shape: %d wells found in shape (geom_type=%s)",
               len(selected_uwis), drawn_geom.geom_type)
     if not selected_uwis:
         return dash.no_update, empty_geojson, time.time()
@@ -2883,7 +2883,7 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
     if not pipeline_result or not pipeline_result.get("cache_path"):
         logger.warning("apply_filters: no pipeline result — skipping")
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
-    logger.info("apply_filters: search=%s benches=%s operators=%s rsv=%s statuses=%s",
+    logger.debug("apply_filters: search=%s benches=%s operators=%s rsv=%s statuses=%s",
                 search, benches, operators, rsv_cats, statuses)
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
@@ -2939,13 +2939,13 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
     filtered_uwis = filtered["uwi"].astype(str).tolist()
     total = len(header_df)
     shown = len(filtered)
-    logger.info("apply_filters: %d/%d wells pass filters", shown, total)
+    logger.debug("apply_filters: %d/%d wells pass filters", shown, total)
 
     # Rebuild GeoJSON with only filtered wells
     filtered_survey = survey_df[survey_df["uwi"].isin(filtered["uwi"])]
     gdf_traj = build_trajectory_geodataframe(filtered_survey, filtered)
     gdf_bh = build_bottomhole_geodataframe(gdf_traj)
-    logger.info("apply_filters: %d trajectories, %d bottomholes rebuilt", len(gdf_traj), len(gdf_bh))
+    logger.debug("apply_filters: %d trajectories, %d bottomholes rebuilt", len(gdf_traj), len(gdf_bh))
 
     count_text = f"Showing {shown:,} of {total:,} wells"
 

@@ -410,9 +410,7 @@ layout = dbc.Container(
                         # ── Map ──
                         dbc.Card(
                             dbc.CardBody(
-                                html.Div(
-                                    [
-                                        dl.Map(
+                                dl.Map(
                                     [
                                         # ── Base layers (radio toggle) ──
                                         dl.LayersControl(
@@ -528,14 +526,7 @@ layout = dbc.Container(
                                             ),
                                             id="draw-feature-group",
                                         ),
-                                    ],
-                                    id="main-map",
-                                    center=[31.5, -101.9],
-                                    zoom=10,
-                                    scrollWheelZoom=True,
-                                            style={"height": "60vh"},
-                                        ),
-                                        # ── Legend overlay (inside map, top-right, collapsible) ──
+                                        # ── Legend overlay (inside dl.Map so it survives fullscreen) ──
                                         html.Div(
                                             [
                                                 html.Button(
@@ -571,7 +562,11 @@ layout = dbc.Container(
                                             },
                                         ),
                                     ],
-                                    style={"position": "relative"},
+                                    id="main-map",
+                                    center=[31.5, -101.9],
+                                    zoom=10,
+                                    scrollWheelZoom=True,
+                                    style={"height": "60vh"},
                                 ),
                                 className="p-0",
                             ),

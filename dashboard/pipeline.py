@@ -610,30 +610,39 @@ def load_cached_pipeline(cache_path: str) -> dict[str, pd.DataFrame]:
         return pickle.load(f)
 
 
-def save_ui_state(cache_path: str, ui_state: dict) -> None:
-    """Persist UI state (colors, settings, field selections) into the cache pickle.
+import json as _json
 
-    Loads the existing cache, updates the 'ui_state' key, and writes back.
-    This is called on every UI settings change so the user never loses state.
+
+def _ui_state_path(cache_path: str) -> Path:
+    """Return the companion JSON path for UI state, next to the pickle."""
+    return Path(cache_path).with_suffix(".ui_state.json")
+
+
+def save_ui_state(cache_path: str, ui_state: dict) -> None:
+    """Persist UI state to a small companion JSON file.
+
+    Stored separately from the main pickle to avoid read-modify-write
+    race conditions on the large cache file.
     """
     try:
-        with open(cache_path, "rb") as f:
-            data = pickle.load(f)
-        data["ui_state"] = ui_state
-        with open(cache_path, "wb") as f:
-            pickle.dump(data, f)
+        p = _ui_state_path(cache_path)
+        # Write to temp file then rename for atomic write
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(ui_state), encoding="utf-8")
+        tmp.replace(p)
     except Exception:
         pass  # silently ignore — UI state is non-critical
 
 
 def load_ui_state(cache_path: str) -> dict:
-    """Load saved UI state from the cache pickle, if any."""
+    """Load saved UI state from the companion JSON file, if any."""
     try:
-        with open(cache_path, "rb") as f:
-            data = pickle.load(f)
-        return data.get("ui_state", {})
+        p = _ui_state_path(cache_path)
+        if p.exists():
+            return _json.loads(p.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 def load_cached_ik_heeltoe(

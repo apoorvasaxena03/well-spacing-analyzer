@@ -478,6 +478,16 @@ layout = dbc.Container(
                                                     name="Selected Wells",
                                                     checked=True,
                                                 ),
+                                                dl.Overlay(
+                                                    dl.GeoJSON(
+                                                        id="geojson-edges",
+                                                        data=_EMPTY_GEOJSON,
+                                                        style={"variable": "dashExtensions.default.edgeStyle"},
+                                                        onEachFeature={"variable": "dashExtensions.default.edgeTooltip"},
+                                                    ),
+                                                    name="Neighbor Edges",
+                                                    checked=True,
+                                                ),
                                             ],
                                             position="topright",
                                         ),
@@ -2407,6 +2417,7 @@ def select_wells_by_shape(geojson, pipeline_result):
     Output("cum-oil-chart", "figure", allow_duplicate=True),
     Output("daily-oil-chart", "figure", allow_duplicate=True),
     Output("geojson-selected", "data", allow_duplicate=True),
+    Output("geojson-edges", "data", allow_duplicate=True),
     Output("ik-pairs-table", "data", allow_duplicate=True),
     Output("ik-pairs-table", "columns", allow_duplicate=True),
     Output("gb-data-table", "data", allow_duplicate=True),
@@ -2430,7 +2441,7 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
     """Full clear (same as Clear Selection button) when clicking empty map space."""
     import time
 
-    no_update_all = (dash.no_update,) * 18
+    no_update_all = (dash.no_update,) * 19  # 19 outputs now (added edges)
 
     if not click_lat_lng:
         return no_update_all
@@ -2445,6 +2456,7 @@ def on_map_background_click(click_lat_lng, traj_clicks, bh_clicks, last_clicks):
         empty_figure("Click a well on the map."),
         empty_figure("Click a well on the map."),
         _EMPTY_GEOJSON,
+        _EMPTY_GEOJSON,  # clear edges
         [], [], [], [],
         [], [],
         [], [], [], [], [], [],
@@ -2488,6 +2500,105 @@ def highlight_selected_wells(selected, pipeline_result):
         gdf = build_trajectory_geodataframe(sel_survey, sel_header)
         return gdf.__geo_interface__ if not gdf.empty else _EMPTY_GEOJSON
     except Exception:
+        return _EMPTY_GEOJSON
+
+
+# ---------------------------------------------------------------------------
+# Neighborhood edge lines on map
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("geojson-edges", "data"),
+    Input("selected-wells-store", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def build_neighborhood_edges(selected, pipeline_result):
+    """Draw lines from selected wells to their spacing neighbors on the map."""
+    if not selected or not selected.get("neighborhood_uwis") or not pipeline_result:
+        return _EMPTY_GEOJSON
+
+    uwis = [str(u) for u in selected["neighborhood_uwis"]]
+
+    try:
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        IK = data.get("df_ik_pairs")
+        if IK is None or IK.empty:
+            return _EMPTY_GEOJSON
+
+        # Find all pairs involving selected wells
+        IK = IK.copy()
+        IK["well_i"] = IK["well_i"].astype(str)
+        IK["well_k"] = IK["well_k"].astype(str)
+        mask = IK["well_i"].isin(uwis) | IK["well_k"].isin(uwis)
+        pairs = IK[mask]
+
+        if pairs.empty:
+            return _EMPTY_GEOJSON
+
+        # Get bottom-hole coordinates from trajectory GeoDataFrame
+        survey_df = data.get("directional_df")
+        if survey_df is None or survey_df.empty:
+            survey_df = data["lateral_df"]
+
+        # Build UWI → (bh_lon, bh_lat) lookup from last survey station per well
+        survey_df = survey_df.copy()
+        survey_df["uwi"] = survey_df["uwi"].astype(str)
+        bh = (
+            survey_df.sort_values("md")
+            .groupby("uwi")
+            .last()[["longitude", "latitude"]]
+            .rename(columns={"longitude": "bh_lon", "latitude": "bh_lat"})
+        )
+        bh_lookup = bh.to_dict("index")
+
+        # Determine pair_alignment column name (varies by pipeline version)
+        align_col = "pair_alignment" if "pair_alignment" in pairs.columns else "alignment_type"
+        dist_col = "horizontal_dist" if "horizontal_dist" in pairs.columns else "hz_effective"
+
+        # Build GeoJSON features — one LineString per pair
+        features = []
+        for _, row in pairs.iterrows():
+            wi, wk = str(row["well_i"]), str(row["well_k"])
+            bh_i = bh_lookup.get(wi)
+            bh_k = bh_lookup.get(wk)
+            if not bh_i or not bh_k:
+                continue
+
+            coords = [
+                [bh_i["bh_lon"], bh_i["bh_lat"]],
+                [bh_k["bh_lon"], bh_k["bh_lat"]],
+            ]
+
+            alignment = str(row.get(align_col, "unknown"))
+            h_dist = row.get(dist_col, 0)
+            v_dist = row.get("vertical_dist", 0)
+
+            # Determine bench relationship
+            bench_i = str(row.get("bench_i", ""))
+            bench_k = str(row.get("bench_k", ""))
+            same_bench = bench_i == bench_k
+
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "well_i": wi,
+                    "well_k": wk,
+                    "alignment": alignment,
+                    "h_dist": round(float(h_dist)) if pd.notna(h_dist) else 0,
+                    "v_dist": round(float(v_dist)) if pd.notna(v_dist) else 0,
+                    "same_bench": same_bench,
+                    "bench_i": bench_i,
+                    "bench_k": bench_k,
+                },
+            })
+
+        return {"type": "FeatureCollection", "features": features}
+
+    except Exception:
+        import logging
+        logging.getLogger("dashboard").exception("build_neighborhood_edges failed")
         return _EMPTY_GEOJSON
 
 
@@ -2680,6 +2791,7 @@ def filter_header_columns(selected_cols, data):
     Output("cum-oil-chart", "figure", allow_duplicate=True),
     Output("daily-oil-chart", "figure", allow_duplicate=True),
     Output("geojson-selected", "data", allow_duplicate=True),
+    Output("geojson-edges", "data", allow_duplicate=True),
     Output("ik-pairs-table", "data", allow_duplicate=True),
     Output("ik-pairs-table", "columns", allow_duplicate=True),
     Output("gb-data-table", "data", allow_duplicate=True),
@@ -2704,6 +2816,7 @@ def clear_selection(n):
         empty_figure("Click a well on the map."),
         empty_figure("Click a well on the map."),
         _EMPTY_GEOJSON,
+        _EMPTY_GEOJSON,  # clear edges
         [], [], [], [],
         [], [],
         [], [], [], [], [], [],

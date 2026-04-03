@@ -132,3 +132,56 @@ window.dashExtensions.default.oef0 = function(feature, layer) {
 window.dashExtensions.default.oef1 = function(feature, layer) {
     window.dashExtensions.default.oef0(feature, layer);
 };
+
+// ── Neighborhood edge lines ──────────────────────────────────────────────
+// Color by alignment type
+var _EDGE_COLORS = {
+    "parallel_like":  "#2196F3",  // blue
+    "perpendicular":  "#4CAF50",  // green
+    "oblique":        "#FF5722",  // deep orange
+    "unknown":        "#9E9E9E",  // grey
+};
+
+// Edge line style — color by alignment, dashed
+window.dashExtensions.default.edgeStyle = function(feature, context) {
+    var p = feature.properties || {};
+    var align = p.alignment || "unknown";
+    var color = _EDGE_COLORS[align] || _EDGE_COLORS["unknown"];
+    // Thicker lines for closer wells
+    var dist = p.h_dist || 1320;
+    var weight = dist < 660 ? 3 : (dist < 1000 ? 2 : 1.5);
+    return {
+        color: color,
+        weight: weight,
+        opacity: 0.7,
+        dashArray: p.same_bench ? "8 4" : "4 4 1 4",  // dashed for same bench, dot-dash for cross-bench
+    };
+};
+
+// Edge tooltip — shows distance, alignment, well pair
+window.dashExtensions.default.edgeTooltip = function(feature, layer) {
+    var p = feature.properties || {};
+    var align = (p.alignment || "unknown").replace("_", " ");
+    var tip = "H: " + (p.h_dist || 0).toLocaleString() + " ft";
+    if (p.v_dist) tip += " | V: " + p.v_dist.toLocaleString() + " ft";
+    tip += " | " + align;
+    if (!p.same_bench) tip += " (cross-bench)";
+    layer.bindTooltip(tip, {sticky: true, direction: "top"});
+
+    // Popup with full details
+    var rows = [
+        "<b>Neighbor Edge</b>",
+        "<tr><td style='padding:1px 6px;color:#666'>Well I</td><td style='padding:1px 6px'>" + p.well_i + "</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>Well K</td><td style='padding:1px 6px'>" + p.well_k + "</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>H Dist</td><td style='padding:1px 6px'>" + (p.h_dist || 0).toLocaleString() + " ft</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>V Dist</td><td style='padding:1px 6px'>" + (p.v_dist || 0).toLocaleString() + " ft</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>Alignment</td><td style='padding:1px 6px'>" + align + "</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>Bench I</td><td style='padding:1px 6px'>" + (p.bench_i || "") + "</td></tr>",
+        "<tr><td style='padding:1px 6px;color:#666'>Bench K</td><td style='padding:1px 6px'>" + (p.bench_k || "") + "</td></tr>",
+    ];
+    var title = rows.shift();
+    layer.bindPopup(
+        "<div style='font-size:12px'>" + title + "<table style='margin-top:4px'>" + rows.join("") + "</table></div>",
+        {maxWidth: 300}
+    );
+};

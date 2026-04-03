@@ -20,3 +20,15 @@ div[class*="css-"][class*="-menu"] {
     z-index: 1050;
     position: relative;
 }
+
+/* Keep legend visible when map is in fullscreen mode.
+   Leaflet fullscreen only shows its own DOM children, but our legend
+   is a sibling div. This re-attaches it visually via fixed positioning. */
+.leaflet-container:-webkit-full-screen ~ div[style*="position: absolute"] {
+    position: fixed !important;
+    z-index: 100000 !important;
+}
+.leaflet-container:fullscreen ~ div[style*="position: absolute"] {
+    position: fixed !important;
+    z-index: 100000 !important;
+}

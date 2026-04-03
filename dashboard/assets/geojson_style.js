@@ -70,9 +70,11 @@ function _formatValue(val) {
     var s = String(val);
     // Truncate ISO timestamps to date only
     if (s.length >= 10 && s[4] === "-" && s[7] === "-") return s.substring(0, 10);
-    // Format numbers with commas
-    var n = Number(val);
-    if (!isNaN(n) && s === String(n)) return n.toLocaleString(undefined, {maximumFractionDigits: 1});
+    // Format numbers with commas — but skip long numeric strings like UWIs (14+ digits)
+    if (s.length < 12) {
+        var n = Number(val);
+        if (!isNaN(n) && s === String(n)) return n.toLocaleString(undefined, {maximumFractionDigits: 1});
+    }
     return s;
 }
 

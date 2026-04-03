@@ -446,14 +446,16 @@ def import_session_package(contents, filename):
         datasets = metadata.get("datasets", [])
         summary_items = [f"{d['name']}: {d['rows']:,} rows" for d in datasets]
 
-        # Read UI state if present and save into cache pickle
-        # (Explore page's restore_ui_state callback reads it from cache on load)
-        ui = {}
-        if "ui_state.json" in zf.namelist():
+        # UI state: prefer locally saved settings (from Save button) over
+        # what's in the ZIP. Only use ZIP's ui_state if no local save exists.
+        from dashboard.pipeline import save_ui_state, load_ui_state, _ui_state_path
+        existing_ui = load_ui_state(str(cache_path))
+        if existing_ui:
+            logger.info("Using locally saved UI settings (companion JSON exists)")
+        elif "ui_state.json" in zf.namelist():
             ui = json.loads(zf.read("ui_state.json"))
-            # Persist into cache so restore_ui_state picks it up
-            from dashboard.pipeline import save_ui_state
             save_ui_state(str(cache_path), ui)
+            logger.info("Using UI settings from ZIP (no local save found)")
 
         logger.info("Session imported: %s → %s (%d datasets, ui_state=%s)",
                      filename, cache_path.name, len(datasets), bool(ui))

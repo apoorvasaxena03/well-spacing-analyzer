@@ -1803,16 +1803,37 @@ _SKIP_COLS = {"uwi", "surface_lat", "surface_lon", "latitude", "longitude", "geo
     Output("gb-color-by", "options"),
     Output("tooltip-fields", "options"),
     Output("chart-hover-fields", "options"),
+    # Also set VALUES here (atomically with options) to prevent Dash from
+    # resetting values when options change before values are restored.
+    Output("traj-color-by", "value"),
+    Output("bh-color-by", "value"),
+    Output("traj-weight", "value"),
+    Output("traj-opacity", "value"),
+    Output("bh-radius", "value"),
+    Output("bh-opacity", "value"),
+    Output("tooltip-fields", "value"),
+    Output("gb-xaxis-mode", "value"),
+    Output("gb-color-by", "value"),
+    Output("gb-toggle-lines", "value"),
+    Output("gb-toggle-labels", "value"),
+    Output("gb-marker-size", "value"),
+    Output("gb-line-width", "value"),
+    Output("gb-label-size", "value"),
+    Output("chart-hover-fields", "value"),
+    Output("user-color-overrides", "data"),
+    Output("ui-restore-timestamp", "data"),
     Input("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
-def populate_color_by_options(pipeline_result):
+def populate_and_restore(pipeline_result):
     """Build color-by dropdown options from all header columns + spud_year."""
     # Base options always available
     base = [{"label": "Uniform", "value": "_uniform"}]
 
+    _n_vals = 17  # 16 UI values + 1 timestamp
+    _no_vals = [dash.no_update] * _n_vals
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return base, base, base[:0], [], []
+        return base, base, base[:0], [], [], *_no_vals
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
     header_df = data["header_df"]
@@ -1857,7 +1878,20 @@ def populate_color_by_options(pipeline_result):
         for col in tooltip_all
     ]
 
-    return map_options, map_options, gb_options, tooltip_options, tooltip_options
+    # Restore saved UI state (options + values set atomically in one callback)
+    import time as _time
+    ui = load_ui_state(pipeline_result["cache_path"])
+    if ui:
+        import logging
+        logging.getLogger("dashboard").info(
+            "restore: traj_color_by=%s, gb_marker_size=%s",
+            ui.get("traj_color_by"), ui.get("gb_marker_size"),
+        )
+        vals = [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS] + [_time.time()]
+    else:
+        vals = [dash.no_update] * 17
+
+    return map_options, map_options, gb_options, tooltip_options, tooltip_options, *vals
 
 
 # ---------------------------------------------------------------------------
@@ -1954,52 +1988,6 @@ def save_ui_on_click(
     import logging
     logging.getLogger("dashboard").info("UI settings saved by user click")
     return True, "outline-success", "Saved!"
-
-
-# ---------------------------------------------------------------------------
-# Auto-restore UI state from cache when pipeline loads
-# ---------------------------------------------------------------------------
-@callback(
-    Output("traj-color-by", "value", allow_duplicate=True),
-    Output("bh-color-by", "value", allow_duplicate=True),
-    Output("traj-weight", "value", allow_duplicate=True),
-    Output("traj-opacity", "value", allow_duplicate=True),
-    Output("bh-radius", "value", allow_duplicate=True),
-    Output("bh-opacity", "value", allow_duplicate=True),
-    Output("tooltip-fields", "value", allow_duplicate=True),
-    Output("gb-xaxis-mode", "value", allow_duplicate=True),
-    Output("gb-color-by", "value", allow_duplicate=True),
-    Output("gb-toggle-lines", "value", allow_duplicate=True),
-    Output("gb-toggle-labels", "value", allow_duplicate=True),
-    Output("gb-marker-size", "value", allow_duplicate=True),
-    Output("gb-line-width", "value", allow_duplicate=True),
-    Output("gb-label-size", "value", allow_duplicate=True),
-    Output("chart-hover-fields", "value", allow_duplicate=True),
-    Output("user-color-overrides", "data", allow_duplicate=True),
-    Output("ui-restore-timestamp", "data", allow_duplicate=True),
-    Input("pipeline-result-store", "data"),
-    prevent_initial_call=True,
-)
-def restore_ui_state(pipeline_result):
-    """Restore saved UI settings from cache when pipeline loads.
-
-    Also re-writes the companion JSON to ensure the restored values survive
-    the autosave cascade that fires immediately after restore pushes values
-    to the UI components.
-    """
-    import time as _time
-    _noop = [dash.no_update] * 16 + [dash.no_update]
-    if not pipeline_result or not pipeline_result.get("cache_path"):
-        return _noop
-    ui = load_ui_state(pipeline_result["cache_path"])
-    if not ui:
-        return _noop
-    _logger = logging.getLogger("dashboard")
-    _logger.info("restore_ui_state: traj_color_by=%s, gb_marker_size=%s, timestamp=%s",
-                 ui.get("traj_color_by"), ui.get("gb_marker_size"), _time.time())
-    # Re-write companion JSON to protect against autosave overwrite
-    save_ui_state(pipeline_result["cache_path"], ui)
-    return [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS] + [_time.time()]
 
 
 @callback(

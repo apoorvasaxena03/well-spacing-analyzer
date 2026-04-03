@@ -74,6 +74,12 @@ def _sigint_handler(signum, frame):
 
 
 if __name__ == "__main__":
+    # --debug flag sets log level to DEBUG (otherwise defaults to INFO)
+    if "--debug" in sys.argv:
+        os.environ["DASHBOARD_LOG_LEVEL"] = "DEBUG"
+        sys.argv.remove("--debug")
+        print("  Log level: DEBUG")
+
     # Clear any stale cache from previous runs BEFORE starting
     _clear_cache()
 

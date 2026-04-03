@@ -610,6 +610,32 @@ def load_cached_pipeline(cache_path: str) -> dict[str, pd.DataFrame]:
         return pickle.load(f)
 
 
+def save_ui_state(cache_path: str, ui_state: dict) -> None:
+    """Persist UI state (colors, settings, field selections) into the cache pickle.
+
+    Loads the existing cache, updates the 'ui_state' key, and writes back.
+    This is called on every UI settings change so the user never loses state.
+    """
+    try:
+        with open(cache_path, "rb") as f:
+            data = pickle.load(f)
+        data["ui_state"] = ui_state
+        with open(cache_path, "wb") as f:
+            pickle.dump(data, f)
+    except Exception:
+        pass  # silently ignore — UI state is non-critical
+
+
+def load_ui_state(cache_path: str) -> dict:
+    """Load saved UI state from the cache pickle, if any."""
+    try:
+        with open(cache_path, "rb") as f:
+            data = pickle.load(f)
+        return data.get("ui_state", {})
+    except Exception:
+        return {}
+
+
 def load_cached_ik_heeltoe(
     pipeline_result: dict | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:

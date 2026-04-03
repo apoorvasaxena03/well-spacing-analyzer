@@ -26,6 +26,8 @@ from dashboard.pipeline import (
     compute_gun_barrel,
     load_cached_pipeline,
     load_cached_ik_heeltoe,
+    save_ui_state,
+    load_ui_state,
 )
 from dashboard.components.gun_barrel import build_gun_barrel_figure, empty_figure
 from dashboard.components.map_panel import build_trajectory_geodataframe, build_bottomhole_geodataframe
@@ -1846,6 +1848,94 @@ def populate_color_by_options(pipeline_result):
     ]
 
     return map_options, map_options, gb_options, tooltip_options, tooltip_options
+
+
+# ---------------------------------------------------------------------------
+# Auto-save UI state to cache on any settings change
+# ---------------------------------------------------------------------------
+_UI_SAVE_KEYS = [
+    "traj_color_by", "bh_color_by", "traj_weight", "traj_opacity",
+    "bh_radius", "bh_opacity", "tooltip_fields",
+    "gb_xaxis_mode", "gb_color_by", "gb_toggle_lines", "gb_toggle_labels",
+    "gb_marker_size", "gb_line_width", "gb_label_size",
+    "chart_hover_fields", "user_color_overrides",
+]
+
+
+@callback(
+    Output("tooltip-fields", "title", allow_duplicate=True),  # dummy output
+    Input("traj-color-by", "value"),
+    Input("bh-color-by", "value"),
+    Input("traj-weight", "value"),
+    Input("traj-opacity", "value"),
+    Input("bh-radius", "value"),
+    Input("bh-opacity", "value"),
+    Input("tooltip-fields", "value"),
+    Input("gb-xaxis-mode", "value"),
+    Input("gb-color-by", "value"),
+    Input("gb-toggle-lines", "value"),
+    Input("gb-toggle-labels", "value"),
+    Input("gb-marker-size", "value"),
+    Input("gb-line-width", "value"),
+    Input("gb-label-size", "value"),
+    Input("chart-hover-fields", "value"),
+    Input("user-color-overrides", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def autosave_ui_state(
+    traj_color_by, bh_color_by, traj_weight, traj_opacity,
+    bh_radius, bh_opacity, tooltip_fields,
+    gb_xaxis_mode, gb_color_by, gb_toggle_lines, gb_toggle_labels,
+    gb_marker_size, gb_line_width, gb_label_size,
+    chart_hover_fields, user_color_overrides,
+    pipeline_result,
+):
+    """Persist all UI settings to the cache pickle on every change."""
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return dash.no_update
+    ui = dict(zip(_UI_SAVE_KEYS, [
+        traj_color_by, bh_color_by, traj_weight, traj_opacity,
+        bh_radius, bh_opacity, tooltip_fields,
+        gb_xaxis_mode, gb_color_by, gb_toggle_lines, gb_toggle_labels,
+        gb_marker_size, gb_line_width, gb_label_size,
+        chart_hover_fields, user_color_overrides,
+    ]))
+    save_ui_state(pipeline_result["cache_path"], ui)
+    return dash.no_update
+
+
+# ---------------------------------------------------------------------------
+# Auto-restore UI state from cache when pipeline loads
+# ---------------------------------------------------------------------------
+@callback(
+    Output("traj-color-by", "value", allow_duplicate=True),
+    Output("bh-color-by", "value", allow_duplicate=True),
+    Output("traj-weight", "value", allow_duplicate=True),
+    Output("traj-opacity", "value", allow_duplicate=True),
+    Output("bh-radius", "value", allow_duplicate=True),
+    Output("bh-opacity", "value", allow_duplicate=True),
+    Output("tooltip-fields", "value", allow_duplicate=True),
+    Output("gb-xaxis-mode", "value", allow_duplicate=True),
+    Output("gb-color-by", "value", allow_duplicate=True),
+    Output("gb-toggle-lines", "value", allow_duplicate=True),
+    Output("gb-toggle-labels", "value", allow_duplicate=True),
+    Output("gb-marker-size", "value", allow_duplicate=True),
+    Output("gb-line-width", "value", allow_duplicate=True),
+    Output("gb-label-size", "value", allow_duplicate=True),
+    Output("chart-hover-fields", "value", allow_duplicate=True),
+    Output("user-color-overrides", "data", allow_duplicate=True),
+    Input("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def restore_ui_state(pipeline_result):
+    """Restore saved UI settings from cache when pipeline loads."""
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return [dash.no_update] * 16
+    ui = load_ui_state(pipeline_result["cache_path"])
+    if not ui:
+        return [dash.no_update] * 16
+    return [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS]
 
 
 @callback(

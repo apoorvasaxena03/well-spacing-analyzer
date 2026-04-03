@@ -129,6 +129,7 @@ layout = dbc.Container(
         dcc.Store(id="avg-spacing-result-store"),
         dcc.Store(id="wps-result-store"),
         dcc.Store(id="user-color-overrides", data={}),
+        dcc.Store(id="ui-restore-pending", data=False),
         html.Div(id="_draw-clear-dummy", style={"display": "none"}),
 
         # Fullscreen modals for diagnostic plots
@@ -1863,7 +1864,7 @@ _UI_SAVE_KEYS = [
 
 
 @callback(
-    Output("tooltip-fields", "title", allow_duplicate=True),  # dummy output
+    Output("ui-restore-pending", "data", allow_duplicate=True),
     Input("traj-color-by", "value"),
     Input("bh-color-by", "value"),
     Input("traj-weight", "value"),
@@ -1881,6 +1882,7 @@ _UI_SAVE_KEYS = [
     Input("chart-hover-fields", "value"),
     Input("user-color-overrides", "data"),
     State("pipeline-result-store", "data"),
+    State("ui-restore-pending", "data"),
     prevent_initial_call=True,
 )
 def autosave_ui_state(
@@ -1889,9 +1891,17 @@ def autosave_ui_state(
     gb_xaxis_mode, gb_color_by, gb_toggle_lines, gb_toggle_labels,
     gb_marker_size, gb_line_width, gb_label_size,
     chart_hover_fields, user_color_overrides,
-    pipeline_result,
+    pipeline_result, restore_pending,
 ):
-    """Persist all UI settings to the cache pickle on every change."""
+    """Persist all UI settings to companion JSON on every change.
+
+    Skips the first fire after a restore (to avoid overwriting restored
+    values with stale defaults from components that haven't updated yet).
+    """
+    if restore_pending:
+        # Clear the flag, skip this save cycle
+        return False
+
     if not pipeline_result or not pipeline_result.get("cache_path"):
         return dash.no_update
     ui = dict(zip(_UI_SAVE_KEYS, [
@@ -1902,7 +1912,7 @@ def autosave_ui_state(
         chart_hover_fields, user_color_overrides,
     ]))
     save_ui_state(pipeline_result["cache_path"], ui)
-    return dash.no_update
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1925,17 +1935,20 @@ def autosave_ui_state(
     Output("gb-label-size", "value", allow_duplicate=True),
     Output("chart-hover-fields", "value", allow_duplicate=True),
     Output("user-color-overrides", "data", allow_duplicate=True),
+    Output("ui-restore-pending", "data", allow_duplicate=True),
     Input("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
 def restore_ui_state(pipeline_result):
     """Restore saved UI settings from cache when pipeline loads."""
+    _noop = [dash.no_update] * 16 + [dash.no_update]
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return [dash.no_update] * 16
+        return _noop
     ui = load_ui_state(pipeline_result["cache_path"])
     if not ui:
-        return [dash.no_update] * 16
-    return [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS]
+        return _noop
+    # Set pending flag so autosave skips the next fire (avoids overwriting restored values)
+    return [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS] + [True]
 
 
 @callback(

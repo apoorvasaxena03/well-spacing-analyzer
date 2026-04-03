@@ -614,13 +614,29 @@ layout = dbc.Container(
                                                 width="auto",
                                             ),
                                             dbc.Col([
-                                                dbc.Label("Dot size", className="small mb-0"),
+                                                dbc.Label("Dot", className="small mb-0"),
                                                 dcc.Slider(
                                                     id="gb-marker-size", min=4, max=24, step=2,
                                                     value=12,
                                                     marks={4: "4", 12: "12", 24: "24"},
                                                 ),
-                                            ], md=3),
+                                            ], md=2),
+                                            dbc.Col([
+                                                dbc.Label("Line", className="small mb-0"),
+                                                dcc.Slider(
+                                                    id="gb-line-width", min=1, max=6, step=0.5,
+                                                    value=1.5,
+                                                    marks={1: "1", 3: "3", 6: "6"},
+                                                ),
+                                            ], md=2),
+                                            dbc.Col([
+                                                dbc.Label("Label", className="small mb-0"),
+                                                dcc.Slider(
+                                                    id="gb-label-size", min=6, max=16, step=1,
+                                                    value=9,
+                                                    marks={6: "6", 10: "10", 16: "16"},
+                                                ),
+                                            ], md=2),
                                         ],
                                         align="center",
                                         className="mt-1",
@@ -1940,21 +1956,23 @@ def on_well_click(traj_clicks, bh_clicks, traj_click_data, bh_click_data, pipeli
     Input("gb-toggle-lines", "value"),
     Input("gb-toggle-labels", "value"),
     Input("gb-marker-size", "value"),
+    Input("gb-line-width", "value"),
+    Input("gb-label-size", "value"),
     Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result):
+def update_gun_barrel(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
-        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result)
+        return _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result)
     except Exception as exc:
         _log.exception("Gun barrel error: %s", exc)
         return empty_figure(f"Error: {exc}")
 
 
-def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, hover_fields, pipeline_result):
+def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_toggle, marker_size, line_width, label_size, hover_fields, pipeline_result):
     if not selected or not selected.get("neighborhood_uwis"):
         return empty_figure("Click a well on the map to populate the gun barrel.")
 
@@ -1993,6 +2011,8 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
         show_lines=show_lines,
         show_labels=show_labels,
         marker_size=int(marker_size or 12),
+        line_width=float(line_width or 1.5),
+        label_size=int(label_size or 9),
         hover_fields=hover_fields,
     )
 
@@ -2001,11 +2021,10 @@ def _update_gun_barrel_inner(selected, x_col, color_by, lines_toggle, labels_tog
     Output("cum-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
     Input("cum-prod-product", "value"),
-    Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_cum_production(selected, product, hover_fields, pipeline_result):
+def update_cum_production(selected, product, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -2039,24 +2058,16 @@ def update_cum_production(selected, product, hover_fields, pipeline_result):
         unit_map = {"oil": "BBL", "gas": "MCF", "water": "BBL"}
         unit = unit_map.get(product, "")
 
-        # Build enriched trace names from hover_fields
-        _hf = hover_fields or []
+        # Production legend: always UWI + well_name (concise)
         header_df = data.get("header_df")
-        _hdr_lookup = {}
-        if header_df is not None and _hf and "uwi" in header_df.columns:
-            avail = [f for f in _hf if f in header_df.columns and f != "uwi"]
-            if avail:
-                _hdr_lookup = header_df.set_index("uwi")[avail].astype(str).to_dict("index")
+        _name_lookup = {}
+        if header_df is not None and "uwi" in header_df.columns and "well_name" in header_df.columns:
+            _name_lookup = header_df.set_index("uwi")["well_name"].astype(str).to_dict()
 
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
-            parts = [str(uwi)]
-            info = _hdr_lookup.get(str(uwi), {})
-            for f in _hf:
-                v = info.get(f)
-                if v is not None and str(v) not in ("", "nan", "NaT", "None"):
-                    parts.append(str(v))
-            trace_name = " | ".join(parts)
+            wname = _name_lookup.get(str(uwi), "")
+            trace_name = f"{uwi} | {wname}" if wname and wname not in ("", "nan") else str(uwi)
             fig.add_trace(go.Scatter(
                 x=grp["months"], y=grp[cum_col],
                 mode="lines", name=trace_name,
@@ -2067,6 +2078,7 @@ def update_cum_production(selected, product, hover_fields, pipeline_result):
             template="plotly_white",
             hovermode="x unified",
             margin=dict(t=30, b=50, l=60, r=20),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0, font=dict(size=10)),
             yaxis=dict(tickformat=","),
         )
         return fig
@@ -2079,11 +2091,10 @@ def update_cum_production(selected, product, hover_fields, pipeline_result):
     Output("daily-oil-chart", "figure"),
     Input("selected-wells-store", "data"),
     Input("daily-prod-product", "value"),
-    Input("chart-hover-fields", "value"),
     State("pipeline-result-store", "data"),
     prevent_initial_call=True,
 )
-def update_daily_production(selected, product, hover_fields, pipeline_result):
+def update_daily_production(selected, product, pipeline_result):
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -2111,24 +2122,16 @@ def update_daily_production(selected, product, hover_fields, pipeline_result):
         if prod_sel.empty:
             return empty_figure("No production data for selected wells.")
 
-        # Build enriched trace names from hover_fields
-        _hf = hover_fields or []
+        # Production legend: always UWI + well_name (concise)
         header_df = data.get("header_df")
-        _hdr_lookup = {}
-        if header_df is not None and _hf and "uwi" in header_df.columns:
-            avail = [f for f in _hf if f in header_df.columns and f != "uwi"]
-            if avail:
-                _hdr_lookup = header_df.set_index("uwi")[avail].astype(str).to_dict("index")
+        _name_lookup = {}
+        if header_df is not None and "uwi" in header_df.columns and "well_name" in header_df.columns:
+            _name_lookup = header_df.set_index("uwi")["well_name"].astype(str).to_dict()
 
         fig = go.Figure()
         for uwi, grp in prod_sel.groupby("uwi"):
-            parts = [str(uwi)]
-            info = _hdr_lookup.get(str(uwi), {})
-            for f in _hf:
-                v = info.get(f)
-                if v is not None and str(v) not in ("", "nan", "NaT", "None"):
-                    parts.append(str(v))
-            trace_name = " | ".join(parts)
+            wname = _name_lookup.get(str(uwi), "")
+            trace_name = f"{uwi} | {wname}" if wname and wname not in ("", "nan") else str(uwi)
             fig.add_trace(go.Scatter(
                 x=grp["prod_date"], y=grp[col],
                 mode="lines", name=trace_name,
@@ -2139,6 +2142,7 @@ def update_daily_production(selected, product, hover_fields, pipeline_result):
             template="plotly_white",
             hovermode="x unified",
             margin=dict(t=30, b=50, l=60, r=20),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0, font=dict(size=10)),
             yaxis=dict(tickformat=","),
         )
         return fig

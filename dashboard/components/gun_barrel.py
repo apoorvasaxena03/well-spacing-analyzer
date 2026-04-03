@@ -107,6 +107,8 @@ def _add_spacing_zigzag(
     x_col: str,
     show_lines: bool = True,
     show_labels: bool = True,
+    line_width: float = 1.5,
+    label_size: int = 9,
 ) -> None:
     """
     Layer 2 — right-triangle zigzag connectors between adjacent well pairs.
@@ -134,21 +136,21 @@ def _add_spacing_zigzag(
             fig.add_trace(go.Scatter(
                 x=[x_wi, corner_x], y=[y_wi, corner_y],
                 mode="lines",
-                line=dict(color="gray", dash="dot", width=1),
+                line=dict(color="gray", dash="dot", width=line_width),
                 showlegend=False, hoverinfo="skip",
             ))
             # Vertical segment
             fig.add_trace(go.Scatter(
                 x=[corner_x, x_wk], y=[corner_y, y_wk],
                 mode="lines",
-                line=dict(color="gray", dash="dot", width=1),
+                line=dict(color="gray", dash="dot", width=line_width),
                 showlegend=False, hoverinfo="skip",
             ))
             # Hypotenuse
             fig.add_trace(go.Scatter(
                 x=[x_wi, x_wk], y=[y_wi, y_wk],
                 mode="lines",
-                line=dict(color="lightgray", dash="dash", width=1),
+                line=dict(color="lightgray", dash="dash", width=line_width),
                 showlegend=False, hoverinfo="skip",
             ))
 
@@ -176,7 +178,7 @@ def _add_spacing_zigzag(
             y=y_wi,
             text=f"H: {h_dist:,.0f} ft",
             showarrow=False,
-            font=dict(size=7, color="#1f77b4"),
+            font=dict(size=label_size, color="#1f77b4"),
             bgcolor="rgba(255,255,255,0.8)",
             borderpad=1,
             yshift=10,
@@ -187,7 +189,7 @@ def _add_spacing_zigzag(
             y=(corner_y + y_wk) / 2,
             text=f"V: {v_dist:,.0f} ft",
             showarrow=False,
-            font=dict(size=7, color="#d62728"),
+            font=dict(size=label_size, color="#d62728"),
             bgcolor="rgba(255,255,255,0.8)",
             borderpad=1,
             xshift=35,
@@ -198,7 +200,7 @@ def _add_spacing_zigzag(
             y=(y_wi + y_wk) / 2,
             text=f"3D: {d3d:,.0f} ft",
             showarrow=False,
-            font=dict(size=7, color="#2ca02c"),
+            font=dict(size=label_size, color="#2ca02c"),
             bgcolor="rgba(255,255,255,0.8)",
             borderpad=1,
             yshift=-10,
@@ -248,6 +250,8 @@ def build_gun_barrel_figure(
     show_labels: bool = True,
     df_formation_tops: pd.DataFrame | None = None,
     marker_size: int = 12,
+    line_width: float = 1.5,
+    label_size: int = 9,
     hover_fields: list[str] | None = None,
 ) -> go.Figure:
     """
@@ -269,7 +273,8 @@ def build_gun_barrel_figure(
     fig = go.Figure()
 
     _add_well_points(fig, GB, x_col, color_by=color_by, marker_size=marker_size, hover_fields=hover_fields)
-    _add_spacing_zigzag(fig, GB, IK, x_col, show_lines=show_lines, show_labels=show_labels)
+    _add_spacing_zigzag(fig, GB, IK, x_col, show_lines=show_lines, show_labels=show_labels,
+                        line_width=line_width, label_size=label_size)
 
     if df_formation_tops is not None and not df_formation_tops.empty:
         _add_formation_tops(fig, df_formation_tops, GB, x_col)

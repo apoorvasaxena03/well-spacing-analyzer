@@ -1762,7 +1762,7 @@ def _build_legend(color_map: dict, label: str) -> dbc.Card | None:
 
 # -- Color picker callback: capture user overrides from legend swatches --
 @callback(
-    Output("user-color-overrides", "data"),
+    Output("user-color-overrides", "data", allow_duplicate=True),
     Input({"type": "legend-color-picker", "label": ALL, "value": ALL}, "value"),
     State({"type": "legend-color-picker", "label": ALL, "value": ALL}, "id"),
     State("user-color-overrides", "data"),

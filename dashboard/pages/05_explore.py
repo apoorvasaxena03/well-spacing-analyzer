@@ -116,6 +116,14 @@ layout = dbc.Container(
                         color="outline-primary",
                         size="sm",
                     ),
+                    dbc.Button(
+                        "Save Settings",
+                        id="btn-save-ui",
+                        color="success",
+                        size="sm",
+                        className="ms-2",
+                        disabled=True,
+                    ),
                 ],
                 width="auto",
                 className="d-flex",
@@ -130,6 +138,7 @@ layout = dbc.Container(
         dcc.Store(id="wps-result-store"),
         dcc.Store(id="user-color-overrides", data={}),
         dcc.Store(id="ui-restore-timestamp", data=0),
+        dcc.Store(id="ui-dirty", data=False),
         html.Div(id="_draw-clear-dummy", style={"display": "none"}),
 
         # Fullscreen modals for diagnostic plots
@@ -1863,8 +1872,11 @@ _UI_SAVE_KEYS = [
 ]
 
 
+# -- Mark dirty when any UI setting changes (enables Save button) --
 @callback(
-    Output("ui-restore-timestamp", "data", allow_duplicate=True),
+    Output("btn-save-ui", "disabled"),
+    Output("btn-save-ui", "color"),
+    Output("btn-save-ui", "children"),
     Input("traj-color-by", "value"),
     Input("bh-color-by", "value"),
     Input("traj-weight", "value"),
@@ -1881,31 +1893,56 @@ _UI_SAVE_KEYS = [
     Input("gb-label-size", "value"),
     Input("chart-hover-fields", "value"),
     Input("user-color-overrides", "data"),
-    State("pipeline-result-store", "data"),
     State("ui-restore-timestamp", "data"),
     prevent_initial_call=True,
 )
-def autosave_ui_state(
+def mark_ui_dirty(*args):
+    """Enable Save button when any setting changes. Skip during restore cascade."""
+    import time as _time
+    restore_ts = args[-1]
+    if restore_ts and (_time.time() - restore_ts) < 5.0:
+        return dash.no_update, dash.no_update, dash.no_update
+    return False, "success", "Save Settings"
+
+
+# -- Save button: persist UI state to companion JSON on click --
+@callback(
+    Output("btn-save-ui", "disabled", allow_duplicate=True),
+    Output("btn-save-ui", "color", allow_duplicate=True),
+    Output("btn-save-ui", "children", allow_duplicate=True),
+    Input("btn-save-ui", "n_clicks"),
+    State("traj-color-by", "value"),
+    State("bh-color-by", "value"),
+    State("traj-weight", "value"),
+    State("traj-opacity", "value"),
+    State("bh-radius", "value"),
+    State("bh-opacity", "value"),
+    State("tooltip-fields", "value"),
+    State("gb-xaxis-mode", "value"),
+    State("gb-color-by", "value"),
+    State("gb-toggle-lines", "value"),
+    State("gb-toggle-labels", "value"),
+    State("gb-marker-size", "value"),
+    State("gb-line-width", "value"),
+    State("gb-label-size", "value"),
+    State("chart-hover-fields", "value"),
+    State("user-color-overrides", "data"),
+    State("pipeline-result-store", "data"),
+    prevent_initial_call=True,
+)
+def save_ui_on_click(
+    n_clicks,
     traj_color_by, bh_color_by, traj_weight, traj_opacity,
     bh_radius, bh_opacity, tooltip_fields,
     gb_xaxis_mode, gb_color_by, gb_toggle_lines, gb_toggle_labels,
     gb_marker_size, gb_line_width, gb_label_size,
     chart_hover_fields, user_color_overrides,
-    pipeline_result, restore_ts,
+    pipeline_result,
 ):
-    """Persist all UI settings to companion JSON on every change.
-
-    Skips saves for 3 seconds after a restore to avoid overwriting
-    restored values with stale defaults from cascading callback fires.
-    """
-    import time as _time
-
-    # Skip saves within 3 seconds of a restore
-    if restore_ts and (_time.time() - restore_ts) < 3.0:
-        return dash.no_update
-
+    """Save all UI settings to companion JSON when user clicks Save."""
     if not pipeline_result or not pipeline_result.get("cache_path"):
-        return dash.no_update
+        return True, "secondary", "Save Settings"
+
     ui = dict(zip(_UI_SAVE_KEYS, [
         traj_color_by, bh_color_by, traj_weight, traj_opacity,
         bh_radius, bh_opacity, tooltip_fields,
@@ -1914,7 +1951,9 @@ def autosave_ui_state(
         chart_hover_fields, user_color_overrides,
     ]))
     save_ui_state(pipeline_result["cache_path"], ui)
-    return dash.no_update
+    import logging
+    logging.getLogger("dashboard").info("UI settings saved by user click")
+    return True, "outline-success", "Saved!"
 
 
 # ---------------------------------------------------------------------------
@@ -1942,7 +1981,12 @@ def autosave_ui_state(
     prevent_initial_call=True,
 )
 def restore_ui_state(pipeline_result):
-    """Restore saved UI settings from cache when pipeline loads."""
+    """Restore saved UI settings from cache when pipeline loads.
+
+    Also re-writes the companion JSON to ensure the restored values survive
+    the autosave cascade that fires immediately after restore pushes values
+    to the UI components.
+    """
     import time as _time
     _noop = [dash.no_update] * 16 + [dash.no_update]
     if not pipeline_result or not pipeline_result.get("cache_path"):
@@ -1950,7 +1994,11 @@ def restore_ui_state(pipeline_result):
     ui = load_ui_state(pipeline_result["cache_path"])
     if not ui:
         return _noop
-    # Set timestamp so autosave skips saves for 2 seconds (avoids overwriting restored values)
+    _logger = logging.getLogger("dashboard")
+    _logger.info("restore_ui_state: traj_color_by=%s, gb_marker_size=%s, timestamp=%s",
+                 ui.get("traj_color_by"), ui.get("gb_marker_size"), _time.time())
+    # Re-write companion JSON to protect against autosave overwrite
+    save_ui_state(pipeline_result["cache_path"], ui)
     return [ui.get(k, dash.no_update) for k in _UI_SAVE_KEYS] + [_time.time()]
 
 

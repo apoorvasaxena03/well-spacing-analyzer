@@ -137,7 +137,7 @@ CANONICAL_BY_FILE = {
 CONFIRM_REQUIRED = {
     "header":      {"uwi"},
     "directional": {"uwi", "uwi12"},   # at least one
-    "production":  set(),
+    "production":  {"uwi", "prod_date"},
 }
 
 # Full required column sets by source — shown as guidance in each tab.
@@ -146,7 +146,7 @@ PIPELINE_REQUIRED = {
     "header": {
         "uwi", "well_name", "operator", "bench",
         "first_prod_date", "hole_direction",
-        "surface_lat", "surface_lon",
+        "surface_lat", "surface_lon", "lateral_length_ft",
     },
     "directional_ihs": {
         "uwi", "md", "tvd", "inclination", "azimuth",
@@ -536,7 +536,7 @@ def _panel(file_key: str, store: dict, template_name: str, saved_mapping: dict |
     sample_values = store.get(f"{file_key}_sample_values", {})
 
     if not source_cols:
-        return [dbc.Alert(f"No {file_key} file uploaded (optional).", color="light", className="mt-2")]
+        return [dbc.Alert(f"No {file_key} file uploaded — go back to Step 1.", color="warning", className="mt-2")]
 
     # If user already confirmed a mapping, restore it; otherwise use template + fuzzy
     if saved_mapping and saved_mapping.get(file_key):
@@ -624,13 +624,18 @@ def build_mapping_rows(store, template_name, saved_mapping):
     Output("column-map-error", "is_open", allow_duplicate=True),
     Input({"type": "map-input", "file": "header",      "src": ALL}, "value"),
     Input({"type": "map-input", "file": "directional", "src": ALL}, "value"),
+    Input({"type": "map-input", "file": "production",  "src": ALL}, "value"),
     State({"type": "map-input", "file": "header",      "src": ALL}, "id"),
     State({"type": "map-input", "file": "directional", "src": ALL}, "id"),
+    State({"type": "map-input", "file": "production",  "src": ALL}, "id"),
     Input("unmapped-mode-header",      "value"),
     Input("unmapped-mode-directional", "value"),
+    Input("unmapped-mode-production",  "value"),
     prevent_initial_call="initial_duplicate",
 )
-def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mode_d):
+def toggle_confirm_button(header_vals, dir_vals, prod_vals,
+                          header_ids, dir_ids, prod_ids,
+                          mode_h, mode_d, mode_p):
     # Build effective canonical sets: explicit values + what unmapped mode will produce
     def _effective(vals, ids, mode):
         result = set()
@@ -645,6 +650,7 @@ def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mo
 
     h = _effective(header_vals, header_ids, mode_h)
     d = _effective(dir_vals, dir_ids, mode_d)
+    p = _effective(prod_vals, prod_ids, mode_p)
 
     has_uwi_header = "uwi" in h
     has_uwi_dir = bool({"uwi", "uwi12"} & d)
@@ -655,6 +661,25 @@ def toggle_confirm_button(header_vals, dir_vals, header_ids, dir_ids, mode_h, mo
         return True, (
             "Enverus directional uses uwi12 — header must also include 'uwi12' "
             "so the pipeline can link 14-digit UWIs to directional surveys."
+        ), True
+
+    # Production validation: uwi + prod_date + at least one volume column
+    prod_missing = CONFIRM_REQUIRED["production"] - p
+    if prod_missing:
+        return True, (
+            f"Production mapping must include: {', '.join(sorted(prod_missing))}."
+        ), True
+
+    has_volume = bool({"oil", "gas", "water"} & p)
+    if p and not has_volume:
+        return True, (
+            "Production mapping must include at least one volume column (oil, gas, or water)."
+        ), True
+
+    # Header must include lateral_length_ft for per-ft normalization
+    if "lateral_length_ft" not in h:
+        return True, (
+            "Header mapping must include 'lateral_length_ft' — required for per-foot production normalization."
         ), True
 
     disabled = not (has_uwi_header and has_uwi_dir)

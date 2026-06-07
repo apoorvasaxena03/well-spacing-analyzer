@@ -30,7 +30,11 @@ from src.well_data.well_spacing_stats import (
 )
 from src.well_data.well_role_assignment import OverlappingNeighborhoodRoles
 from src.utils.custom_logger import get_logger, new_run_id, set_run_id
-from src.utils.utils import drop_uwi_duplicates_keep_max_last_prod, compute_rsv_cat
+from src.utils.utils import (
+    drop_uwi_duplicates_keep_max_last_prod,
+    compute_rsv_cat,
+    calculate_cumulative_volumes_by_period,
+)
 
 # ---------------------------------------------------------------------------
 # Module-level logger — writes to logs/dashboard.log + terminal
@@ -535,6 +539,51 @@ def run_spacing_calculation(
     )
     header_df["role"] = header_df["role"].fillna("no_eligible_neighbor")
 
+    # --- Compute cumulative production metrics and merge into header ---
+    # Mirrors notebook cells 9.4–10.2: lateral_length merge → cum volumes → header merge
+    if production_df is not None and not production_df.empty and "uwi" in production_df.columns:
+        try:
+            prod_work = production_df.copy()
+
+            # Merge lateral length from header into production (required for per-ft normalization)
+            if "lateral_length_ft" not in prod_work.columns:
+                ll_col = next(
+                    (c for c in header_df.columns if c in ("lateral_length_ft", "di_lateral_length", "perf_length")),
+                    None,
+                )
+                if ll_col:
+                    prod_work = prod_work.merge(
+                        header_df[["uwi", ll_col]].drop_duplicates(subset=["uwi"]),
+                        on="uwi", how="left",
+                    )
+                    if ll_col != "lateral_length_ft":
+                        prod_work = prod_work.rename(columns={ll_col: "lateral_length_ft"})
+
+            # Detect production column names (handle both mapped and raw naming)
+            oil_col = next((c for c in prod_work.columns if c in ("oil", "monthly_oil_bbl", "monthly_oil")), None)
+            gas_col = next((c for c in prod_work.columns if c in ("gas", "monthly_gas_mcf", "monthly_gas")), None)
+            water_col = next((c for c in prod_work.columns if c in ("water", "monthly_water_bbl", "monthly_water")), None)
+            ll_col_name = "lateral_length_ft" if "lateral_length_ft" in prod_work.columns else "di_lateral_length"
+
+            if oil_col and gas_col and water_col and ll_col_name in prod_work.columns:
+                df_cum = calculate_cumulative_volumes_by_period(
+                    prod_work,
+                    oil_col=oil_col,
+                    gas_col=gas_col,
+                    water_col=water_col,
+                    lateral_length_col=ll_col_name,
+                )
+                # Merge cum metrics into header (left join — wells without production keep NaN)
+                cum_cols = [c for c in df_cum.columns if c != "uwi"]
+                header_df = header_df.merge(df_cum[["uwi"] + cum_cols], on="uwi", how="left")
+                logger.info("Cumulative production metrics merged into header: %s",
+                            [c for c in cum_cols if "_per_ft" in c])
+            else:
+                logger.warning("Skipping cum production calc — missing columns: oil=%s gas=%s water=%s ll=%s",
+                               oil_col, gas_col, water_col, ll_col_name if ll_col_name in prod_work.columns else None)
+        except Exception as exc:
+            logger.warning("Cumulative production calculation failed (non-fatal): %s", exc)
+
     # Cache to disk (include stats)
     # NOTE: DirectionalBenchNeighbors, AvgSpacingCalculator, and FloatingSectionWPS
     # are now run on-demand from the Explore page (not during batch calculation).
@@ -544,7 +593,7 @@ def run_spacing_calculation(
             {
                 "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
                 "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
-                "header_df": header_df,            # now includes 'role' column
+                "header_df": header_df,            # includes 'role' + cum production metrics
                 "lateral_df": lateral_df,
                 "directional_df": directional_df, # full survey (for map trajectories)
                 "production_df": production_df,   # may be None if not uploaded

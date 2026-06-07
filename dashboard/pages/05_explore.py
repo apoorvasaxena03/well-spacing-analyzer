@@ -183,6 +183,10 @@ layout = dbc.Container(
             dbc.ModalHeader(dbc.ModalTitle("Daily Production"), close_button=True),
             dbc.ModalBody(dcc.Graph(id="modal-daily-chart", style={"height": "85vh"})),
         ], id="modal-daily", size="xl", fullscreen="xl-down", is_open=False),
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Production by Role"), close_button=True),
+            dbc.ModalBody(dcc.Graph(id="modal-role-prod-chart", style={"height": "85vh"})),
+        ], id="modal-role-prod", size="xl", fullscreen="xl-down", is_open=False),
 
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
@@ -591,199 +595,235 @@ layout = dbc.Container(
                 dbc.Col([
                   dbc.Tabs([
                     dbc.Tab(label="Charts", tab_id="tab-charts", children=[
-                    dbc.Card(
-                        [
-                            dbc.CardHeader(
-                                [
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(html.Strong("Charts"), width="auto"),
-                                            dbc.Col(
-                                                dbc.RadioItems(
-                                                    id="gb-xaxis-mode",
-                                                    options=[
-                                                        {"label": "Centered",       "value": "sectionDist"},
-                                                        {"label": "From reference", "value": "cum_dist"},
-                                                    ],
-                                                    value="sectionDist",
-                                                    inline=True,
-                                                    className="small",
-                                                ),
-                                                width="auto",
-                                            ),
-                                        ],
-                                        align="center",
-                                    ),
-                                    # GB controls row
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(
-                                                dbc.Select(
-                                                    id="gb-color-by",
-                                                    options=[
-                                                        {"label": "Bench",    "value": "bench"},
-                                                        {"label": "Role",     "value": "role"},
-                                                        {"label": "Operator", "value": "operator"},
-                                                        {"label": "Year",     "value": "spud_year"},
-                                                    ],
-                                                    value="bench",
-                                                    size="sm",
-                                                ),
-                                                width=3,
-                                            ),
-                                            dbc.Col(
-                                                dbc.Checklist(
-                                                    id="gb-toggle-lines",
-                                                    options=[{"label": "Lines", "value": "lines"}],
-                                                    value=["lines"],
-                                                    inline=True,
-                                                    input_class_name="me-1",
-                                                    label_class_name="small me-3",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.Checklist(
-                                                    id="gb-toggle-labels",
-                                                    options=[{"label": "Labels", "value": "labels"}],
-                                                    value=["labels"],
-                                                    inline=True,
-                                                    input_class_name="me-1",
-                                                    label_class_name="small me-3",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col([
-                                                dbc.Label("Dot", className="small mb-0"),
-                                                dcc.Slider(
-                                                    id="gb-marker-size", min=4, max=24, step=2,
-                                                    value=12,
-                                                    marks={4: "4", 12: "12", 24: "24"},
-                                                ),
-                                            ], md=2),
-                                            dbc.Col([
-                                                dbc.Label("Line", className="small mb-0"),
-                                                dcc.Slider(
-                                                    id="gb-line-width", min=1, max=6, step=0.5,
-                                                    value=1.5,
-                                                    marks={1: "1", 3: "3", 6: "6"},
-                                                ),
-                                            ], md=2),
-                                            dbc.Col([
-                                                dbc.Label("Label", className="small mb-0"),
-                                                dcc.Slider(
-                                                    id="gb-label-size", min=6, max=16, step=1,
-                                                    value=9,
-                                                    marks={6: "6", 10: "10", 16: "16"},
-                                                ),
-                                            ], md=2),
-                                        ],
-                                        align="center",
-                                        className="mt-1",
-                                    ),
-                                    # Chart hover fields
-                                    dbc.Row(
-                                        dbc.Col(
-                                            dcc.Dropdown(
-                                                id="chart-hover-fields",
-                                                options=[],  # populated dynamically
-                                                value=["well_name", "bench", "role", "operator"],
-                                                multi=True,
-                                                placeholder="Select fields for chart hover...",
-                                                style={"fontSize": "0.75rem"},
-                                            ),
+                    dbc.Card([
+                        dbc.CardHeader([
+                            dbc.Tabs([
+                                dbc.Tab(label="Neighborhood", tab_id="subtab-neighborhood"),
+                                dbc.Tab(label="Statistics", tab_id="subtab-statistics"),
+                            ], id="charts-subtabs", active_tab="subtab-neighborhood",
+                               className="card-header-tabs"),
+                        ]),
+
+                        # ── Sub-tab: Neighborhood ─────────────────────────
+                        html.Div(id="subtab-neighborhood-content", children=[
+                            # GB controls header
+                            dbc.CardHeader([
+                                dbc.Row([
+                                    dbc.Col(html.Strong("Gun Barrel"), width="auto"),
+                                    dbc.Col(
+                                        dbc.RadioItems(
+                                            id="gb-xaxis-mode",
+                                            options=[
+                                                {"label": "Centered",       "value": "sectionDist"},
+                                                {"label": "From reference", "value": "cum_dist"},
+                                            ],
+                                            value="sectionDist",
+                                            inline=True,
+                                            className="small",
                                         ),
-                                        className="mt-1",
+                                        width="auto",
                                     ),
-                                ]
-                            ),
-                            dbc.CardBody(
-                                [
-                                    # Gun Barrel (standalone)
-                                    dbc.Button("⛶", id="btn-expand-gb",
-                                               color="link", size="sm",
-                                               className="float-end p-0",
-                                               title="Fullscreen"),
-                                    dcc.Graph(
-                                        id="gun-barrel-chart",
-                                        style={"height": "40vh"},
-                                        figure=empty_figure("Click a well on the map."),
+                                ], align="center"),
+                                dbc.Row([
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="gb-color-by",
+                                            options=[
+                                                {"label": "Bench",    "value": "bench"},
+                                                {"label": "Role",     "value": "role"},
+                                                {"label": "Operator", "value": "operator"},
+                                                {"label": "Year",     "value": "spud_year"},
+                                            ],
+                                            value="bench",
+                                            size="sm",
+                                        ),
+                                        width=3,
                                     ),
-                                    html.Hr(className="my-2"),
+                                    dbc.Col(
+                                        dbc.Checklist(
+                                            id="gb-toggle-lines",
+                                            options=[{"label": "Lines", "value": "lines"}],
+                                            value=["lines"],
+                                            inline=True,
+                                            input_class_name="me-1",
+                                            label_class_name="small me-3",
+                                        ),
+                                        width="auto",
+                                    ),
+                                    dbc.Col(
+                                        dbc.Checklist(
+                                            id="gb-toggle-labels",
+                                            options=[{"label": "Labels", "value": "labels"}],
+                                            value=["labels"],
+                                            inline=True,
+                                            input_class_name="me-1",
+                                            label_class_name="small me-3",
+                                        ),
+                                        width="auto",
+                                    ),
+                                    dbc.Col([
+                                        dbc.Label("Dot", className="small mb-0"),
+                                        dcc.Slider(
+                                            id="gb-marker-size", min=4, max=24, step=2,
+                                            value=12,
+                                            marks={4: "4", 12: "12", 24: "24"},
+                                        ),
+                                    ], md=2),
+                                    dbc.Col([
+                                        dbc.Label("Line", className="small mb-0"),
+                                        dcc.Slider(
+                                            id="gb-line-width", min=1, max=6, step=0.5,
+                                            value=1.5,
+                                            marks={1: "1", 3: "3", 6: "6"},
+                                        ),
+                                    ], md=2),
+                                    dbc.Col([
+                                        dbc.Label("Label", className="small mb-0"),
+                                        dcc.Slider(
+                                            id="gb-label-size", min=6, max=16, step=1,
+                                            value=9,
+                                            marks={6: "6", 10: "10", 16: "16"},
+                                        ),
+                                    ], md=2),
+                                ], align="center", className="mt-1"),
+                                dbc.Row(
+                                    dbc.Col(
+                                        dcc.Dropdown(
+                                            id="chart-hover-fields",
+                                            options=[],
+                                            value=["well_name", "bench", "role", "operator"],
+                                            multi=True,
+                                            placeholder="Select fields for chart hover...",
+                                            style={"fontSize": "0.75rem"},
+                                        ),
+                                    ),
+                                    className="mt-1",
+                                ),
+                            ]),
+                            dbc.CardBody([
+                                # Gun Barrel
+                                dbc.Button("⛶", id="btn-expand-gb",
+                                           color="link", size="sm",
+                                           className="float-end p-0",
+                                           title="Fullscreen"),
+                                dcc.Graph(
+                                    id="gun-barrel-chart",
+                                    style={"height": "40vh"},
+                                    figure=empty_figure("Click a well on the map."),
+                                ),
+                                html.Hr(className="my-2"),
 
-                                    # Cumulative Production
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(html.Strong("Cumulative Production", className="small"), width="auto"),
-                                            dbc.Col(
-                                                dbc.RadioItems(
-                                                    id="cum-prod-product",
-                                                    options=[
-                                                        {"label": "Oil",   "value": "oil"},
-                                                        {"label": "Gas",   "value": "gas"},
-                                                        {"label": "Water", "value": "water"},
-                                                    ],
-                                                    value="oil",
-                                                    inline=True,
-                                                    className="small",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.Button("⛶", id="btn-expand-cum",
-                                                           color="link", size="sm",
-                                                           className="p-0", title="Fullscreen"),
-                                                width="auto",
-                                            ),
-                                        ],
-                                        align="center",
-                                        className="mb-1",
+                                # Cumulative Production
+                                dbc.Row([
+                                    dbc.Col(html.Strong("Cumulative Production", className="small"), width="auto"),
+                                    dbc.Col(
+                                        dbc.RadioItems(
+                                            id="cum-prod-product",
+                                            options=[
+                                                {"label": "Oil",   "value": "oil"},
+                                                {"label": "Gas",   "value": "gas"},
+                                                {"label": "Water", "value": "water"},
+                                            ],
+                                            value="oil",
+                                            inline=True,
+                                            className="small",
+                                        ),
+                                        width="auto",
                                     ),
-                                    dcc.Graph(
-                                        id="cum-oil-chart",
-                                        style={"height": "28vh"},
-                                        figure=empty_figure("Click a well on the map."),
+                                    dbc.Col(
+                                        dbc.Button("⛶", id="btn-expand-cum",
+                                                   color="link", size="sm",
+                                                   className="p-0", title="Fullscreen"),
+                                        width="auto",
                                     ),
-                                    html.Hr(className="my-2"),
+                                ], align="center", className="mb-1"),
+                                dcc.Graph(
+                                    id="cum-oil-chart",
+                                    style={"height": "28vh"},
+                                    figure=empty_figure("Click a well on the map."),
+                                ),
+                                html.Hr(className="my-2"),
 
-                                    # Daily Production
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(html.Strong("Daily Production", className="small"), width="auto"),
-                                            dbc.Col(
-                                                dbc.RadioItems(
-                                                    id="daily-prod-product",
-                                                    options=[
-                                                        {"label": "Oil",   "value": "oil"},
-                                                        {"label": "Gas",   "value": "gas"},
-                                                        {"label": "Water", "value": "water"},
-                                                    ],
-                                                    value="oil",
-                                                    inline=True,
-                                                    className="small",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.Button("⛶", id="btn-expand-daily",
-                                                           color="link", size="sm",
-                                                           className="p-0", title="Fullscreen"),
-                                                width="auto",
-                                            ),
-                                        ],
-                                        align="center",
-                                        className="mb-1",
+                                # Daily Production
+                                dbc.Row([
+                                    dbc.Col(html.Strong("Daily Production", className="small"), width="auto"),
+                                    dbc.Col(
+                                        dbc.RadioItems(
+                                            id="daily-prod-product",
+                                            options=[
+                                                {"label": "Oil",   "value": "oil"},
+                                                {"label": "Gas",   "value": "gas"},
+                                                {"label": "Water", "value": "water"},
+                                            ],
+                                            value="oil",
+                                            inline=True,
+                                            className="small",
+                                        ),
+                                        width="auto",
                                     ),
-                                    dcc.Graph(
-                                        id="daily-oil-chart",
-                                        style={"height": "28vh"},
-                                        figure=empty_figure("Click a well on the map."),
+                                    dbc.Col(
+                                        dbc.Button("⛶", id="btn-expand-daily",
+                                                   color="link", size="sm",
+                                                   className="p-0", title="Fullscreen"),
+                                        width="auto",
                                     ),
-                                ],
-                                style={"maxHeight": "90vh", "overflowY": "auto"},
-                            ),
-                        ]
-                    ),
+                                ], align="center", className="mb-1"),
+                                dcc.Graph(
+                                    id="daily-oil-chart",
+                                    style={"height": "28vh"},
+                                    figure=empty_figure("Click a well on the map."),
+                                ),
+                            ], style={"maxHeight": "90vh", "overflowY": "auto"}),
+                        ]),
+
+                        # ── Sub-tab: Statistics ───────────────────────────
+                        html.Div(id="subtab-statistics-content", style={"display": "none"}, children=[
+                            dbc.CardBody([
+                                # Production by Role (box plot)
+                                dbc.Row([
+                                    dbc.Col(html.Strong("Production by Role", className="small"), width="auto"),
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="role-prod-metric",
+                                            options=[
+                                                {"label": "Cum Oil 180d/ft",   "value": "cum_oil_180d_per_ft"},
+                                                {"label": "Cum Oil 365d/ft",   "value": "cum_oil_365d_per_ft"},
+                                                {"label": "Cum Gas 180d/ft",   "value": "cum_gas_180d_per_ft"},
+                                                {"label": "Cum Gas 365d/ft",   "value": "cum_gas_365d_per_ft"},
+                                                {"label": "Cum Water 180d/ft", "value": "cum_water_180d_per_ft"},
+                                                {"label": "Cum Water 365d/ft", "value": "cum_water_365d_per_ft"},
+                                            ],
+                                            value="cum_oil_180d_per_ft",
+                                            size="sm",
+                                        ),
+                                        width=4,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Checklist(
+                                            id="role-prod-facet-bench",
+                                            options=[{"label": "Facet by Bench", "value": "facet"}],
+                                            value=["facet"],
+                                            inline=True,
+                                            input_class_name="me-1",
+                                            label_class_name="small me-3",
+                                        ),
+                                        width="auto",
+                                    ),
+                                    dbc.Col(
+                                        dbc.Button("⛶", id="btn-expand-role-prod",
+                                                   color="link", size="sm",
+                                                   className="p-0", title="Fullscreen"),
+                                        width="auto",
+                                    ),
+                                ], align="center", className="mb-1"),
+                                dcc.Graph(
+                                    id="role-prod-chart",
+                                    style={"height": "75vh"},
+                                    figure=empty_figure("Run pipeline with role assignment to see production by role."),
+                                ),
+                            ]),
+                        ]),
+                    ]),
                     ]),  # end Charts tab
 
                     # ── Analysis Tab ─────────────────────────────────────
@@ -3127,6 +3167,23 @@ def apply_filters(search, benches, operators, rsv_cats, statuses,
 
 
 # ---------------------------------------------------------------------------
+# Charts sub-tab toggle (Neighborhood / Statistics)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("subtab-neighborhood-content", "style"),
+    Output("subtab-statistics-content", "style"),
+    Input("charts-subtabs", "active_tab"),
+)
+def toggle_charts_subtab(active):
+    show = {"display": "block"}
+    hide = {"display": "none"}
+    if active == "subtab-statistics":
+        return hide, show
+    return show, hide
+
+
+# ---------------------------------------------------------------------------
 # Fullscreen expand modals for Plotly charts
 # ---------------------------------------------------------------------------
 
@@ -3167,3 +3224,114 @@ def expand_daily(n_clicks, fig):
     if not fig:
         return False, empty_figure("No production data.")
     return True, fig
+
+
+@callback(
+    Output("modal-role-prod", "is_open"),
+    Output("modal-role-prod-chart", "figure"),
+    Input("btn-expand-role-prod", "n_clicks"),
+    State("role-prod-chart", "figure"),
+    prevent_initial_call=True,
+)
+def expand_role_prod(n_clicks, fig):
+    if not fig:
+        return False, empty_figure("No data.")
+    return True, fig
+
+
+# ---------------------------------------------------------------------------
+# Production by Role — box plot
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("role-prod-chart", "figure"),
+    Input("pipeline-result-store", "data"),
+    Input("role-prod-metric", "value"),
+    Input("role-prod-facet-bench", "value"),
+    prevent_initial_call=True,
+)
+def update_role_production(pipeline_result, metric, facet_bench):
+    """Box plot of a production metric grouped by well role, optionally faceted by bench."""
+    import logging
+    _log = logging.getLogger("dashboard")
+    try:
+        if not pipeline_result:
+            return empty_figure("Run pipeline first.")
+
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        header_df = data.get("header_df")
+
+        if header_df is None or header_df.empty:
+            return empty_figure("No header data.")
+
+        if "role" not in header_df.columns:
+            return empty_figure("No 'role' column — run pipeline with role assignment enabled.")
+
+        metric = metric or "cum_oil_180d_per_ft"
+        if metric not in header_df.columns:
+            return empty_figure(f"Column '{metric}' not found in header data.")
+
+        # Filter to wells that have both role and the metric
+        plot_df = header_df[["role", "bench", metric]].dropna(subset=[metric]).copy()
+        plot_df = plot_df[plot_df["role"] != "no_eligible_neighbor"]
+
+        if plot_df.empty:
+            return empty_figure("No wells with role and production data.")
+
+        # Use role color map
+        role_colors = {r: _ROLE_COLORS.get(r, "#607D8B") for r in plot_df["role"].unique()}
+
+        # Desired role order: parent first, then child, infill, etc.
+        role_order = ["parent", "child", "infill", "co-developed"]
+        existing_roles = [r for r in role_order if r in plot_df["role"].unique()]
+        extra_roles = sorted(set(plot_df["role"].unique()) - set(role_order))
+        existing_roles.extend(extra_roles)
+
+        # Pretty metric label
+        label = metric.replace("_", " ").replace("per ft", "/ft").title()
+
+        facet = "facet" in (facet_bench or [])
+
+        if facet and "bench" in plot_df.columns and plot_df["bench"].nunique() > 1:
+            fig = go.Figure()
+            benches = sorted(plot_df["bench"].dropna().unique())
+            for role in existing_roles:
+                role_data = plot_df[plot_df["role"] == role]
+                fig.add_trace(go.Box(
+                    x=role_data["bench"],
+                    y=role_data[metric],
+                    name=role,
+                    marker_color=role_colors.get(role, "#607D8B"),
+                    boxmean="sd",
+                ))
+            fig.update_layout(
+                boxmode="group",
+                xaxis_title="Bench",
+                yaxis_title=label,
+            )
+        else:
+            fig = go.Figure()
+            for role in existing_roles:
+                role_data = plot_df[plot_df["role"] == role]
+                fig.add_trace(go.Box(
+                    y=role_data[metric],
+                    name=role,
+                    marker_color=role_colors.get(role, "#607D8B"),
+                    boxmean="sd",
+                ))
+            fig.update_layout(
+                xaxis_title="Role",
+                yaxis_title=label,
+            )
+
+        fig.update_layout(
+            template="plotly_white",
+            margin=dict(t=30, b=50, l=60, r=20),
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="left", x=0, font=dict(size=10)),
+            yaxis=dict(tickformat=","),
+        )
+        return fig
+
+    except Exception as exc:
+        _log.exception("Role production chart error: %s", exc)
+        return empty_figure(f"Error: {exc}")

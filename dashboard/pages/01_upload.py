@@ -95,7 +95,7 @@ layout = dbc.Container(
                                 [
                                     dbc.Col(_file_upload_card("header", "Well Header File", ".csv,.xlsx"), md=4),
                                     dbc.Col(_file_upload_card("directional", "Directional Survey File", ".csv,.xlsx"), md=4),
-                                    dbc.Col(_file_upload_card("production", "Production File (optional)", ".csv,.xlsx"), md=4),
+                                    dbc.Col(_file_upload_card("production", "Production File", ".csv,.xlsx"), md=4),
                                 ],
                                 className="mt-3",
                             ),
@@ -164,7 +164,7 @@ layout = dbc.Container(
                                             ),
                                             _sql_editor_card(
                                                 "production-query",
-                                                "Production Query (optional)",
+                                                "Production Query",
                                                 "SELECT uwi, prod_date, oil, gas, water\nFROM production\nWHERE ...",
                                             ),
                                         ],
@@ -367,7 +367,7 @@ def on_production_upload(contents, filename, store):
 def toggle_next_button(store, active_tab):
     if active_tab == "tab-file":
         store = store or {}
-        ready = "header_path" in store and "directional_path" in store
+        ready = all(k in store for k in ("header_path", "directional_path", "production_path"))
     else:
         # DB mode — enable once queries are entered (validated on next page)
         ready = True

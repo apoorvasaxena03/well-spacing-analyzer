@@ -65,6 +65,85 @@ def _build_color_map(values: list[str], prop: str = "") -> dict[str, str]:
         return {v: _ROLE_COLORS.get(v, "#607D8B") for v in unique}
     return {v: _PALETTE[i % len(_PALETTE)] for i, v in enumerate(unique)}
 
+# --- Statistics charts: grouping + selection helpers ---------------------
+_GROUP_BY_OPTIONS = [
+    {"label": "Group: None",        "value": "none"},
+    {"label": "Group: Bench",       "value": "bench"},
+    {"label": "Group: Lease",       "value": "lease_name"},
+    {"label": "Group: Operator",    "value": "operator"},
+    {"label": "Group: Vintage",     "value": "spud_year"},
+    {"label": "Group: Spacing bin", "value": "spacing_bin"},
+]
+_GROUP_BY_TITLES = {
+    "bench": "Bench", "lease_name": "Lease", "operator": "Operator",
+    "spud_year": "Vintage", "spacing_bin": "Spacing bin (ft)",
+}
+_SPACING_BIN_EDGES = [0, 400, 700, 1000, 1500, float("inf")]
+_SPACING_BIN_LABELS = ["<400", "400–700", "700–1000", "1000–1500", "1500+"]
+
+
+def _group_labels(df, group_by, *, top_n=8):
+    """Return ``(labels, ordered_categories)`` for a grouping dimension.
+
+    ``labels`` is a Series aligned to ``df.index``; ``ordered_categories`` is the
+    display order. Derives ``spud_year`` (vintage) from ``spud_date`` and
+    ``spacing_bin`` from ``parent_dist_ft``. High-cardinality text groupings
+    (bench/lease/operator) are capped to the ``top_n`` most-populous + "Other".
+    Returns ``(None, None)`` when the grouping is unavailable.
+    """
+    if group_by in (None, "none"):
+        return None, None
+    if group_by == "spacing_bin":
+        if "parent_dist_ft" not in df.columns:
+            return None, None
+        s = pd.cut(df["parent_dist_ft"], bins=_SPACING_BIN_EDGES,
+                   labels=_SPACING_BIN_LABELS, right=False).astype("object")
+        s = s.where(s.notna(), "Unknown")
+        cats = [lab for lab in _SPACING_BIN_LABELS if (s == lab).any()]
+        if (s == "Unknown").any():
+            cats.append("Unknown")
+        return s, cats
+    if group_by == "spud_year":
+        if "spud_date" not in df.columns:
+            return None, None
+        s = pd.to_datetime(df["spud_date"], errors="coerce").dt.year.astype("Int64").astype(str)
+        s = s.where(s != "<NA>", "Unknown")
+        cats = sorted(v for v in s.unique() if v != "Unknown")
+        if (s == "Unknown").any():
+            cats.append("Unknown")
+        return s, cats
+    if group_by not in df.columns:
+        return None, None
+    s = df[group_by].astype(str).replace({"nan": "Unknown", "": "Unknown"})
+    counts = s.value_counts()
+    if len(counts) > top_n:
+        keep = list(counts.head(top_n).index)
+        s = s.where(s.isin(keep), "Other")
+        cats = keep + ["Other"]
+    else:
+        cats = list(counts.index)
+    return s, cats
+
+
+def _filter_to_selected(df, selected, apply_it, *, min_wells=3):
+    """Filter ``df`` to the map selection's UWIs when ``apply_it`` is set.
+
+    Returns ``(filtered_df, message_or_None)``. The message is set (and df left
+    unfiltered) when the selection is too small to be meaningful.
+    """
+    if not apply_it:
+        return df, None
+    uwis = (selected or {}).get("neighborhood_uwis") or []
+    if len(uwis) < min_wells:
+        return df, f"Select ≥ {min_wells} wells on the map, or untick 'Selected only'."
+    if "uwi" not in df.columns:
+        return df, None
+    out = df[df["uwi"].astype(str).isin([str(u) for u in uwis])]
+    if out.empty:
+        return out, "No selected wells have data for this chart."
+    return out, None
+
+
 _EMPTY_GEOJSON = {"type": "FeatureCollection", "features": []}
 
 
@@ -807,13 +886,22 @@ layout = dbc.Container(
                                         width=4,
                                     ),
                                     dbc.Col(
+                                        dbc.Select(
+                                            id="role-prod-groupby",
+                                            options=_GROUP_BY_OPTIONS,
+                                            value="bench",
+                                            size="sm",
+                                        ),
+                                        width=3,
+                                    ),
+                                    dbc.Col(
                                         dbc.Checklist(
-                                            id="role-prod-facet-bench",
-                                            options=[{"label": "Facet by Bench", "value": "facet"}],
-                                            value=["facet"],
+                                            id="role-prod-selected",
+                                            options=[{"label": "Selected only", "value": "selected"}],
+                                            value=[],
                                             inline=True,
                                             input_class_name="me-1",
-                                            label_class_name="small me-3",
+                                            label_class_name="small me-2",
                                         ),
                                         width="auto",
                                     ),
@@ -879,12 +967,21 @@ layout = dbc.Container(
                                         width=2,
                                     ),
                                     dbc.Col(
+                                        dbc.Select(
+                                            id="spacing-prod-groupby",
+                                            options=_GROUP_BY_OPTIONS,
+                                            value="none",
+                                            size="sm",
+                                        ),
+                                        width=2,
+                                    ),
+                                    dbc.Col(
                                         dbc.Checklist(
                                             id="spacing-prod-opts",
                                             options=[
                                                 {"label": "Trend", "value": "trend"},
                                                 {"label": "Bins",  "value": "bins"},
-                                                {"label": "Facet", "value": "facet"},
+                                                {"label": "Sel.",  "value": "selected"},
                                             ],
                                             value=["trend"],
                                             inline=True,
@@ -3333,11 +3430,15 @@ def expand_role_prod(n_clicks, fig):
     Output("role-prod-chart", "figure"),
     Input("pipeline-result-store", "data"),
     Input("role-prod-metric", "value"),
-    Input("role-prod-facet-bench", "value"),
+    Input("role-prod-groupby", "value"),
+    Input("role-prod-selected", "value"),
+    Input("selected-wells-store", "data"),
     prevent_initial_call=True,
 )
-def update_role_production(pipeline_result, metric, facet_bench):
-    """Box plot of a production metric grouped by well role, optionally faceted by bench."""
+def update_role_production(pipeline_result, metric, group_by, selected_only, selected):
+    """Box plot of a production metric by well role, grouped on the X-axis by the
+    chosen dimension (bench/lease/operator/vintage/spacing bin), optionally
+    restricted to the wells selected on the map."""
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -3346,69 +3447,59 @@ def update_role_production(pipeline_result, metric, facet_bench):
 
         data = load_cached_pipeline(pipeline_result["cache_path"])
         header_df = data.get("header_df")
-
         if header_df is None or header_df.empty:
             return empty_figure("No header data.")
-
         if "role" not in header_df.columns:
             return empty_figure("No 'role' column — run pipeline with role assignment enabled.")
 
         metric = metric or "cum_oil_180d_per_ft"
         if metric not in header_df.columns:
             return empty_figure(f"Column '{metric}' not found in header data.")
+        group_by = group_by or "none"
 
-        # Filter to wells that have both role and the metric
-        plot_df = header_df[["role", "bench", metric]].dropna(subset=[metric]).copy()
-        plot_df = plot_df[plot_df["role"] != "no_eligible_neighbor"]
+        df = header_df.copy()
+        df, sel_msg = _filter_to_selected(df, selected, "selected" in (selected_only or []))
+        if sel_msg:
+            return empty_figure(sel_msg)
 
-        if plot_df.empty:
+        # Filter to wells that have role + the metric (drop isolated)
+        df = df[df["role"] != "no_eligible_neighbor"].dropna(subset=[metric])
+        if df.empty:
             return empty_figure("No wells with role and production data.")
 
-        # Use role color map
-        role_colors = {r: _ROLE_COLORS.get(r, "#607D8B") for r in plot_df["role"].unique()}
+        glabels, gcats = _group_labels(df, group_by, top_n=12)
+        if group_by not in (None, "none") and glabels is None:
+            return empty_figure(
+                f"Can't group by {_GROUP_BY_TITLES.get(group_by, group_by)} — "
+                "not available in this session."
+            )
+        if glabels is not None:
+            df = df.assign(_group=glabels)
 
-        # Desired role order: parent first, then child, infill, etc.
-        role_order = ["parent", "child", "infill", "co-developed"]
-        existing_roles = [r for r in role_order if r in plot_df["role"].unique()]
-        extra_roles = sorted(set(plot_df["role"].unique()) - set(role_order))
-        existing_roles.extend(extra_roles)
-
-        # Pretty metric label
+        role_colors = {r: _ROLE_COLORS.get(r, "#607D8B") for r in df["role"].unique()}
+        role_order = ["parent", "child", "infill_candidate"]
+        existing_roles = [r for r in role_order if r in df["role"].unique()]
+        existing_roles += sorted(set(df["role"].unique()) - set(role_order))
         label = metric.replace("_", " ").replace("per ft", "/ft").title()
 
-        facet = "facet" in (facet_bench or [])
-
-        if facet and "bench" in plot_df.columns and plot_df["bench"].nunique() > 1:
-            fig = go.Figure()
-            benches = sorted(plot_df["bench"].dropna().unique())
+        fig = go.Figure()
+        if glabels is not None and df["_group"].nunique() >= 1:
             for role in existing_roles:
-                role_data = plot_df[plot_df["role"] == role]
-                fig.add_trace(go.Box(
-                    x=role_data["bench"],
-                    y=role_data[metric],
-                    name=role,
-                    marker_color=role_colors.get(role, "#607D8B"),
-                    boxmean="sd",
-                ))
+                rd = df[df["role"] == role]
+                fig.add_trace(go.Box(x=rd["_group"], y=rd[metric], name=role,
+                                     marker_color=role_colors.get(role, "#607D8B"), boxmean="sd"))
             fig.update_layout(
                 boxmode="group",
-                xaxis_title="Bench",
+                xaxis_title=_GROUP_BY_TITLES.get(group_by, "Group"),
                 yaxis_title=label,
+                xaxis=dict(categoryorder="array", categoryarray=gcats),
             )
         else:
-            fig = go.Figure()
             for role in existing_roles:
-                role_data = plot_df[plot_df["role"] == role]
-                fig.add_trace(go.Box(
-                    y=role_data[metric],
-                    name=role,
-                    marker_color=role_colors.get(role, "#607D8B"),
-                    boxmean="sd",
-                ))
-            fig.update_layout(
-                xaxis_title="Role",
-                yaxis_title=label,
-            )
+                rd = df[df["role"] == role]
+                fig.add_trace(go.Box(y=rd[metric], name=role,
+                                     marker_color=role_colors.get(role, "#607D8B"), boxmean="sd"))
+            fig.update_layout(xaxis_title="Role", yaxis_title=label)
 
         fig.update_layout(
             template="plotly_white",
@@ -3489,12 +3580,15 @@ def _add_spacing_scatter(fig, df, xcol, ycol, colorby, color_map, *,
     Input("spacing-prod-metric", "value"),
     Input("spacing-prod-xaxis", "value"),
     Input("spacing-prod-colorby", "value"),
+    Input("spacing-prod-groupby", "value"),
     Input("spacing-prod-opts", "value"),
+    Input("selected-wells-store", "data"),
     prevent_initial_call=True,
 )
-def update_spacing_production(pipeline_result, metric, xcol, colorby, opts):
+def update_spacing_production(pipeline_result, metric, xcol, colorby, group_by, opts, selected):
     """Scatter of distance-to-parent (or days-since-parent) vs a per-ft production
-    metric for child/infill wells — quantifies parent/child interference."""
+    metric for child/infill wells — quantifies parent/child interference.
+    Optionally faceted by a grouping dimension and/or restricted to the map selection."""
     import logging
     _log = logging.getLogger("dashboard")
     try:
@@ -3510,8 +3604,9 @@ def update_spacing_production(pipeline_result, metric, xcol, colorby, opts):
         metric = metric or "cum_oil_365d_per_ft"
         xcol = xcol or "parent_dist_ft"
         colorby = colorby or "bench"
+        group_by = group_by or "none"
         opts = opts or []
-        show_trend, show_bins, show_facet = "trend" in opts, "bins" in opts, "facet" in opts
+        show_trend, show_bins, selected_on = "trend" in opts, "bins" in opts, "selected" in opts
 
         # Parent-distance fields (parent_dist_ft, etc.) were added to header_df
         # after early releases. 'role' is present (checked above), so a missing
@@ -3535,29 +3630,39 @@ def update_spacing_production(pipeline_result, metric, xcol, colorby, opts):
         if colorby not in df.columns:
             return empty_figure(f"Color column '{colorby}' not found.")
 
+        df, sel_msg = _filter_to_selected(df, selected, selected_on)
+        if sel_msg:
+            return empty_figure(sel_msg)
+
         # Only wells that have a parent (child / infill_candidate); parents & isolated have NaN x
-        df = df[df["role"].isin(["child", "infill_candidate"])]
-        keep = [c for c in {xcol, metric, colorby, "bench", "well_name", "role"} if c in df.columns]
-        df = df[keep].dropna(subset=[xcol, metric])
+        df = df[df["role"].isin(["child", "infill_candidate"])].dropna(subset=[xcol, metric])
         if df.empty:
             return empty_figure("No child/infill wells with parent distance + production.")
+
+        glabels, gcats = _group_labels(df, group_by, top_n=6)
+        if group_by not in (None, "none") and glabels is None:
+            return empty_figure(
+                f"Can't group by {_GROUP_BY_TITLES.get(group_by, group_by)} — "
+                "not available in this session."
+            )
+        if glabels is not None:
+            df = df.assign(_group=glabels)
 
         color_map = _build_color_map(df[colorby].dropna().astype(str).tolist(), prop=colorby)
         xlabel = _SPACING_X_LABELS.get(xcol, xcol)
         ylabel = metric.replace("_", " ").replace("per ft", "/ft").title()
 
-        if show_facet and "bench" in df.columns and df["bench"].nunique() > 1:
-            benches = sorted(df["bench"].dropna().astype(str).unique())
-            fig = make_subplots(rows=1, cols=len(benches), shared_yaxes=True,
-                                subplot_titles=benches, horizontal_spacing=0.03)
-            for i, b in enumerate(benches, start=1):
-                bdf = df[df["bench"].astype(str) == b]
-                fit = _add_spacing_scatter(fig, bdf, xcol, metric, colorby, color_map,
+        if glabels is not None and df["_group"].nunique() > 1:
+            groups = [g for g in gcats if (df["_group"] == g).any()]
+            fig = make_subplots(rows=1, cols=len(groups), shared_yaxes=True,
+                                subplot_titles=groups, horizontal_spacing=0.03)
+            for i, g in enumerate(groups, start=1):
+                gdf = df[df["_group"] == g]
+                fit = _add_spacing_scatter(fig, gdf, xcol, metric, colorby, color_map,
                                            row=1, col=i, show_legend=(i == 1),
                                            show_trend=show_trend, show_bins=show_bins)
                 if fit is not None:
-                    _s, _ic, r2, n = fit
-                    fig.layout.annotations[i - 1].text = f"{b}  (R²={r2:.2f}, n={n})"
+                    fig.layout.annotations[i - 1].text = f"{g}  (R²={fit[2]:.2f}, n={fit[3]})"
                 fig.update_xaxes(title_text=xlabel if i == 1 else "", row=1, col=i)
             fig.update_yaxes(title_text=ylabel, row=1, col=1)
         else:

@@ -532,8 +532,14 @@ def run_spacing_calculation(
     logger.info("Role assignment done in %.1fs — %d wells assigned",
                 time.perf_counter() - t_roles, len(df_well_roles))
 
-    # Merge role into header_df so it's available as a GeoJSON property on the map
-    role_cols = ["uwi", "role"]
+    # Merge role + parent-distance fields into header_df: 'role' is a map GeoJSON
+    # property; the parent_* / days_since_parent fields feed the Explore
+    # Spacing-vs-Production scatter. Only merge columns the assigner produced.
+    role_cols = [
+        c for c in ["uwi", "role", "parent_uwi", "parent_dist_ft",
+                    "parent_vertical_ft", "days_since_parent", "child_gen"]
+        if c in df_well_roles.columns
+    ]
     header_df = header_df.merge(
         df_well_roles[role_cols], on="uwi", how="left",
     )

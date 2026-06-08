@@ -1,0 +1,123 @@
+"""
+Well Spacing Analyzer — Dash Application
+Entry point: python dashboard/app.py
+
+6-step guided workflow:
+  1. Upload       — drag-drop files or write SQL queries
+  2. Column Map   — map source columns to canonical names
+  3. Configure    — UTM zone, distance params, bench filters
+  4. Calculate    — run spacing engine (background job)
+  5. Explore      — map, gun barrel, production charts
+  6. Export       — download results as CSV / Excel
+"""
+
+import sys
+from pathlib import Path
+
+# Ensure the project root is on sys.path so that `from dashboard.xxx import`
+# works when running as `python dashboard/app.py`.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+import uuid
+
+from diskcache import Cache as DiskCache
+import dash
+import dash_bootstrap_components as dbc
+from flask_caching import Cache
+
+# ---------------------------------------------------------------------------
+# Background job cache — must be created BEFORE dash.Dash()
+# ---------------------------------------------------------------------------
+# Use a unique cache directory per run so stale background jobs from previous
+# sessions can NEVER replay.  The run_dashboard.py launcher cleans up old
+# cache dirs on startup via _clear_cache().
+_cache_id = uuid.uuid4().hex[:8]
+CACHE_DIR = f"./dashboard/.cache/{_cache_id}"
+disk_cache = DiskCache(CACHE_DIR)
+background_callback_manager = dash.DiskcacheManager(disk_cache)
+
+# ---------------------------------------------------------------------------
+# App initialisation
+# ---------------------------------------------------------------------------
+app = dash.Dash(
+    __name__,
+    use_pages=True,
+    external_stylesheets=[dbc.themes.FLATLY, dbc.icons.BOOTSTRAP],
+    suppress_callback_exceptions=True,
+    title="Well Spacing Analyzer",
+    background_callback_manager=background_callback_manager,
+)
+server = app.server  # expose Flask server for caching
+
+# Flask-caching for memoising expensive reads
+cache = Cache(server, config={"CACHE_TYPE": "SimpleCache", "CACHE_DEFAULT_TIMEOUT": 3600})
+
+# ---------------------------------------------------------------------------
+# Shared dcc.Store components — passed between pages
+# ---------------------------------------------------------------------------
+stores = dbc.Container(
+    [
+        # storage_type="session" persists data in browser sessionStorage, so a
+        # full-page reload (triggered by dcc.Location with refresh=True) does NOT
+        # wipe these stores.  Data is cleared automatically when the tab is closed.
+        dash.dcc.Store(id="upload-store",          storage_type="session"),
+        dash.dcc.Store(id="column-map-store",      storage_type="session"),
+        dash.dcc.Store(id="config-store",          storage_type="session"),
+        dash.dcc.Store(id="pipeline-result-store", storage_type="session"),
+        dash.dcc.Store(id="selected-wells-store",  storage_type="session"),
+    ],
+    fluid=True,
+)
+
+# ---------------------------------------------------------------------------
+# Navigation bar
+# ---------------------------------------------------------------------------
+STEPS = [
+    ("1 Upload",      "/"),
+    ("2 Map Columns", "/column-map"),
+    ("3 Configure",   "/configure"),
+    ("4 Calculate",   "/calculate"),
+    ("5 Explore",     "/explore"),
+    ("6 Export",      "/export"),
+]
+
+navbar = dbc.Navbar(
+    dbc.Container(
+        [
+            dbc.NavbarBrand("Well Spacing Analyzer", href="/", className="fw-bold"),
+            dbc.Nav(
+                [
+                    dbc.NavItem(dbc.NavLink(label, href=href, active="exact"))
+                    for label, href in STEPS
+                ],
+                navbar=True,
+                className="ms-3",
+            ),
+        ],
+        fluid=True,
+    ),
+    color="primary",
+    dark=True,
+    sticky="top",
+    className="mb-3",
+)
+
+# ---------------------------------------------------------------------------
+# Root layout
+# ---------------------------------------------------------------------------
+app.layout = dbc.Container(
+    [
+        stores,
+        navbar,
+        dash.page_container,
+    ],
+    fluid=True,
+)
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    app.run(debug=True, port=8050)

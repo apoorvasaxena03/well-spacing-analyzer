@@ -1,0 +1,49 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",                      # show summary for all non-passing tests
+    "--strict-markers",         # fail on unknown markers
+    "--tb=short",               # shorter tracebacks
+    "-q",                       # quiet output by default (use -v to override)
+]
+markers = [
+    "unit: fast, no I/O, no external dependencies",
+    "integration: exercises full pipeline with real DataFrames and temp files",
+    "slow: long-running tests (excluded from CI quick pass with -m 'not slow')",
+    "db: requires a live database connection (always excluded unless DB env vars set)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:dash",
+    "ignore::DeprecationWarning:plotly",
+    "ignore::FutureWarning:pandas",
+    "ignore::UserWarning:pyproj",
+]
+
+[tool.coverage.run]
+source = ["src", "dashboard"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "dashboard/.pipeline_cache/*",
+    "dashboard/.cache/*",
+    "venv/*",
+]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]   # line too long — handled by formatter
+exclude = ["venv", ".venv", "__pycache__", "*.ipynb"]

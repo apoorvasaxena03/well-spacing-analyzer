@@ -1,3 +1,6 @@
+# IDE
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -43,6 +46,9 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.pipeline_cache/
+dashboard/.cache/
+dashboard/.pipeline_cache/
 nosetests.xml
 coverage.xml
 *.cover
@@ -164,3 +170,10 @@ logs/
 
 # Ignore SpacingStats output folder
 SpacingStats/
+
+# Claude Code configuration — track team-shared files, ignore personal/generated ones
+# Track: CLAUDE.md, commands/, agents/, rules/, docs/, hooks/, workflows.md, settings.json
+# Ignore: personal local settings and generated scratch reports
+.claude/settings.local.json
+.claude/scratch/*
+!.claude/scratch/.gitkeep

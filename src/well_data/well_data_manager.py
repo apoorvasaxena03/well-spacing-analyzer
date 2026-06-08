@@ -558,6 +558,21 @@ class WellDataLoader:
             read_kwargs["usecols"] = list(column_map.keys())
             self.logger.debug(f"  Reading only {len(column_map)} specified columns")
 
+        # Force UWI/API columns to be read as string — prevents pandas from
+        # interpreting 14-digit identifiers as int64/float64 (which loses
+        # leading zeros and adds decimal artifacts on str conversion).
+        _UWI_CANONICAL = {"uwi", "uwi12", "uwi10", "api", "api_uwi", "api_uwi_14"}
+        uwi_source_cols = {
+            src for src, canon in column_map.items()
+            if canon.lower() in _UWI_CANONICAL or "uwi" in src.lower() or "api" in src.lower()
+        }
+        if uwi_source_cols:
+            existing_dtype = read_kwargs.get("dtype", {})
+            if isinstance(existing_dtype, dict):
+                for col in uwi_source_cols:
+                    existing_dtype.setdefault(col, str)
+                read_kwargs["dtype"] = existing_dtype
+
         start_time = time.time()
 
         try:
@@ -1590,9 +1605,9 @@ class GeoSurveyProcessor:
             df.loc[mask, lon_col] = lon
 
         elapsed = time.time() - start_time
+        rate = f" ({len(df)/elapsed:.0f} rows/sec)" if elapsed > 0 else ""
         self.logger.info(
-            f"✓ UTM → lat/lon conversion complete: {len(df):,} rows in {elapsed:.3f}s "
-            f"({len(df)/elapsed:.0f} rows/sec)"
+            f"✓ UTM → lat/lon conversion complete: {len(df):,} rows in {elapsed:.3f}s{rate}"
         )
 
         return df
@@ -2004,9 +2019,9 @@ class GeoSurveyProcessor:
         df["z"] = -df["tvd"]
 
         elapsed = time.time() - start_time
+        rate = f" ({len(df)/elapsed:.0f} rows/sec)" if elapsed > 0 else ""
         self.logger.info(
-            f"✓ UTM coordinate computation complete: {len(df):,} rows in {elapsed:.2f}s "
-            f"({len(df)/elapsed:.0f} rows/sec)"
+            f"✓ UTM coordinate computation complete: {len(df):,} rows in {elapsed:.2f}s{rate}"
         )
 
         return df
@@ -2115,7 +2130,7 @@ class GeoSurveyProcessor:
             all_uwis = set(df['uwi'].unique())
             wells_missing_heel = sorted(all_uwis - set(start_idx_map.keys()))
             uwi_lines = "\n".join(
-                ", ".join(wells_missing_heel[i:i + 5])
+                ", ".join(str(u) for u in wells_missing_heel[i:i + 5])
                 for i in range(0, len(wells_missing_heel), 5)
             )
             self.logger.debug(

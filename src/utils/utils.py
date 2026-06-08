@@ -143,14 +143,23 @@ def read_csv_with_mapper(
     if col_map:
         df = df.rename(columns=col_map)
 
-    # Cast dtypes using the *current* column names
+    # Cast dtypes using the *current* column names.
+    # "datetime" is not a valid pandas dtype string — handle it separately
+    # with pd.to_datetime() instead of df.astype().
     if dtype_map:
-        cast_map = {
-            col: dtype for col, dtype in dtype_map.items()
-            if col in df.columns
-        }
+        cast_map = {}
+        date_cols = []
+        for col, dtype in dtype_map.items():
+            if col not in df.columns:
+                continue
+            if dtype in ("datetime", "datetime64", "datetime64[ns]"):
+                date_cols.append(col)
+            else:
+                cast_map[col] = dtype
         if cast_map:
             df = df.astype(cast_map)
+        for col in date_cols:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
 
     return df
 
@@ -216,18 +225,27 @@ def read_excel_with_mapper(
     if col_map:
         df = df.rename(columns=col_map)
 
-    # Cast dtypes using the *current* column names
+    # Cast dtypes using the *current* column names.
+    # "datetime" is not a valid pandas dtype string — handle it separately
+    # with pd.to_datetime() instead of df.astype().
     if dtype_map:
-        cast_map = {
-            col: dtype for col, dtype in dtype_map.items()
-            if col in df.columns
-        }
+        cast_map = {}
+        date_cols = []
+        for col, dtype in dtype_map.items():
+            if col not in df.columns:
+                continue
+            if dtype in ("datetime", "datetime64", "datetime64[ns]"):
+                date_cols.append(col)
+            else:
+                cast_map[col] = dtype
         if cast_map:
             df = df.astype(cast_map)
+        for col in date_cols:
+            df[col] = pd.to_datetime(df[col], errors="coerce")
 
     return df
 
-def drop_duplicates_keep_max_last_prod(
+def drop_uwi_duplicates_keep_max_last_prod(
     header_df,
     uwi_col: str = "uwi",
     last_prod_col: str = "last_prod_date",
@@ -355,6 +373,7 @@ def add_bench_columns_to_spacing(
         reference_column='3D_dist'
     )
     return df_spacing
+
 
 #%% BG_RCAT Computation
 

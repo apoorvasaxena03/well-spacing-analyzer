@@ -132,3 +132,92 @@ After computing all pairwise spacing, neighbors are identified by:
    - `overlap_pct_k ≥ overlap_pct_k_min` (default: 0.30 = 30% overlap)
 3. **Classify as same-bench or near-bench** based on `bench` column in header
 4. **Rank by distance** → same_1 (closest), same_2 (second closest), near_1, near_2
+
+---
+
+## Role Assignment — Parent / Child (OverlappingNeighborhoodRoles)
+
+`DirectionalBenchNeighbors` (above) answers *"who is near me?"*. Role assignment answers
+the next question: *"of my neighbors, who came first — am I a parent, a child, or an
+infill?"*. It is implemented in `src/well_data/well_role_assignment.py` as the
+`OverlappingNeighborhoodRoles` class (V2) and runs after spacing in the pipeline.
+
+### Overlapping neighborhoods (vs. hard clustering)
+
+Each well gets its **own local view** of who is nearby. Neighborhoods *overlap* — well C
+can appear in both A's and E's neighborhoods without transitively merging A and E into one
+cluster. This deliberately avoids the **chaining problem** of density-based clustering
+(DBSCAN, graph partitioning), where a string of wells collapses into a single blob.
+
+### Step 1 — Build the eligible neighborhood
+
+Start from the pairwise spacing table (symmetrized to one row per ordered (i, k) pair).
+Each pair is classified into one of **five relationship types**, each with its own distance
+metric and confidence:
+
+| `rel_type`            | Default | Distance metric              | Confidence |
+|-----------------------|---------|------------------------------|------------|
+| `parallel_same_bench` | ON      | `hz_effective` (crossline)   | high       |
+| `cross_formation`     | ON      | `3D_dist_effective` (gated)  | medium     |
+| `cross_orientation`   | ON      | `hz_effective` (min-nearest) | medium     |
+| `oblique_same_bench`  | ON      | `hz_effective` (min-nearest) | medium     |
+| `oblique_cross_bench` | ON      | `hz_effective` (min-nearest) | low        |
+
+A pair is **eligible** if its `rel_type` is enabled (via `role_pair_types`) **and** its
+distance metric is within that type's threshold (`parallel_eps_ft` 1320, `perp_eps_ft` 1000,
+`oblique_eps_ft` 1100, `cross_bench_eps_ft` 1320 — all ft, configurable).
+
+**Cross-bench gate**: `cross_formation` and `oblique_cross_bench` pairs must additionally
+satisfy `vertical_dist ≤ cross_bench_vertical_gate_ft` (default 200 ft). Same-bench and
+perpendicular/oblique pairs need no separate vertical gate — `hz_effective` is already
+3D-aware. Thresholds and the gate can be overridden per-well via `overrides_df` (same
+pattern as `DirectionalBenchNeighbors`).
+
+### Step 2 — Identify the parent
+
+A neighbor `k` is **older** than well `i` when `comp_date_k < comp_date_i` (completion date).
+Among a well's eligible *older* neighbors, the **parent is the nearest one**
+(`idxmin` of the type's distance metric). Recorded fields: `parent_uwi`, `parent_dist_ft`,
+`parent_vertical_ft`, `parent_pair_type`, `parent_confidence`, `parent_comp_date`,
+`days_since_parent`, and `child_above_parent` (child TVD shallower than parent).
+
+### Step 3 — Assign the role
+
+Per well, using counts over the eligible neighborhood:
+
+```text
+if n_eligible_neighbors == 0:
+    role = parent  (if treat_no_neighbor_as_parent)  else  no_eligible_neighbor
+elif n_older_eligible == 0:           role = parent            # oldest in its own neighborhood
+elif n_older_eligible >= infill_min_older (default 2): role = infill_candidate
+else:                                 role = child
+```
+
+| Role | Meaning |
+|------|---------|
+| `parent` | No older eligible neighbor — predates everyone nearby |
+| `child` | Has exactly one older eligible neighbor |
+| `infill_candidate` | Has ≥ `infill_min_older` older eligible neighbors (drilled into developed rock) |
+| `no_eligible_neighbor` | Isolated — no eligible neighbors at all |
+
+Wells with no eligible neighbors are also flagged `isolated=True` so they can be filtered
+even when `treat_no_neighbor_as_parent` relabels them as `parent`.
+
+### Step 4 — Child generation sub-label
+
+For `child` wells, `child_gen` splits on recency of the parent:
+`gen1_child` if `days_since_parent ≤ child_window_months × 30.44` (default window 18 months),
+else `late_child`.
+
+### Output (one row per well)
+
+- **Identity / role**: `uwi`, `role`, `child_gen`, `isolated`
+- **Parent info**: `parent_uwi`, `parent_dist_ft`, `parent_vertical_ft`, `parent_pair_type`,
+  `parent_confidence`, `parent_comp_date`, `days_since_parent`, `child_above_parent`
+- **Neighborhood stats**: `n_eligible_neighbors`, `n_older_eligible`, `n_psb_neighbors`,
+  `n_cross_formation`, `n_cross_orientation`, `n_oblique`, `n_inner_zone_neighbors`,
+  `role_contributing_types`, `dominant_pair_type`
+
+In the dashboard, this `role` column drives map/gun-barrel coloring and the
+**production-by-role** box plots; per-well validation is available via
+`OverlappingNeighborhoodRoles.print_neighborhood(uwi)`.

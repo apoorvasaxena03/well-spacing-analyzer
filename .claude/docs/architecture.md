@@ -41,6 +41,16 @@
                   │
                   ▼
 ┌────────────────────────────────────────────┐
+│       OverlappingNeighborhoodRoles         │
+│  src/well_data/well_role_assignment.py     │
+│  - assign_roles(pairs_df, header_df, ...)  │
+│  - overlapping neighborhoods (no chaining) │
+│  - parent / child / infill_candidate       │
+│  - adds 'role' column → header_df          │
+└─────────────────┬──────────────────────────┘
+                  │
+                  ▼
+┌────────────────────────────────────────────┐
 │        DirectionalBenchNeighbors           │
 │  src/well_data/well_spacing_stats.py       │
 │  - summarize(spacing_df, header_df, ...)   │
@@ -73,6 +83,7 @@
 | `utils.py` | Data wrangling, column standardization | standalone functions |
 | `well_data_manager.py` | Data loading, UTM projection | `WellDataLoader`, `GeoSurveyProcessor` |
 | `well_spacing_stats.py` | Spacing computation, neighbors, enrichment | `WellSpacingCalculator`, `DirectionalBenchNeighbors` |
+| `well_role_assignment.py` | Parent/child/infill role assignment from spacing pairs (V2) | `OverlappingNeighborhoodRoles` |
 
 ---
 
@@ -119,6 +130,9 @@ well_spacing_stats.py
                     └── custom_logger.py
     └── database_manager.py
             └── custom_logger.py
+well_role_assignment.py
+    └── consumes spacing pairs from well_spacing_stats.py
+    └── custom_logger.py
 ```
 
 ---

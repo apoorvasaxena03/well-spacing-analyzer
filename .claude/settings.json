@@ -75,7 +75,8 @@
       "Bash(rm -f dashboard/.pipeline_cache/*.pkl)",
       "Bash(DASHBOARD_LOG_LEVEL=DEBUG timeout 10 python dashboard/app.py)",
       "Bash(git rev-list *)",
-      "Bash(bc)"
+      "Bash(bc)",
+      "Bash(grep -nA3 \"def calculate_cumulative_volumes_by_period\" src/utils/utils.py)"
     ],
     "deny": [
       "Bash(git push --force*)",

@@ -24,6 +24,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from shapely.geometry import shape, Point
 
+from dashboard.components.spacing_stats import ols_fit, binned_median
+
 from dashboard.pipeline import (
     compute_gun_barrel,
     load_cached_pipeline,
@@ -3432,22 +3434,6 @@ _SPACING_X_LABELS = {
 }
 
 
-def _ols_fit(x: np.ndarray, y: np.ndarray):
-    """Degree-1 least-squares fit. Returns (slope, intercept, r2, n) or None."""
-    mask = np.isfinite(x) & np.isfinite(y)
-    if mask.sum() < 3:
-        return None
-    xf, yf = x[mask], y[mask]
-    if (xf.max() - xf.min()) == 0:
-        return None
-    slope, intercept = np.polyfit(xf, yf, 1)
-    yhat = slope * xf + intercept
-    ss_res = float(np.sum((yf - yhat) ** 2))
-    ss_tot = float(np.sum((yf - yf.mean()) ** 2))
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-    return float(slope), float(intercept), r2, int(mask.sum())
-
-
 def _add_spacing_scatter(fig, df, xcol, ycol, colorby, color_map, *,
                          row=None, col=None, show_legend=True,
                          show_trend=True, show_bins=False):
@@ -3470,8 +3456,7 @@ def _add_spacing_scatter(fig, df, xcol, ycol, colorby, color_map, *,
         )
 
     x = df[xcol].to_numpy(dtype=float)
-    y = df[ycol].to_numpy(dtype=float)
-    fit = _ols_fit(x, y) if show_trend else None
+    fit = ols_fit(df[xcol], df[ycol]) if show_trend else None
     if fit is not None:
         slope, intercept, _r2, _n = fit
         xs = np.array([np.nanmin(x), np.nanmax(x)])
@@ -3484,15 +3469,11 @@ def _add_spacing_scatter(fig, df, xcol, ycol, colorby, color_map, *,
         )
 
     if show_bins:
-        sub = df[[xcol, ycol]].dropna()
-        xv = sub[xcol].to_numpy(dtype=float)
-        if len(sub) >= 6 and (xv.max() - xv.min()) > 0:
-            nb = min(10, max(3, len(sub) // 10))
-            bins = pd.cut(sub[xcol], bins=nb)
-            med = sub.groupby(bins, observed=True)[ycol].median()
-            centers = [iv.mid for iv in med.index]
+        binned = binned_median(df[xcol], df[ycol])
+        if binned is not None:
+            centers, medians = binned
             fig.add_trace(
-                go.Scatter(x=centers, y=med.values, mode="lines+markers",
+                go.Scatter(x=centers, y=medians, mode="lines+markers",
                            line=dict(color="#111", width=1.5),
                            marker=dict(symbol="diamond", size=9, color="#111"),
                            name="binned median", legendgroup="binmedian",

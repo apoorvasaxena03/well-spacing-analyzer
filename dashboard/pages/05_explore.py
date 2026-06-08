@@ -3513,11 +3513,19 @@ def update_spacing_production(pipeline_result, metric, xcol, colorby, opts):
         opts = opts or []
         show_trend, show_bins, show_facet = "trend" in opts, "bins" in opts, "facet" in opts
 
-        for need in (metric, xcol):
-            if need not in header_df.columns:
-                return empty_figure(
-                    f"Column '{need}' not found — run pipeline with production + role assignment."
-                )
+        # Parent-distance fields (parent_dist_ft, etc.) were added to header_df
+        # after early releases. 'role' is present (checked above), so a missing
+        # x-column here means the session was saved before the fix → re-run.
+        if xcol not in header_df.columns:
+            return empty_figure(
+                "This saved session predates parent-distance tracking.<br>"
+                "Re-run the Calculate step to enable the Spacing-vs-Production chart."
+            )
+        if metric not in header_df.columns:
+            return empty_figure(
+                f"Production metric '{metric}' not found —<br>"
+                "re-run Calculate with a production file."
+            )
 
         df = header_df.copy()
         if colorby == "spud_year":

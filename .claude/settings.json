@@ -78,7 +78,8 @@
       "Bash(bc)",
       "Bash(grep -nA3 \"def calculate_cumulative_volumes_by_period\" src/utils/utils.py)",
       "Bash(grep -iE \"\\\\.\\(png|jpg|jpeg|gif|svg|webp\\)$\")",
-      "Bash(grep -iE \"\\\\.ipynb$\")"
+      "Bash(grep -iE \"\\\\.ipynb$\")",
+      "Bash(git push *)"
     ],
     "deny": [
       "Bash(git push --force*)",

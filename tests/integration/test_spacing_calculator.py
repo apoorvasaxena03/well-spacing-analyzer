@@ -35,7 +35,7 @@ def spacing_df(trajectories_df, minimal_header_df):
     return calc._calculate_spacing_statistics(
         batch_size=10_000,
         max_distance_miles=2.0,
-        cutoff_ft=3_000.0,   # 3000 ft — our wells are ~700 ft apart, so all pairs included
+        max_crossline_ft=3_000.0,   # 3000 ft — our wells are ~700 ft apart, so all pairs included
     )
 
 
@@ -51,7 +51,7 @@ class TestSpacingCalculatorOutput:
     def test_required_output_columns(self, spacing_df):
         required = [
             "well_i", "well_k",
-            "horizontal_dist", "vertical_dist", "dist3d",
+            "horizontal_dist", "vertical_dist", "3D_dist",
             "angle_deg", "pair_alignment",
             "overlap_len_common_ft", "LL_i", "LL_k",
             "n_samples", "reject_reason",
@@ -76,7 +76,7 @@ class TestSpacingCalculatorOutput:
     def test_dist3d_geq_horizontal_dist(self, spacing_df):
         """3D distance ≥ horizontal distance (by definition)."""
         valid = spacing_df[spacing_df["reject_reason"] == ""]
-        assert (valid["dist3d"] >= valid["horizontal_dist"] - 0.01).all()
+        assert (valid["3D_dist"] >= valid["horizontal_dist"] - 0.01).all()
 
     def test_overlap_pct_between_0_and_1(self, spacing_df):
         valid = spacing_df[
@@ -126,7 +126,7 @@ class TestAlignmentClassification:
 
 class TestNumericSanity:
     def test_no_inf_in_distances(self, spacing_df):
-        for col in ["horizontal_dist", "vertical_dist", "dist3d"]:
+        for col in ["horizontal_dist", "vertical_dist", "3D_dist"]:
             assert not np.isinf(spacing_df[col]).any(), f"Inf found in {col}"
 
     def test_no_negative_horizontal_dist(self, spacing_df):
@@ -159,8 +159,8 @@ class TestInputFormats:
         calc_df  = WellSpacingCalculator(trajectories_df, minimal_header_df)
         calc_dict = WellSpacingCalculator(trajectories_dict, minimal_header_df)
 
-        result_df   = calc_df._calculate_spacing_statistics(batch_size=10_000, max_distance_miles=2.0, cutoff_ft=3_000.0)
-        result_dict = calc_dict._calculate_spacing_statistics(batch_size=10_000, max_distance_miles=2.0, cutoff_ft=3_000.0)
+        result_df   = calc_df._calculate_spacing_statistics(batch_size=10_000, max_distance_miles=2.0, max_crossline_ft=3_000.0)
+        result_dict = calc_dict._calculate_spacing_statistics(batch_size=10_000, max_distance_miles=2.0, max_crossline_ft=3_000.0)
 
         pairs_df   = set(zip(result_df["well_i"],   result_df["well_k"]))
         pairs_dict = set(zip(result_dict["well_i"], result_dict["well_k"]))

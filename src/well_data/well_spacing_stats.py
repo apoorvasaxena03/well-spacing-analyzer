@@ -555,9 +555,16 @@ class WellSpacingCalculator:
         elif isinstance(trajectories, dict):
             self.logger.debug("  Input format: Dict[str, DataFrame]")
             self.trajectories = trajectories
-            self._trajectory_df = pd.concat(
-                trajectories.values(), keys=trajectories.keys()
-            ).reset_index(drop=True)
+            # Inject 'uwi' from the dict keys when the per-well frames don't
+            # already carry it (e.g. pre-grouped trajectories). Concatenating
+            # with reset_index alone would drop the key, leaving _trajectory_df
+            # without the 'uwi' column the engine relies on downstream.
+            frames = []
+            for uwi, frame in trajectories.items():
+                if "uwi" not in frame.columns:
+                    frame = frame.assign(uwi=uwi)
+                frames.append(frame)
+            self._trajectory_df = pd.concat(frames, ignore_index=True)
         else:
             raise ValueError("Invalid type for trajectories. Must be DataFrame or Dict.")
 

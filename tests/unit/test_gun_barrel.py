@@ -15,7 +15,6 @@ import plotly.graph_objects as go
 
 from dashboard.pipeline import compute_gun_barrel
 from dashboard.components.gun_barrel import (
-    BENCH_COLORS,
     build_gun_barrel_figure,
     empty_figure,
 )

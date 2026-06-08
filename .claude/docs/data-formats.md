@@ -64,7 +64,7 @@ Primary output of `_calculate_spacing_statistics()`.
 | `well_k` | str | Comparison well UWI |
 | `horizontal_dist` | float | Mean crossline spacing (ft) |
 | `vertical_dist` | float | Mean TVD difference (ft) |
-| `dist3d` | float | 3D distance (ft) |
+| `3D_dist` | float | 3D distance (ft) |
 | `angle_deg` | float | Angle between azimuths (0–90°) |
 | `pair_alignment` | str | PARALLEL_LIKE / OBLIQUE / PERPENDICULAR |
 | `overlap_len_common_ft` | float | Lateral overlap length (ft), parallel-like only |

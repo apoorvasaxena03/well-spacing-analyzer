@@ -140,7 +140,7 @@ jupyter notebook notebooks/RingEnergy/well_spacing_RingEnergy_v2.ipynb
 pip install -e .
 
 # Run the test suite
-pytest                             # 127 tests across tests/unit + tests/integration
+pytest                             # 146 tests across tests/unit + tests/integration
 ```
 
 ---
@@ -194,4 +194,4 @@ See `.claude/docs/dashboard-roadmap.md` for the full vision and remaining panels
 3. **UTM zone is configurable** — don't hardcode EPSG:32613; check the `GeoSurveyProcessor` initialization
 4. **`filter_after_heel_point()`** — this is critical; spacing must only be computed on the lateral (horizontal) section, never the vertical/build section
 5. **`drop_uwi_duplicates_keep_max_last_prod()`** — always deduplicate before loading into the calculator
-6. **Tests live in `tests/`** — 127 tests across `tests/unit/` (alignment, gun barrel, map panel, spacing result, utils) and `tests/integration/` (geo survey, pipeline, spacing calculator). Run with `pytest`. Notebooks still serve as broader end-to-end checks.
+6. **Tests live in `tests/`** — 146 tests across `tests/unit/` (alignment, gun barrel, map panel, spacing result, utils) and `tests/integration/` (geo survey, pipeline, spacing calculator). Run with `python -m pytest` (the `venv/Scripts/pytest.exe` wrapper has a stale shebang — use `python -m pytest`). Notebooks still serve as broader end-to-end checks.

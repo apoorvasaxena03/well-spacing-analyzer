@@ -102,7 +102,7 @@ The local i-frame is constructed per-pair:
 |-------|-------|------------|
 | `horizontal_dist` | ft | All pairs |
 | `vertical_dist` | ft | All pairs |
-| `dist3d` | ft | All pairs |
+| `3D_dist` | ft | All pairs |
 | `angle_deg` | degrees | All pairs |
 | `pair_alignment` | enum | All pairs |
 | `overlap_len_common_ft` | ft | PARALLEL_LIKE |

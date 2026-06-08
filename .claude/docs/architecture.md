@@ -139,7 +139,7 @@ well_role_assignment.py
 
 ## Tests & Notebooks
 
-A `pytest` suite lives in `tests/` — **127 tests** across `tests/unit/` (alignment, gun
+A `pytest` suite lives in `tests/` — **146 tests** across `tests/unit/` (alignment, gun
 barrel, map panel, spacing result, utils) and `tests/integration/` (geo survey, pipeline,
 spacing calculator). Run with `pytest`.
 

@@ -6,7 +6,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Dash](https://img.shields.io/badge/Dash-Plotly-1f77b4?logo=plotly&logoColor=white)](https://dash.plotly.com/)
-[![Tests](https://img.shields.io/badge/tests-127%20passing-2ca02c?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-146%20passing-2ca02c?logo=pytest&logoColor=white)](tests/)
 [![License](https://img.shields.io/badge/license-View--only-lightgrey)](LICENSE.txt)
 ![Basin](https://img.shields.io/badge/focus-Permian%20%2F%20Midland-d62728)
 
@@ -190,7 +190,7 @@ roles = OverlappingNeighborhoodRoles().assign_roles(df_spacing, header_df)
 ## ✅ Tests
 
 ```bash
-pytest                      # 127 tests across tests/unit + tests/integration
+pytest                      # 146 tests across tests/unit + tests/integration
 ```
 
 ---

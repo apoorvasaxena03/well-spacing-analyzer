@@ -12,13 +12,32 @@ A high-performance Python library for computing **parent/child well spacing** in
 
 ## Module Map
 
+### Core library (`src/`)
+
 | File | Purpose | Lines |
 |------|---------|-------|
 | `src/utils/custom_logger.py` | Unified logging with run-id correlation | 335 |
 | `src/utils/database_manager.py` | Multi-DB abstraction (Postgres, SQL Server, Databricks, Snowflake, Oracle, SQLite) | 2,036 |
-| `src/utils/utils.py` | Data wrangling, column standardization, deduplication, reservoir categorization | 1,290 |
-| `src/well_data/well_data_manager.py` | Well data loading (CSV/Excel/DB), UTM projection, lateral section extraction | 2,467 |
+| `src/utils/utils.py` | Data wrangling, column standardization, deduplication, reservoir categorization, cumulative production | 1,308 |
+| `src/well_data/well_data_manager.py` | Well data loading (CSV/Excel/DB), UTM projection, lateral section extraction | 2,482 |
 | `src/well_data/well_spacing_stats.py` | Core spacing engine — all pairwise metrics, neighbor identification, clustering | 7,644 |
+| `src/well_data/well_role_assignment.py` | `OverlappingNeighborhoodRoles` (V2) — parent/child role assignment from spacing pairs | 964 |
+
+### Dashboard (`dashboard/`) — the Dash app that wraps the library
+
+| File | Purpose | Lines |
+|------|---------|-------|
+| `dashboard/pipeline.py` | Bridge: drives the `src/` pipeline + role assignment + cumulative production from UI inputs | 1,113 |
+| `dashboard/pages/01_upload.py` | Step 1 — file upload + DB query input (header, directional, production) | 485 |
+| `dashboard/pages/02_column_map.py` | Step 2 — column mapping UI (templates + fuzzy matching) | 774 |
+| `dashboard/pages/03_configure.py` | Step 3 — spacing, role assignment, and advanced engine params | 1,003 |
+| `dashboard/pages/04_calculate.py` | Step 4 — run calculation | 343 |
+| `dashboard/pages/05_explore.py` | Step 5 — Map / Gun Barrel / Charts (Neighborhood + Statistics) / Analysis tabs | 3,337 |
+| `dashboard/pages/06_export.py` | Step 6 — export results + session package import/export | 336 |
+| `dashboard/callbacks/explore_analysis.py` | On-demand DBN/Avg/WPS runs + matplotlib diagnostic plots | 698 |
+| `dashboard/components/` | `gun_barrel.py`, `map_panel.py`, `matplotlib_render.py` | — |
+
+**Entry point**: `python run_dashboard.py` (or `python dashboard/app.py`). Use `--debug` for verbose logging.
 
 ---
 
@@ -37,7 +56,10 @@ Raw Data (CSV / Excel / Database)
   WellSpacingCalculator             ← batch pairwise spacing (200k pairs/batch)
         │
         ▼
-  DirectionalBenchNeighbors         ← identify same-bench / neighboring-bench wells
+  OverlappingNeighborhoodRoles      ← assign parent/child roles from spacing pairs (V2)
+        │
+        ▼
+  DirectionalBenchNeighbors         ← identify same-bench / neighboring-bench wells (on-demand)
         │
         ▼
   SpacingNeighborEnricher           ← join header attributes onto spacing results
@@ -108,11 +130,17 @@ Every session gets a unique run_id (format: `YYYYMMDD_HHMMSS_<8hex>`) injected i
 # Install dependencies
 pip install -r requirements.txt
 
+# Launch the dashboard (primary entry point)
+python run_dashboard.py            # add --debug for verbose logging
+
 # Run a notebook
 jupyter notebook notebooks/RingEnergy/well_spacing_RingEnergy_v2.ipynb
 
 # Install package in editable mode
 pip install -e .
+
+# Run the test suite
+pytest                             # 127 tests across tests/unit + tests/integration
 ```
 
 ---
@@ -132,21 +160,30 @@ pip install -e .
 
 ---
 
-## Future: Open-Source Dashboard
+## Open-Source Dashboard (built — replaces Spotfire)
 
-A **Dash (Plotly)** dashboard is planned to replace the current Spotfire workflow.
+A **Dash (Plotly)** dashboard implements the full guided workflow end-to-end. It is the
+primary way the tool is now used; the `src/` library is the unchanged foundation it calls.
 
-**Planned entry point**: `dashboard/app.py`
+**Entry point**: `python run_dashboard.py`
 **Use `/dashboard-builder` agent** when working on dashboard features.
 
-Key visualizations planned:
-- **Map view**: Well trajectories on satellite/topo basemap
-- **Gun barrel diagram**: Cross-sectional TVD vs horizontal position
-- **Spacing heatmap**: Pairwise spacing matrix by bench
-- **Neighbor graph**: Network visualization of parent/child relationships
-- **Production overlay**: Cumulative volumes on spacing plots
+6-step guided flow (one page per step under `dashboard/pages/`):
+**Upload → Map Columns → Configure → Calculate → Explore → Export**
 
-See `.claude/docs/dashboard-roadmap.md` for full vision.
+Built and working today:
+
+- **Map view**: well trajectories + bottom-holes on dash-leaflet basemap; color by bench/role/operator/year; neighborhood edge lines; measure tool; collapsible legend
+- **Gun barrel diagram**: cross-sectional TVD vs horizontal position with spacing zigzag lines
+- **Charts → Statistics**: production-by-role box plots (cum oil/gas/water 180d & 365d per ft)
+- **Analysis tab**: on-demand DBN / Avg-spacing / Floating WPS runs + matplotlib diagnostic plots
+- **Role assignment**: `OverlappingNeighborhoodRoles` (V2) wired through pipeline → header `role` column
+- **Session persistence**: export/import a session package (results + UI state)
+
+Still on the roadmap (not yet built): parent-child network graph, spacing-vs-production
+scatter, type-curve builder, frac-hit risk heatmap, infill finder, QC panels.
+
+See `.claude/docs/dashboard-roadmap.md` for the full vision and remaining panels.
 
 ---
 
@@ -157,4 +194,4 @@ See `.claude/docs/dashboard-roadmap.md` for full vision.
 3. **UTM zone is configurable** — don't hardcode EPSG:32613; check the `GeoSurveyProcessor` initialization
 4. **`filter_after_heel_point()`** — this is critical; spacing must only be computed on the lateral (horizontal) section, never the vertical/build section
 5. **`drop_uwi_duplicates_keep_max_last_prod()`** — always deduplicate before loading into the calculator
-6. **No unit tests exist yet** — notebooks serve as integration tests; when adding tests, use `pytest` and place in `tests/`
+6. **Tests live in `tests/`** — 127 tests across `tests/unit/` (alignment, gun barrel, map panel, spacing result, utils) and `tests/integration/` (geo survey, pipeline, spacing calculator). Run with `pytest`. Notebooks still serve as broader end-to-end checks.

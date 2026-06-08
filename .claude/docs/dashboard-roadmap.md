@@ -364,35 +364,33 @@ Download panel with format options:
 
 ---
 
-## App Architecture
+## App Architecture (as built)
+
+> The structure below reflects what actually exists on disk. Launch with
+> `python run_dashboard.py` (a thin wrapper at the repo root) or `python dashboard/app.py`.
+> Pages are numbered files registered as a Dash multi-page app.
 
 ```text
+run_dashboard.py            # repo-root launcher (supports --debug)
 dashboard/
-├── app.py                  # Entry point: python dashboard/app.py
-├── layout.py               # Top-level layout: sidebar + tabs
+├── app.py                  # Dash app + multi-page registration
 ├── pages/
-│   ├── upload.py           # Step 1: file upload
-│   ├── column_mapper.py    # Step 2: column mapping UI
-│   ├── configure.py        # Step 3: parameter config
-│   ├── progress.py         # Step 4: calculation progress
-│   └── results.py          # Step 5: all result panels
+│   ├── 01_upload.py        # Step 1: file upload + DB query (header, directional, production)
+│   ├── 02_column_map.py    # Step 2: column mapping UI (templates + fuzzy match)
+│   ├── 03_configure.py     # Step 3: spacing, role assignment, advanced engine params
+│   ├── 04_calculate.py     # Step 4: run calculation
+│   ├── 05_explore.py       # Step 5: Map / Gun Barrel / Charts / Analysis tabs
+│   └── 06_export.py        # Step 6: export results + session import/export
 ├── callbacks/
-│   ├── pipeline.py         # long_callback: runs full spacing pipeline
-│   ├── map_callbacks.py    # map interactions → filter other panels
-│   ├── gb_callbacks.py     # gun barrel: selected wells → GB data
-│   └── production_callbacks.py
+│   └── explore_analysis.py # on-demand DBN/Avg/WPS runs + matplotlib diagnostics
 ├── components/
-│   ├── column_mapper.py    # reusable column mapping component
-│   ├── map_panel.py        # dash-leaflet map + trajectory layers
+│   ├── map_panel.py        # dash-leaflet map + trajectory/bottom-hole layers
 │   ├── gun_barrel.py       # GB diagram (replicates Spotfire GB function)
-│   ├── production_charts.py
-│   └── progress_bar.py
-├── pipeline.py             # wraps well_spacing_analyzer src/ pipeline
-│                           # WellDataLoader → GeoSurveyProcessor →
-│                           # WellSpacingCalculator → DirectionalBenchNeighbors
-└── assets/
-    ├── style.css
-    └── map_extensions.js   # dash-leaflet JS callbacks (bench colors etc.)
+│   └── matplotlib_render.py# fig → base64 <img> helper for diagnostic plots
+├── pipeline.py             # bridge to src/: WellDataLoader → GeoSurveyProcessor →
+│                           # WellSpacingCalculator → OverlappingNeighborhoodRoles +
+│                           # cumulative production; DBN/Avg/WPS run on-demand
+└── assets/                 # CSS + JS (geojson styling, scroll-zoom, measure tool)
 ```
 
 **`pipeline.py`** is the bridge between the app and the `src/` library:
@@ -1023,27 +1021,9 @@ openpyxl>=3.1.0               # Excel upload support
 
 ## Entry Point
 
-`dashboard/app.py` (to be created at project root)
-
-```text
-well-spacing-analyzer/
-├── src/                     (existing)
-├── notebooks/               (existing)
-├── dashboard/               (TO CREATE)
-│   ├── app.py               # main Dash app
-│   ├── layout.py            # page layout components
-│   ├── callbacks/
-│   │   ├── map_callbacks.py
-│   │   ├── gb_callbacks.py
-│   │   └── production_callbacks.py
-│   ├── components/
-│   │   ├── map_panel.py
-│   │   ├── gun_barrel.py
-│   │   ├── column_mapper.py    # column mapping UI component
-│   │   └── production_charts.py
-│   └── assets/              # CSS, icons
-└── requirements-dashboard.txt
-```
+`python run_dashboard.py` (repo-root launcher, supports `--debug`) — or `python dashboard/app.py`.
+Dependencies are in the project's `requirements.txt`. See **App Architecture (as built)** above
+for the actual `dashboard/` tree.
 
 ---
 

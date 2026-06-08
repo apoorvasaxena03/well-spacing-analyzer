@@ -14,12 +14,14 @@ suppress_callback_exceptions for these specific components.
 """
 
 import dash
+import numpy as np
 import pandas as pd
 import dash_bootstrap_components as dbc
 from dash import Input, Output, State, ALL, callback, dcc, html, dash_table
 import dash_leaflet as dl
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from shapely.geometry import shape, Point
 
 from dashboard.pipeline import (
@@ -187,6 +189,10 @@ layout = dbc.Container(
             dbc.ModalHeader(dbc.ModalTitle("Production by Role"), close_button=True),
             dbc.ModalBody(dcc.Graph(id="modal-role-prod-chart", style={"height": "85vh"})),
         ], id="modal-role-prod", size="xl", fullscreen="xl-down", is_open=False),
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Spacing vs. Production"), close_button=True),
+            dbc.ModalBody(dcc.Graph(id="modal-spacing-prod-chart", style={"height": "85vh"})),
+        ], id="modal-spacing-prod", size="xl", fullscreen="xl-down", is_open=False),
 
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
@@ -820,6 +826,84 @@ layout = dbc.Container(
                                     id="role-prod-chart",
                                     style={"height": "75vh"},
                                     figure=empty_figure("Run pipeline with role assignment to see production by role."),
+                                ),
+
+                                html.Hr(className="my-3"),
+
+                                # Spacing vs. Production (scatter + trendline)
+                                dbc.Row([
+                                    dbc.Col(html.Strong("Spacing vs. Production", className="small"), width="auto"),
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="spacing-prod-metric",
+                                            options=[
+                                                {"label": "Cum Oil 180d/ft",   "value": "cum_oil_180d_per_ft"},
+                                                {"label": "Cum Oil 365d/ft",   "value": "cum_oil_365d_per_ft"},
+                                                {"label": "Cum Gas 180d/ft",   "value": "cum_gas_180d_per_ft"},
+                                                {"label": "Cum Gas 365d/ft",   "value": "cum_gas_365d_per_ft"},
+                                                {"label": "Cum Water 180d/ft", "value": "cum_water_180d_per_ft"},
+                                                {"label": "Cum Water 365d/ft", "value": "cum_water_365d_per_ft"},
+                                            ],
+                                            value="cum_oil_365d_per_ft",
+                                            size="sm",
+                                        ),
+                                        width=3,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="spacing-prod-xaxis",
+                                            options=[
+                                                {"label": "X: Dist to parent (ft)",     "value": "parent_dist_ft"},
+                                                {"label": "X: Vertical to parent (ft)", "value": "parent_vertical_ft"},
+                                                {"label": "X: Days since parent",       "value": "days_since_parent"},
+                                            ],
+                                            value="parent_dist_ft",
+                                            size="sm",
+                                        ),
+                                        width=2,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Select(
+                                            id="spacing-prod-colorby",
+                                            options=[
+                                                {"label": "Color: Bench",    "value": "bench"},
+                                                {"label": "Color: Role",     "value": "role"},
+                                                {"label": "Color: Operator", "value": "operator"},
+                                                {"label": "Color: Vintage",  "value": "spud_year"},
+                                            ],
+                                            value="bench",
+                                            size="sm",
+                                        ),
+                                        width=2,
+                                    ),
+                                    dbc.Col(
+                                        dbc.Checklist(
+                                            id="spacing-prod-opts",
+                                            options=[
+                                                {"label": "Trend", "value": "trend"},
+                                                {"label": "Bins",  "value": "bins"},
+                                                {"label": "Facet", "value": "facet"},
+                                            ],
+                                            value=["trend"],
+                                            inline=True,
+                                            input_class_name="me-1",
+                                            label_class_name="small me-2",
+                                        ),
+                                        width="auto",
+                                    ),
+                                    dbc.Col(
+                                        dbc.Button("⛶", id="btn-expand-spacing-prod",
+                                                   color="link", size="sm",
+                                                   className="p-0", title="Fullscreen"),
+                                        width="auto",
+                                    ),
+                                ], align="center", className="mb-1"),
+                                dcc.Graph(
+                                    id="spacing-prod-chart",
+                                    style={"height": "75vh"},
+                                    figure=empty_figure(
+                                        "Run pipeline with role assignment + production to see spacing vs. production."
+                                    ),
                                 ),
                             ]),
                         ]),
@@ -3335,3 +3419,194 @@ def update_role_production(pipeline_result, metric, facet_bench):
     except Exception as exc:
         _log.exception("Role production chart error: %s", exc)
         return empty_figure(f"Error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Spacing vs. Production — scatter with OLS trendline, binned medians, faceting
+# ---------------------------------------------------------------------------
+
+_SPACING_X_LABELS = {
+    "parent_dist_ft":     "Distance to nearest parent (ft)",
+    "parent_vertical_ft": "Vertical distance to parent (ft)",
+    "days_since_parent":  "Days between parent and this well",
+}
+
+
+def _ols_fit(x: np.ndarray, y: np.ndarray):
+    """Degree-1 least-squares fit. Returns (slope, intercept, r2, n) or None."""
+    mask = np.isfinite(x) & np.isfinite(y)
+    if mask.sum() < 3:
+        return None
+    xf, yf = x[mask], y[mask]
+    if (xf.max() - xf.min()) == 0:
+        return None
+    slope, intercept = np.polyfit(xf, yf, 1)
+    yhat = slope * xf + intercept
+    ss_res = float(np.sum((yf - yhat) ** 2))
+    ss_tot = float(np.sum((yf - yf.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return float(slope), float(intercept), r2, int(mask.sum())
+
+
+def _add_spacing_scatter(fig, df, xcol, ycol, colorby, color_map, *,
+                         row=None, col=None, show_legend=True,
+                         show_trend=True, show_bins=False):
+    """Add colored scatter points (+ optional OLS trendline and binned medians)
+    to a figure or subplot cell. Returns the OLS fit tuple or None."""
+    has_name = "well_name" in df.columns
+    for val, grp in df.groupby(colorby, dropna=False):
+        label = str(val)
+        fig.add_trace(
+            go.Scattergl(
+                x=grp[xcol], y=grp[ycol], mode="markers", name=label,
+                legendgroup=label, showlegend=show_legend,
+                text=grp["well_name"] if has_name else None,
+                marker=dict(color=color_map.get(label, "#607D8B"), size=6, opacity=0.6,
+                            line=dict(width=0.3, color="white")),
+                hovertemplate=("<b>%{text}</b><br>" if has_name else "")
+                + "%{x:,.0f}<br>%{y:,.1f}<extra>" + label + "</extra>",
+            ),
+            row=row, col=col,
+        )
+
+    x = df[xcol].to_numpy(dtype=float)
+    y = df[ycol].to_numpy(dtype=float)
+    fit = _ols_fit(x, y) if show_trend else None
+    if fit is not None:
+        slope, intercept, _r2, _n = fit
+        xs = np.array([np.nanmin(x), np.nanmax(x)])
+        fig.add_trace(
+            go.Scatter(x=xs, y=slope * xs + intercept, mode="lines",
+                       line=dict(color="black", dash="dash", width=2),
+                       name="trend", legendgroup="trend", showlegend=False,
+                       hoverinfo="skip"),
+            row=row, col=col,
+        )
+
+    if show_bins:
+        sub = df[[xcol, ycol]].dropna()
+        xv = sub[xcol].to_numpy(dtype=float)
+        if len(sub) >= 6 and (xv.max() - xv.min()) > 0:
+            nb = min(10, max(3, len(sub) // 10))
+            bins = pd.cut(sub[xcol], bins=nb)
+            med = sub.groupby(bins, observed=True)[ycol].median()
+            centers = [iv.mid for iv in med.index]
+            fig.add_trace(
+                go.Scatter(x=centers, y=med.values, mode="lines+markers",
+                           line=dict(color="#111", width=1.5),
+                           marker=dict(symbol="diamond", size=9, color="#111"),
+                           name="binned median", legendgroup="binmedian",
+                           showlegend=show_legend, hoverinfo="skip"),
+                row=row, col=col,
+            )
+    return fit
+
+
+@callback(
+    Output("spacing-prod-chart", "figure"),
+    Input("pipeline-result-store", "data"),
+    Input("spacing-prod-metric", "value"),
+    Input("spacing-prod-xaxis", "value"),
+    Input("spacing-prod-colorby", "value"),
+    Input("spacing-prod-opts", "value"),
+    prevent_initial_call=True,
+)
+def update_spacing_production(pipeline_result, metric, xcol, colorby, opts):
+    """Scatter of distance-to-parent (or days-since-parent) vs a per-ft production
+    metric for child/infill wells — quantifies parent/child interference."""
+    import logging
+    _log = logging.getLogger("dashboard")
+    try:
+        if not pipeline_result:
+            return empty_figure("Run pipeline first.")
+        data = load_cached_pipeline(pipeline_result["cache_path"])
+        header_df = data.get("header_df")
+        if header_df is None or header_df.empty:
+            return empty_figure("No header data.")
+        if "role" not in header_df.columns:
+            return empty_figure("No 'role' column — run pipeline with role assignment enabled.")
+
+        metric = metric or "cum_oil_365d_per_ft"
+        xcol = xcol or "parent_dist_ft"
+        colorby = colorby or "bench"
+        opts = opts or []
+        show_trend, show_bins, show_facet = "trend" in opts, "bins" in opts, "facet" in opts
+
+        for need in (metric, xcol):
+            if need not in header_df.columns:
+                return empty_figure(
+                    f"Column '{need}' not found — run pipeline with production + role assignment."
+                )
+
+        df = header_df.copy()
+        if colorby == "spud_year":
+            if "spud_date" not in df.columns:
+                return empty_figure("No 'spud_date' column for vintage coloring.")
+            df["spud_year"] = pd.to_datetime(df["spud_date"], errors="coerce").dt.year.astype("Int64").astype(str)
+        if colorby not in df.columns:
+            return empty_figure(f"Color column '{colorby}' not found.")
+
+        # Only wells that have a parent (child / infill_candidate); parents & isolated have NaN x
+        df = df[df["role"].isin(["child", "infill_candidate"])]
+        keep = [c for c in {xcol, metric, colorby, "bench", "well_name", "role"} if c in df.columns]
+        df = df[keep].dropna(subset=[xcol, metric])
+        if df.empty:
+            return empty_figure("No child/infill wells with parent distance + production.")
+
+        color_map = _build_color_map(df[colorby].dropna().astype(str).tolist(), prop=colorby)
+        xlabel = _SPACING_X_LABELS.get(xcol, xcol)
+        ylabel = metric.replace("_", " ").replace("per ft", "/ft").title()
+
+        if show_facet and "bench" in df.columns and df["bench"].nunique() > 1:
+            benches = sorted(df["bench"].dropna().astype(str).unique())
+            fig = make_subplots(rows=1, cols=len(benches), shared_yaxes=True,
+                                subplot_titles=benches, horizontal_spacing=0.03)
+            for i, b in enumerate(benches, start=1):
+                bdf = df[df["bench"].astype(str) == b]
+                fit = _add_spacing_scatter(fig, bdf, xcol, metric, colorby, color_map,
+                                           row=1, col=i, show_legend=(i == 1),
+                                           show_trend=show_trend, show_bins=show_bins)
+                if fit is not None:
+                    _s, _ic, r2, n = fit
+                    fig.layout.annotations[i - 1].text = f"{b}  (R²={r2:.2f}, n={n})"
+                fig.update_xaxes(title_text=xlabel if i == 1 else "", row=1, col=i)
+            fig.update_yaxes(title_text=ylabel, row=1, col=1)
+        else:
+            fig = go.Figure()
+            fit = _add_spacing_scatter(fig, df, xcol, metric, colorby, color_map,
+                                       show_trend=show_trend, show_bins=show_bins)
+            fig.update_layout(xaxis_title=xlabel, yaxis_title=ylabel)
+            if fit is not None:
+                slope, _ic, r2, n = fit
+                fig.add_annotation(
+                    xref="paper", yref="paper", x=0.99, y=0.99, xanchor="right", yanchor="top",
+                    showarrow=False, align="right",
+                    text=f"slope={slope:,.4g}<br>R²={r2:.2f}<br>n={n}",
+                    bgcolor="rgba(255,255,255,0.75)", bordercolor="#999", borderwidth=1,
+                    font=dict(size=11),
+                )
+
+        fig.update_layout(
+            template="plotly_white",
+            margin=dict(t=40, b=50, l=60, r=20),
+            legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0, font=dict(size=10)),
+        )
+        fig.update_yaxes(tickformat=",")
+        return fig
+
+    except Exception as exc:
+        _log.exception("Spacing-vs-production chart error: %s", exc)
+        return empty_figure(f"Error: {exc}")
+
+
+@callback(
+    Output("modal-spacing-prod", "is_open"),
+    Output("modal-spacing-prod-chart", "figure"),
+    Input("btn-expand-spacing-prod", "n_clicks"),
+    State("spacing-prod-chart", "figure"),
+    prevent_initial_call=True,
+)
+def expand_spacing_prod(n_clicks, fig):
+    if not fig:
+        return False, empty_figure("No data.")
+    return True, fig

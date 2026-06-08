@@ -1005,16 +1005,18 @@ Users have files with any column naming convention. The dashboard needs a mappin
 
 ## Tech Stack
 
+Actual (from `requirements.txt`):
+
 ```text
-dash>=2.14.0
-plotly>=5.18.0
-dash-leaflet>=1.0.0           # QGIS-like interactive map
-dash-bootstrap-components>=1.5.0
-pandas>=2.0.0
-geopandas>=0.14.0
-pyproj>=3.6.0
-thefuzz>=0.20.0               # fuzzy column name matching
-openpyxl>=3.1.0               # Excel upload support
+dash>=4.0
+dash-bootstrap-components>=2.0
+dash-leaflet>=1.1            # QGIS-like interactive map
+plotly>=6.0
+flask-caching>=2.3          # server-side cache for pipeline results
+diskcache>=5.6              # background-callback cache
+rapidfuzz>=3.0              # fuzzy column-name matching
+geopandas, pyproj, shapely  # geospatial
+openpyxl                    # Excel upload support
 ```
 
 ---

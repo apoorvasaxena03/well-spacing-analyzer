@@ -120,16 +120,58 @@ Input to gun barrel diagram. Derived from spacing pairs + heel/toe midpoints.
 
 ## Production DataFrame
 
+Monthly production input (one row per well per month):
+
+| Column | Type | Required | Description |
+|--------|------|----------|-------------|
+| `uwi` | str | ✅ | Well UWI |
+| `prod_date` | datetime | ✅ | Production month |
+| `oil` | float | ✅* | Monthly oil production (bbl) |
+| `gas` | float | ✅* | Monthly gas production (mcf) |
+| `water` | float | ✅* | Monthly water production (bbl) |
+
+*At least one of oil/gas/water is required. Per-foot normalization also needs
+`lateral_length_ft` on the **header** (joined onto production before the cum calc).
+
+### Cumulative metrics (`calculate_cumulative_volumes_by_period`)
+
+One row per UWI. Windows are based on actual calendar days per production month
+(`cum_days ≤ 180` / `≤ 365`). Computed in `src/utils/utils.py` and merged onto
+`header_df` by the dashboard pipeline:
+
+| Column | Description |
+|--------|-------------|
+| `cum_oil_180d`, `cum_gas_180d`, `cum_water_180d` | 180-day cumulative volumes |
+| `cum_oil_365d`, `cum_gas_365d`, `cum_water_365d` | 365-day cumulative volumes |
+| `cum_oil_180d_per_ft` … `cum_water_365d_per_ft` | Above, normalized by `lateral_length_ft` |
+
+The `*_per_ft` columns drive the dashboard's **production-by-role** box plots.
+
+---
+
+## Role Assignment Output (`OverlappingNeighborhoodRoles`)
+
+One row per well. Produced by `src/well_data/well_role_assignment.py` and merged
+onto `header_df` (column `role`). See `algorithms.md` for the assignment logic.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | `uwi` | str | Well UWI |
-| `prod_date` | datetime | Production month |
-| `oil` | float | Monthly oil production (bbl) |
-| `gas` | float | Monthly gas production (mcf) |
-| `water` | float | Monthly water production (bbl) |
-| `normalize_time_months` | int | Months since first production |
-| `cum_oil` | float | Cumulative oil (bbl) |
-| `ppf` | float | Peak production per foot of lateral |
-| `gpf` | float | Gas production per foot of lateral |
-| `cum_oil_180d_per_ft` | float | 180-day cum oil per lateral ft |
-| `cum_oil_365d_per_ft` | float | 365-day cum oil per lateral ft |
+| `role` | str | `parent` / `child` / `infill_candidate` / `no_eligible_neighbor` |
+| `child_gen` | str | `gen1_child` / `late_child` (child wells only) |
+| `isolated` | bool | True when the well has no eligible neighbors |
+| `parent_uwi` | str | Nearest older eligible neighbor (the parent) |
+| `parent_dist_ft` | float | Distance to parent (ft) |
+| `parent_vertical_ft` | float | Vertical (TVD) distance to parent (ft) |
+| `parent_pair_type` | str | Relationship type to parent (e.g. `parallel_same_bench`) |
+| `parent_confidence` | str | `high` / `medium` / `low` |
+| `parent_comp_date` | datetime | Parent completion date |
+| `days_since_parent` | float | Days between parent and this well's completion |
+| `child_above_parent` | bool | True when this well's TVD is shallower than the parent |
+| `n_eligible_neighbors` | int | Count of eligible neighbors |
+| `n_older_eligible` | int | Count of older eligible neighbors |
+| `dominant_pair_type` | str | Most common contributing relationship type |
+
+---
+
+_Last updated: 2026-06-07_

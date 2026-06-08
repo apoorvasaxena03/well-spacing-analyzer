@@ -17,7 +17,7 @@ A high-performance Python library for computing **parent/child well spacing** in
 | File | Purpose | Lines |
 |------|---------|-------|
 | `src/utils/custom_logger.py` | Unified logging with run-id correlation | 335 |
-| `src/utils/database_manager.py` | Multi-DB abstraction (Postgres, SQL Server, Databricks, Snowflake, Oracle, SQLite) | 2,036 |
+| `src/utils/database_manager.py` | Multi-DB abstraction (Postgres, MySQL, SQL Server, Databricks, Snowflake, Oracle, SQLite, ODBC-DSN) | 2,036 |
 | `src/utils/utils.py` | Data wrangling, column standardization, deduplication, reservoir categorization, cumulative production | 1,308 |
 | `src/well_data/well_data_manager.py` | Well data loading (CSV/Excel/DB), UTM projection, lateral section extraction | 2,482 |
 | `src/well_data/well_spacing_stats.py` | Core spacing engine — all pairwise metrics, neighbor identification, clustering | 7,644 |

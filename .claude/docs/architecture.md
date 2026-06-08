@@ -137,9 +137,13 @@ well_role_assignment.py
 
 ---
 
-## Notebooks as Integration Tests
+## Tests & Notebooks
 
-No unit tests exist yet. The 7 notebooks serve as integration tests:
+A `pytest` suite lives in `tests/` — **127 tests** across `tests/unit/` (alignment, gun
+barrel, map panel, spacing result, utils) and `tests/integration/` (geo survey, pipeline,
+spacing calculator). Run with `pytest`.
+
+The notebooks additionally serve as broader end-to-end checks:
 
 | Notebook | Asset | Purpose |
 |----------|-------|---------|
@@ -150,3 +154,7 @@ No unit tests exist yet. The 7 notebooks serve as integration tests:
 | `parent_child_clustering/overlapping_neighborhoods_v1` | Ring Energy | Neighborhood analysis |
 | `parent_child_clustering/well_bundle_clustering_v1` | Ring Energy | HDBSCAN clustering |
 | `parent_child_clustering/well_bundle_clustering_v2` | Ring Energy | HDBSCAN v2 |
+
+---
+
+_Last updated: 2026-06-07_

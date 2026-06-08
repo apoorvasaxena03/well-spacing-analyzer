@@ -1,64 +1,75 @@
 # Well Spacing Analyzer
 
-A high-performance Python tool designed to compute optimal spacing between parent and child wells in unconventional reservoirs. It processes directional survey and header data from Excel, CSV, or IHS sources, delivering results for large datasets (e.g., ~20,000 wells in the Midland Basin) in under 15 minutes.
+A high-performance Python tool for computing **parent/child well spacing** in unconventional reservoirs, plus an interactive **Dash dashboard** that runs the whole workflow without code. It processes directional survey and header data from Excel, CSV, or database sources, delivering results for large datasets (e.g., ~20,000 wells in the Midland Basin) in under 15 minutes.
 
 ## Features
 
-- **Flexible Data Input**: Accepts directional survey and header data from Excel, CSV, or IHS formats.
-- **Efficient Processing**: Handles large datasets with optimized performance.
-- **Automated Spacing Calculations**: Computes horizontal/vertical/3D distances, well-to-well directionality, and normalized lateral midpoints.
-- **Visualization Integration**: Outputs compatible with Spotfire for rapid gun barrel dashboard creation.
+- **Flexible data input**: directional survey, header, and production data from CSV, Excel, or database queries (Postgres, MySQL, SQL Server, Databricks, Snowflake, Oracle, SQLite).
+- **Efficient processing**: batch pairwise spacing (200k pairs/batch) with checkpoint/resume for large datasets.
+- **Spacing metrics**: horizontal / vertical / 3D distances, overlap percentages, alignment classification (parallel / oblique / perpendicular), and neighbor identification.
+- **Parent/child role assignment**: `OverlappingNeighborhoodRoles` (V2) labels each well parent / child / infill_candidate from spacing pairs and completion dates.
+- **Cumulative production**: 180/365-day cumulative oil/gas/water, normalized per lateral foot.
+- **Interactive dashboard**: a guided, open-source [Dash](https://dash.plotly.com/) app (map, gun barrel, production-by-role charts, on-demand diagnostics) that **replaces the legacy Spotfire workflow** — no notebooks or config files required.
 
 ## Repository Structure
 
-```
-├── data/
-│   └── external/           # Sample input files
-├── notebooks/              # Jupyter notebooks for testing and analysis
-├── src/                    # Core Python modules
-│   ├── spacing_calculator.py
-│   └── utils.py
-├── requirements.txt        # Python dependencies
-├── README.md               # Project documentation
+```text
+├── src/                         # Core Python library
+│   ├── utils/                   # logging, multi-DB manager, data wrangling
+│   └── well_data/               # data loading + UTM, spacing engine, role assignment
+├── dashboard/                   # Dash app (upload → map → configure → calculate → explore → export)
+├── notebooks/                   # Jupyter notebooks (power-user / integration checks)
+├── tests/                       # pytest suite (unit + integration)
+├── run_dashboard.py             # dashboard launcher
+├── requirements.txt             # Python dependencies
+└── README.md
 ```
 
 ## Installation
 
-1. **Clone the Repository**:
+1. **Clone the repository**:
+
    ```bash
    git clone https://github.com/apoorvasaxena03/well-spacing-analyzer.git
    cd well-spacing-analyzer
    ```
 
-2. **Create a Virtual Environment**:
+2. **Create a virtual environment**:
+
    ```bash
    python -m venv venv
    source venv/bin/activate     # On Windows: venv\Scripts\activate
    ```
 
-3. **Install Dependencies**:
+3. **Install dependencies**:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 ## Usage
 
-1. **Prepare Input Files**:
-   - Directional survey and header files in `.csv` or `.xlsx` format.
-   - Input should include UWI/API, measured depth, latitude/longitude or surface location, and TVD.
-
-2. **Run the Spacing Calculation Script**:
-   ```bash
-   python src/spacing_calculator.py --input data/external/midland.csv --output results/midland_spacing.csv
-   ```
-
-3. **Load into Spotfire**:
-   - Import the spacing output into Spotfire to generate a gun barrel dashboard for fast visual interpretation.
-
-## Example
+### Option A — Dashboard (no code)
 
 ```bash
-python src/spacing_calculator.py --input data/external/midland.csv --output results/midland_spacing.csv
+python run_dashboard.py          # add --debug for verbose logging
+```
+
+Then open the app in your browser and follow the guided flow: **Upload → Map Columns →
+Configure → Calculate → Explore → Export**. Header, directional survey, and production
+files are mapped to canonical column names in the app — any naming convention works.
+
+### Option B — Library / notebooks (power users)
+
+Use the `src/` classes directly (`WellDataLoader` → `GeoSurveyProcessor` →
+`WellSpacingCalculator` → `OverlappingNeighborhoodRoles`). See
+`notebooks/RingEnergy/well_spacing_RingEnergy_v2.ipynb` for a complete reference run, and
+`.claude/docs/` for architecture, algorithms, and data-format references.
+
+## Tests
+
+```bash
+pytest                           # unit + integration suite under tests/
 ```
 
 ## License

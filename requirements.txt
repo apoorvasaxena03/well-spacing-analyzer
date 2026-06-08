@@ -4,7 +4,7 @@ dash-bootstrap-components>=2.0
 dash-leaflet>=1.1
 plotly>=6.0
 flask-caching>=2.3
-diskcache>=5.6
+diskcache>=5.6          # NOTE: CVE-2025-69872 has no patched release yet (2026-06)
 rapidfuzz>=3.0
 
 asttokens
@@ -21,12 +21,12 @@ debugpy
 decorator
 dill
 executing
-filelock
+filelock>=3.20.3        # CVE-2026-22701
 fonttools
 fsspec
 geopandas
 hdbscan
-idna
+idna>=3.15              # CVE-2026-45409
 iniconfig
 ipykernel
 ipython
@@ -49,24 +49,26 @@ openpyxl
 packaging
 pandas
 parso
-pillow
+pillow>=12.2.0          # CVE-2026-25990/40192/42309/42310/42311, PYSEC-2026-165
 platformdirs
 pluggy
 prompt_toolkit
 psutil
 pure_eval
 py-expression-eval
+pyarrow>=23.0.1         # PYSEC-2026-113 (transitive via databricks)
 pyDOE
-Pygments
+Pygments>=2.20.0        # CVE-2026-4539
+PyJWT>=2.13.0           # PYSEC-2026-120/175-179 (transitive via databricks)
 pyodbc
 pyogrio
 pyparsing
 pyproj
-pytest
+pytest>=9.0.3           # CVE-2025-71176
 python-dateutil
 pytz
 pyzmq
-requests
+requests>=2.33.0        # CVE-2026-25645
 requests-oauthlib
 scikit-learn
 scipy
@@ -81,13 +83,13 @@ stack-data
 sympy
 tabulate
 threadpoolctl
-torch
-tornado
+torch                   # NOTE: PYSEC-2026-139 has no patched release yet (2026-06)
+tornado>=6.5.5          # CVE-2026-35536, GHSA-78cv-mqj4-43f7, PYSEC-2026-140
 tqdm
 traitlets
 typing_extensions
 tzdata
-urllib3
+urllib3>=2.7.0          # CVE-2026-21441, PYSEC-2026-141/142
 wcwidth
-wheel
+wheel>=0.46.2           # CVE-2026-24049
 -e .

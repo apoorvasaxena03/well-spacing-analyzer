@@ -30,6 +30,7 @@ from dashboard.pipeline import (
     compute_gun_barrel,
     load_cached_pipeline,
     load_cached_ik_heeltoe,
+    recompute_roles,
     save_ui_state,
     load_ui_state,
 )
@@ -212,6 +213,13 @@ layout = dbc.Container(
                         size="sm",
                     ),
                     dbc.Button(
+                        "Tune Roles",
+                        id="btn-tune-roles",
+                        color="outline-info",
+                        size="sm",
+                        className="ms-2",
+                    ),
+                    dbc.Button(
                         "Save Settings",
                         id="btn-save-ui",
                         color="success",
@@ -274,6 +282,109 @@ layout = dbc.Container(
             dbc.ModalHeader(dbc.ModalTitle("Spacing vs. Production"), close_button=True),
             dbc.ModalBody(dcc.Graph(id="modal-spacing-prod-chart", style={"height": "85vh"})),
         ], id="modal-spacing-prod", size="xl", fullscreen="xl-down", is_open=False),
+
+        # Tune Roles — on-demand role re-assignment (no spacing re-run)
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Tune Role Assignment (Parent / Child / Infill)")),
+            dbc.ModalBody([
+                html.P(
+                    "Re-assign parent / child / infill roles on the already-computed spacing — "
+                    "no need to re-run the full calculation. Adjust the thresholds and click "
+                    "Re-run; the map and Statistics charts update. All five pair types participate "
+                    "by default; cross-bench pairs are gated by a vertical separation threshold.",
+                    className="text-muted small mb-3",
+                ),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Parallel same-bench (ft)"),
+                        dbc.Input(id="rm-parallel-eps", type="number", value=1320, min=100, max=5000, step=10),
+                        dbc.FormText("Max hz_effective for parallel same-bench pairs. "
+                                     "Shell URTeC-2691962; SPE HFTC 2020. Default: 1,320 ft."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Perpendicular (ft)"),
+                        dbc.Input(id="rm-perp-eps", type="number", value=1000, min=100, max=5000, step=10),
+                        dbc.FormText("Max hz_effective for perpendicular pairs. "
+                                     "Based on Wolfcamp frac half-length. Default: 1,000 ft."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Oblique (ft)"),
+                        dbc.Input(id="rm-oblique-eps", type="number", value=1100, min=100, max=5000, step=10),
+                        dbc.FormText("Max hz_effective for oblique pairs. Interpolated "
+                                     "between parallel and perp. Default: 1,100 ft."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Cross-bench parallel (ft)"),
+                        dbc.Input(id="rm-cross-bench-eps", type="number", value=1320, min=100, max=5000, step=10),
+                        dbc.FormText("Max distance for cross-bench parallel pairs. "
+                                     "Uses 3D distance. Default: 1,320 ft."),
+                    ], md=3),
+                ]),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Vertical gate (ft)"),
+                        dbc.Input(id="rm-vert-gate", type="number", value=200, min=50, max=1000, step=10),
+                        dbc.FormText("Max TVD separation for cross-bench pairs. HFTS-2 shows "
+                                     "frac height 200–500 ft; SPE-223524 confirms cross-bench "
+                                     "interference at 200–400 ft. Default: 200 ft."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Inner zone (ft)"),
+                        dbc.Input(id="rm-inner-zone", type="number", value=660, min=100, max=2000, step=10),
+                        dbc.FormText("High-severity zone. Neighbors within this distance are "
+                                     "flagged. SPE HFTC 2020: ~24% prod damage. Default: 660 ft."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Child window (months)"),
+                        dbc.Input(id="rm-child-window", type="number", value=18, min=1, max=60, step=1),
+                        dbc.FormText("Max months after parent completion to label as gen1_child "
+                                     "(vs late_child). Default: 18 months."),
+                    ], md=3),
+                    dbc.Col([
+                        dbc.Label("Infill min older"),
+                        dbc.Input(id="rm-infill-min-older", type="number", value=2, min=1, max=10, step=1),
+                        dbc.FormText("Min older eligible neighbors for infill_candidate. Default: 2."),
+                    ], md=3),
+                ], className="mt-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("No-neighbor wells"),
+                        dbc.Switch(id="rm-no-neighbor-as-parent", value=False,
+                                   label="Treat as parent", className="mt-1"),
+                        dbc.FormText("When ON, wells with no eligible neighbors are labeled 'parent' "
+                                     "(drilled in isolation — parent by nature). When OFF (default), "
+                                     "they get a separate 'no_eligible_neighbor' label so you can "
+                                     "distinguish them in production analysis."),
+                    ], md=6),
+                ], className="mt-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Pair types for role assignment", className="mb-1"),
+                        dbc.Checklist(
+                            id="rm-pair-types",
+                            options=[
+                                {"label": "Parallel same-bench",  "value": "parallel_same_bench"},
+                                {"label": "Cross-formation",      "value": "cross_formation"},
+                                {"label": "Perpendicular",        "value": "cross_orientation"},
+                                {"label": "Oblique same-bench",   "value": "oblique_same_bench"},
+                                {"label": "Oblique cross-bench",  "value": "oblique_cross_bench"},
+                            ],
+                            value=["parallel_same_bench", "cross_formation", "cross_orientation",
+                                   "oblique_same_bench", "oblique_cross_bench"],
+                            inline=True, input_class_name="me-1", label_class_name="small me-3",
+                        ),
+                        dbc.FormText("All types ON by default. Uncheck to exclude specific pair "
+                                     "types from role assignment (they still appear as interference tags)."),
+                    ]),
+                ], className="mt-3"),
+                html.Hr(),
+                dcc.Loading(html.Div(id="roles-status", className="small"), type="default"),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("Re-run Role Assignment", id="btn-rerun-roles", color="info"),
+                dbc.Button("Close", id="btn-close-roles", color="secondary", outline=True),
+            ]),
+        ], id="modal-roles", size="xl", scrollable=True, is_open=False),
 
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
@@ -3704,3 +3815,69 @@ def expand_spacing_prod(n_clicks, fig):
     if not fig:
         return False, empty_figure("No data.")
     return True, fig
+
+
+# ---------------------------------------------------------------------------
+# Tune Roles — on-demand role re-assignment (re-runs only roles on cached pairs)
+# ---------------------------------------------------------------------------
+
+@callback(
+    Output("modal-roles", "is_open"),
+    Input("btn-tune-roles", "n_clicks"),
+    Input("btn-close-roles", "n_clicks"),
+    State("modal-roles", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_roles_modal(open_click, close_click, is_open):
+    return not is_open
+
+
+@callback(
+    Output("pipeline-result-store", "data", allow_duplicate=True),
+    Output("roles-status", "children"),
+    Input("btn-rerun-roles", "n_clicks"),
+    State("pipeline-result-store", "data"),
+    State("rm-parallel-eps", "value"),
+    State("rm-perp-eps", "value"),
+    State("rm-oblique-eps", "value"),
+    State("rm-cross-bench-eps", "value"),
+    State("rm-vert-gate", "value"),
+    State("rm-inner-zone", "value"),
+    State("rm-child-window", "value"),
+    State("rm-infill-min-older", "value"),
+    State("rm-no-neighbor-as-parent", "value"),
+    State("rm-pair-types", "value"),
+    prevent_initial_call=True,
+)
+def rerun_roles(n_clicks, pipeline_result, parallel_eps, perp_eps, oblique_eps,
+                cross_bench_eps, vert_gate, inner_zone, child_window,
+                infill_min_older, no_neighbor_as_parent, pair_types):
+    """Re-run role assignment on the cached pairs with the modal's thresholds and
+    bump 'roles_rev' so the map + Statistics charts refresh — no spacing re-run."""
+    import logging
+    _log = logging.getLogger("dashboard")
+    if not pipeline_result or not pipeline_result.get("cache_path"):
+        return dash.no_update, dbc.Alert("Run the pipeline first.", color="warning", className="mb-0")
+    try:
+        all_types = ["parallel_same_bench", "cross_formation", "cross_orientation",
+                     "oblique_same_bench", "oblique_cross_bench"]
+        counts = recompute_roles(
+            pipeline_result["cache_path"],
+            parallel_eps_ft=float(parallel_eps or 1320),
+            perp_eps_ft=float(perp_eps or 1000),
+            oblique_eps_ft=float(oblique_eps or 1100),
+            cross_bench_eps_ft=float(cross_bench_eps or 1320),
+            cross_bench_vertical_gate_ft=float(vert_gate or 200),
+            inner_zone_ft=float(inner_zone or 660),
+            child_window_months=float(child_window or 18),
+            infill_min_older=int(infill_min_older or 2),
+            treat_no_neighbor_as_parent=bool(no_neighbor_as_parent),
+            role_pair_types={t: (t in (pair_types or [])) for t in all_types},
+        )
+        new_store = dict(pipeline_result)
+        new_store["roles_rev"] = (pipeline_result.get("roles_rev", 0) or 0) + 1
+        summary = " · ".join(f"{k}: {v:,}" for k, v in sorted(counts.items()))
+        return new_store, dbc.Alert(f"Roles updated — {summary}", color="success", className="mb-0")
+    except Exception as exc:
+        _log.exception("Role re-run failed: %s", exc)
+        return dash.no_update, dbc.Alert(f"Role re-run failed: {exc}", color="danger", className="mb-0")

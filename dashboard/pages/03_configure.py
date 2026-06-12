@@ -193,19 +193,6 @@ layout = dbc.Container(
                                 ],
                                 md=4,
                             ),
-                            dbc.Col(
-                                [
-                                    dbc.Label("Spacing cutoff (ft)"),
-                                    dbc.Input(
-                                        id="cfg-cutoff-ft",
-                                        type="number",
-                                        value=5280,
-                                        min=100, max=50000, step=100,
-                                    ),
-                                    dbc.FormText("Pairs with horizontal spacing > cutoff are excluded."),
-                                ],
-                                md=4,
-                            ),
                         ],
                         className="mb-3",
                     ),
@@ -263,11 +250,10 @@ layout = dbc.Container(
             className="mb-3",
         ),
 
-        # ---- Card 2: Advanced Spacing Engine ----
-        dbc.Card(
-            dbc.CardBody(
+        # ---- Card 2: Advanced Spacing Engine (collapsed — most users keep defaults) ----
+        dbc.Accordion(
+            dbc.AccordionItem(
                 [
-                    html.H6("Advanced Spacing Engine", className="mb-1"),
                     html.P(
                         "Fine-tune the pairwise spacing computation. These affect how well pairs "
                         "are sampled, classified (parallel/oblique/perpendicular), and measured. "
@@ -424,8 +410,10 @@ layout = dbc.Container(
                         ],
                         className="mt-3",
                     ),
-                ]
+                ],
+                title="Advanced Spacing Engine — most users can keep the defaults",
             ),
+            start_collapsed=True,
             className="mb-3",
         ),
 
@@ -722,7 +710,6 @@ def detect_utm_zones(upload_store):
     Input("btn-save-config", "n_clicks"),
     State("cfg-utm-zone", "value"),
     State("cfg-max-distance", "value"),
-    State("cfg-cutoff-ft", "value"),
     State("cfg-batch-size", "value"),
     State("cfg-directional-source", "value"),
     State("cfg-bench-filter", "value"),
@@ -744,7 +731,7 @@ def detect_utm_zones(upload_store):
     prevent_initial_call=True,
 )
 def save_config(
-    n_clicks, utm_zone, max_dist, cutoff_ft, batch_size,
+    n_clicks, utm_zone, max_dist, batch_size,
     dir_source, bench_filter, rsv_cats, prod_cutoff, duc_age, permit_window,
     step_ft, max_crossline_ft, crossline_percentile,
     theta_parallel_deg, theta_perp_deg, contact_threshold_ft,
@@ -756,7 +743,6 @@ def save_config(
     cfg = {
         "utm_zone": utm,
         "max_distance_miles": float(max_dist or 4.0),
-        "cutoff_ft": float(cutoff_ft or 5280),
         "batch_size": int(batch_size or 200_000),
         "directional_source": dir_source if dir_source != "auto" else None,
         "bench_filter": bench_filter or [],

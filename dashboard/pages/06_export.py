@@ -237,10 +237,19 @@ def _do_export_inner(pipeline_result, fmt, include):
     run_id = pipeline_result.get("run_id", "export")
 
     if fmt == "csv":
-        name = list(sheets.keys())[0]
-        df = sheets[name]
-        filename = f"{name}_{run_id}.csv"
-        return dcc.send_data_frame(df.to_csv, filename, index=False), "", False
+        if len(sheets) == 1:
+            name, df = next(iter(sheets.items()))
+            filename = f"{name}_{run_id}.csv"
+            return dcc.send_data_frame(df.to_csv, filename, index=False), "", False
+        # Multiple datasets selected → zip one CSV per dataset rather than
+        # silently dropping all but the first.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for sheet_name, df in sheets.items():
+                zf.writestr(f"{sheet_name}.csv", df.to_csv(index=False))
+        buf.seek(0)
+        filename = f"spacing_results_csv_{run_id}.zip"
+        return dcc.send_bytes(buf.getvalue(), filename), "", False
 
     else:
         # Excel: all selected datasets as separate sheets

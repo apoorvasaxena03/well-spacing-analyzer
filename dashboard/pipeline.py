@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pickle
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -419,7 +420,6 @@ def run_spacing_calculation(
     header_df: pd.DataFrame,
     lateral_df: pd.DataFrame,
     max_distance_miles: float = 4.0,
-    cutoff_ft: float = 5280.0,
     batch_size: int = 200_000,
     run_id: str | None = None,
     stats: PipelineStats | None = None,
@@ -458,7 +458,6 @@ def run_spacing_calculation(
         header_df: Processed header DataFrame.
         lateral_df: Lateral-only directional survey DataFrame.
         max_distance_miles: Pre-filter spatial radius.
-        cutoff_ft: Maximum spacing distance to include in results.
         batch_size: Pairs per batch (memory control).
         run_id: Optional run identifier for logging.
         stats: PipelineStats tracker.
@@ -474,8 +473,8 @@ def run_spacing_calculation(
     set_run_id(rid)
 
     n_wells = lateral_df["uwi"].nunique() if "uwi" in lateral_df.columns else "?"
-    logger.info("=== Spacing calculation START | wells=%s | max_dist=%.1f mi | cutoff=%g ft | batch=%d ===",
-                n_wells, max_distance_miles, cutoff_ft, batch_size)
+    logger.info("=== Spacing calculation START | wells=%s | max_dist=%.1f mi | batch=%d ===",
+                n_wells, max_distance_miles, batch_size)
 
     t0 = time.perf_counter()
     calculator = WellSpacingCalculator(
@@ -594,7 +593,11 @@ def run_spacing_calculation(
     # NOTE: DirectionalBenchNeighbors, AvgSpacingCalculator, and FloatingSectionWPS
     # are now run on-demand from the Explore page (not during batch calculation).
     cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
-    with open(cache_key, "wb") as f:
+    # Write to a temp file then atomically replace, so an interrupted write
+    # (run_dashboard.py hard-kills the process on SIGINT) can't leave a
+    # truncated, unloadable pickle that breaks every Explore callback.
+    tmp_key = cache_key.with_suffix(".tmp")
+    with open(tmp_key, "wb") as f:
         pickle.dump(
             {
                 "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
@@ -608,6 +611,7 @@ def run_spacing_calculation(
             },
             f,
         )
+    tmp_key.replace(cache_key)
     logger.info("=== Spacing calculation DONE | total=%.1fs | cache=%s ===",
                 time.perf_counter() - t0, cache_key.name)
 
@@ -663,10 +667,29 @@ def assign_well_roles(
 # Cache loaders (used by callbacks in Explore step)
 # ---------------------------------------------------------------------------
 
-def load_cached_pipeline(cache_path: str) -> dict[str, pd.DataFrame]:
-    """Load cached pipeline output from disk."""
+@lru_cache(maxsize=2)
+def _load_pickle_by_key(cache_path: str, _mtime: float) -> dict:
     with open(cache_path, "rb") as f:
         return pickle.load(f)
+
+
+def load_cached_pipeline(cache_path: str) -> dict[str, pd.DataFrame]:
+    """Load cached pipeline output from disk.
+
+    Memoized on (path, mtime): a single user interaction (e.g. a map click)
+    fans out to many callbacks that each need this data — without the memo,
+    every one re-unpickles the full session (pairs + survey + production) from
+    disk. The mtime in the cache key invalidates automatically when the cache
+    file is rewritten.
+
+    NOTE: the returned dict is shared across callers within a render — copy any
+    frame before mutating it (the callbacks already do ``header_df.copy()``).
+    """
+    try:
+        mtime = Path(cache_path).stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return _load_pickle_by_key(cache_path, mtime)
 
 
 import json as _json

@@ -204,7 +204,6 @@ def show_summary(upload_store, config_store, col_map_store):
         f"Header: {upload_store.get('header_filename', 'n/a')}",
         f"Directional: {upload_store.get('directional_filename', 'n/a')}",
         f"Max distance: {config_store.get('max_distance_miles', 4.0)} miles",
-        f"Cutoff: {config_store.get('cutoff_ft', 5280):,} ft",
         f"Batch size: {int(config_store.get('batch_size', 200_000)):,} pairs",
     ]
     if config_store.get("rsv_categories"):
@@ -300,7 +299,6 @@ def run_calculation(set_progress, n_clicks, upload_store, col_map_store, config_
             header_df=header_df,
             lateral_df=lateral_df,
             max_distance_miles=config_store.get("max_distance_miles", 4.0),
-            cutoff_ft=config_store.get("cutoff_ft", 5280),
             batch_size=config_store.get("batch_size", 200_000),
             run_id=run_id,
             stats=stats,

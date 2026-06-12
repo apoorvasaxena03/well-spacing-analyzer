@@ -14,6 +14,8 @@ suppress_callback_exceptions for these specific components.
 """
 
 import dash
+import functools
+import logging
 import numpy as np
 import pandas as pd
 import dash_bootstrap_components as dbc
@@ -54,6 +56,23 @@ _ROLE_COLORS: dict[str, str] = {
     "infill_candidate":    "#F44336",  # red
     "no_eligible_neighbor": "#9E9E9E", # grey
 }
+
+
+def safe_callback(fn):
+    """Wrap a callback so an unexpected error is logged and the update aborted
+    (PreventUpdate) instead of crashing the UI. Use on callbacks that don't
+    already return a user-facing error state — the project rule is that a
+    callback must never crash silently."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except dash.exceptions.PreventUpdate:
+            raise
+        except Exception:
+            logging.getLogger("dashboard").exception("Callback %s failed", fn.__name__)
+            raise dash.exceptions.PreventUpdate
+    return wrapper
 
 
 def _build_color_map(values: list[str], prop: str = "") -> dict[str, str]:
@@ -2170,6 +2189,7 @@ _SKIP_COLS = {"uwi", "surface_lat", "surface_lon", "latitude", "longitude", "geo
     Input("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
+@safe_callback
 def populate_and_restore(pipeline_result):
     """Build color-by dropdown options from all header columns + spud_year."""
     # Base options always available
@@ -2363,6 +2383,7 @@ def save_ui_on_click(
     Input("pipeline-result-store", "data"),
     prevent_initial_call=False,
 )
+@safe_callback
 def load_map_layers(pipeline_result):
     """Populate map with wellbore trajectory lines and bottomhole circle markers."""
     import logging
@@ -3209,6 +3230,7 @@ def clear_selection(n):
     State("filter-uwis-store", "data"),
     prevent_initial_call=True,
 )
+@safe_callback
 def zoom_to_wells(n, pipeline_result, filter_uwis):
     """Fit map center and zoom to show all currently visible wells."""
     import math

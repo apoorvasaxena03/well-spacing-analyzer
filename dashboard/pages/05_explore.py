@@ -1269,9 +1269,19 @@ layout = dbc.Container(
 
                             html.Hr(),
 
-                            # ── Directional Bench Neighbors ──
-                            dbc.Accordion([
-                                dbc.AccordionItem([
+                            # ── Analysis tools (nav-rail: one tool at a time) ──
+                            dbc.Row([
+                                dbc.Col(dbc.Nav([
+                                    dbc.NavLink("Directional Bench Neighbors",   id="anav-link-dbn",        active=True,  className="px-2 py-1 small"),
+                                    dbc.NavLink("Average Spacing",               id="anav-link-avg",        active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Floating Section WPS",          id="anav-link-wps",        active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Debug Pair Spacing",            id="anav-link-debug-pair", active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("WPS Visualization",             id="anav-link-wps-viz",    active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Avg Spacing Neighborhood Plot", id="anav-link-avg-viz",    active=False, className="px-2 py-1 small"),
+                                ], vertical=True, pills=True), md=3, className="border-end pe-2"),
+                                dbc.Col([
+                                # ── Directional Bench Neighbors ──
+                                html.Div([
                                     html.P(
                                         "Reduces the pairwise IK spacing table to one row per well. "
                                         "For each well_i, picks up to 4 nearest neighbors: "
@@ -1316,10 +1326,10 @@ layout = dbc.Container(
                                         tooltip_duration=None,
                                         fixed_rows={"headers": True},
                                     ),
-                                ], title="Directional Bench Neighbors", item_id="acc-dbn"),
+                                ], id="anav-content-dbn"),
 
                                 # ── Average Spacing ──
-                                dbc.AccordionItem([
+                                html.Div([
                                     html.P(
                                         "Computes the average well spacing for each well by building a "
                                         "neighborhood of eligible neighbors and computing chain or dense "
@@ -1404,10 +1414,10 @@ layout = dbc.Container(
                                         tooltip_duration=None,
                                         fixed_rows={"headers": True},
                                     ),
-                                ], title="Average Spacing", item_id="acc-avg"),
+                                ], id="anav-content-avg", style={"display": "none"}),
 
                                 # ── Floating Section WPS ──
-                                dbc.AccordionItem([
+                                html.Div([
                                     html.P(
                                         "Counts how many wells have lateral inside a floating rectangular "
                                         "section centered on each well (Wells Per Section). Computes counts "
@@ -1513,10 +1523,10 @@ layout = dbc.Container(
                                         tooltip_duration=None,
                                         fixed_rows={"headers": True},
                                     ),
-                                ], title="Floating Section WPS", item_id="acc-wps"),
+                                ], id="anav-content-wps", style={"display": "none"}),
 
                                 # ── Debug Pair Spacing (Phase B) ──
-                                dbc.AccordionItem([
+                                html.Div([
                                     html.P(
                                         "Generate detailed diagnostic plots for a specific well pair (i, k). "
                                         "Shows UTM map view, projected i-frame, overlap band, crossline distance "
@@ -1633,10 +1643,10 @@ layout = dbc.Container(
                                                    className="mb-2"),
                                         html.Div(id="debug-pair-plots"),
                                     ], className="mt-2"),
-                                ], title="Debug Pair Spacing", item_id="acc-debug-pair"),
+                                ], id="anav-content-debug-pair", style={"display": "none"}),
 
                                 # ── WPS Visualization (Phase B) ──
-                                dbc.AccordionItem([
+                                html.Div([
                                     html.P(
                                         "Visualize the floating section box/corridor for a single reference well. "
                                         "Shows the reference lateral (bold), the bounding region, and all neighbors "
@@ -1704,10 +1714,10 @@ layout = dbc.Container(
                                                    className="mb-2"),
                                         html.Div(id="wps-viz-plot"),
                                     ], className="mt-2"),
-                                ], title="WPS Visualization", item_id="acc-wps-viz"),
+                                ], id="anav-content-wps-viz", style={"display": "none"}),
 
                                 # ── Avg Spacing Neighborhood Plot (Phase B) ──
-                                dbc.AccordionItem([
+                                html.Div([
                                     html.P(
                                         "Diagnostic plot showing a well's neighborhood: lateral trajectories, "
                                         "midpoints, cutoff circle, convex hull, and chain/dense edge overlays. "
@@ -1775,9 +1785,9 @@ layout = dbc.Container(
                                                    className="mb-2"),
                                         html.Div(id="avg-viz-plot"),
                                     ], className="mt-2"),
-                                ], title="Avg Spacing Neighborhood Plot", item_id="acc-avg-viz"),
-
-                            ], start_collapsed=False, always_open=True),
+                                ], id="anav-content-avg-viz", style={"display": "none"}),
+                                ], md=9),
+                            ]),
                         ]), className="mt-0"),
                     ]),  # end Analysis tab
                   ], id="right-panel-tabs", active_tab="tab-charts"),
@@ -3887,3 +3897,25 @@ def rerun_roles(n_clicks, pipeline_result, parallel_eps, perp_eps, oblique_eps,
     except Exception as exc:
         _log.exception("Role re-run failed: %s", exc)
         return dash.no_update, dbc.Alert(f"Role re-run failed: {exc}", color="danger", className="mb-0")
+
+
+# ---------------------------------------------------------------------------
+# Analysis tab nav-rail — show one tool's panel at a time
+# ---------------------------------------------------------------------------
+
+_ANALYSIS_TOOLS = ["dbn", "avg", "wps", "debug-pair", "wps-viz", "avg-viz"]
+
+
+@callback(
+    *[Output(f"anav-content-{t}", "style") for t in _ANALYSIS_TOOLS],
+    *[Output(f"anav-link-{t}", "active") for t in _ANALYSIS_TOOLS],
+    *[Input(f"anav-link-{t}", "n_clicks") for t in _ANALYSIS_TOOLS],
+    prevent_initial_call=True,
+)
+def switch_analysis_tool(*_clicks):
+    """Show only the clicked tool's panel; mark its nav pill active."""
+    trig = dash.ctx.triggered_id or f"anav-link-{_ANALYSIS_TOOLS[0]}"
+    active = trig.replace("anav-link-", "")
+    styles = [{} if t == active else {"display": "none"} for t in _ANALYSIS_TOOLS]
+    actives = [t == active for t in _ANALYSIS_TOOLS]
+    return (*styles, *actives)

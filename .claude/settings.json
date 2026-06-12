@@ -86,7 +86,9 @@
       "Bash(venv/Scripts/pytest.exe -q)",
       "Bash(grep -nA25 \"def _calculate_spacing_statistics\" src/well_data/well_spacing_stats.py)",
       "Bash(grep -vE \"Calculating Spacing|^\\\\s*$\")",
-      "Bash(grep -iE \"numpy| np$|plotly|express| px|_ROLE_COLORS|pandas| pd$\")"
+      "Bash(grep -iE \"numpy| np$|plotly|express| px|_ROLE_COLORS|pandas| pd$\")",
+      "Bash(grep -nA2 \"def run_floating_wps\\\\|def run_avg_spacing\" dashboard/pipeline.py)",
+      "Bash(DASHBOARD_LOG_LEVEL=INFO timeout 18 python dashboard/app.py)"
     ],
     "deny": [
       "Bash(git push --force*)",

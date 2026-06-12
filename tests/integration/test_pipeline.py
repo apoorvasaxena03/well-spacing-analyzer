@@ -19,12 +19,45 @@ import pytest
 
 from dashboard.pipeline import (
     _auto_detect_utm,
+    _merge_roles_into_header,
     compute_gun_barrel,
     load_cached_pipeline,
     project_and_extract_laterals,
 )
 
 pytestmark = pytest.mark.integration
+
+
+class TestMergeRolesIntoHeader:
+    """The on-demand 'Tune Roles' flow re-merges roles into an already-merged
+    header; the merge must be idempotent (no role_x/role_y duplicates)."""
+
+    @staticmethod
+    def _roles():
+        return pd.DataFrame({
+            "uwi": ["A", "B"],
+            "role": ["parent", "child"],
+            "parent_uwi": [None, "A"],
+            "parent_dist_ft": [None, 640.0],
+            "parent_vertical_ft": [None, 30.0],
+            "days_since_parent": [None, 200.0],
+            "child_gen": [None, "gen1_child"],
+        })
+
+    def test_first_merge_adds_roles_and_fills_unmatched(self):
+        header = pd.DataFrame({"uwi": ["A", "B", "C"], "bench": ["W", "W", "X"]})
+        out = _merge_roles_into_header(header, self._roles())
+        assert out.set_index("uwi")["role"].to_dict() == {
+            "A": "parent", "B": "child", "C": "no_eligible_neighbor"}
+        assert "parent_dist_ft" in out.columns
+
+    def test_re_merge_is_idempotent(self):
+        header = pd.DataFrame({"uwi": ["A", "B", "C"], "bench": ["W", "W", "X"]})
+        once = _merge_roles_into_header(header, self._roles())
+        twice = _merge_roles_into_header(once, self._roles())  # the re-tune case
+        assert not [c for c in twice.columns if c.endswith(("_x", "_y"))]
+        assert list(once.columns) == list(twice.columns)
+        assert twice.set_index("uwi")["role"].to_dict() == once.set_index("uwi")["role"].to_dict()
 
 
 # ---------------------------------------------------------------------------

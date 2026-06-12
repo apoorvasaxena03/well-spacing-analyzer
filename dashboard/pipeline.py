@@ -416,6 +416,36 @@ def _auto_detect_utm(header_df: pd.DataFrame) -> str:
 # Spacing calculation (designed to run in dash.long_callback)
 # ---------------------------------------------------------------------------
 
+_ROLE_MERGE_COLS = [
+    "uwi", "role", "parent_uwi", "parent_dist_ft",
+    "parent_vertical_ft", "days_since_parent", "child_gen",
+]
+
+
+def _merge_roles_into_header(header_df: pd.DataFrame, df_well_roles: pd.DataFrame) -> pd.DataFrame:
+    """Merge role + parent-distance fields onto header_df.
+
+    Idempotent: drops any pre-existing role columns first, so re-running role
+    assignment (the on-demand 'Tune Roles' flow) never produces role_x/role_y
+    duplicates that would break the map/charts which look for the bare names.
+    """
+    cols = [c for c in _ROLE_MERGE_COLS if c in df_well_roles.columns]
+    drop = [c for c in cols if c != "uwi" and c in header_df.columns]
+    out = header_df.drop(columns=drop, errors="ignore").merge(
+        df_well_roles[cols], on="uwi", how="left",
+    )
+    out["role"] = out["role"].fillna("no_eligible_neighbor")
+    return out
+
+
+def _write_pipeline_cache(cache_key: Path, payload: dict) -> None:
+    """Atomically write the pipeline cache pickle (temp file → replace)."""
+    tmp = Path(cache_key).with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(payload, f)
+    Path(tmp).replace(cache_key)
+
+
 def run_spacing_calculation(
     header_df: pd.DataFrame,
     lateral_df: pd.DataFrame,
@@ -533,16 +563,8 @@ def run_spacing_calculation(
 
     # Merge role + parent-distance fields into header_df: 'role' is a map GeoJSON
     # property; the parent_* / days_since_parent fields feed the Explore
-    # Spacing-vs-Production scatter. Only merge columns the assigner produced.
-    role_cols = [
-        c for c in ["uwi", "role", "parent_uwi", "parent_dist_ft",
-                    "parent_vertical_ft", "days_since_parent", "child_gen"]
-        if c in df_well_roles.columns
-    ]
-    header_df = header_df.merge(
-        df_well_roles[role_cols], on="uwi", how="left",
-    )
-    header_df["role"] = header_df["role"].fillna("no_eligible_neighbor")
+    # Spacing-vs-Production scatter. (Re-tunable later via recompute_roles.)
+    header_df = _merge_roles_into_header(header_df, df_well_roles)
 
     # --- Compute cumulative production metrics and merge into header ---
     # Mirrors notebook cells 9.4–10.2: lateral_length merge → cum volumes → header merge
@@ -592,26 +614,20 @@ def run_spacing_calculation(
     # Cache to disk (include stats)
     # NOTE: DirectionalBenchNeighbors, AvgSpacingCalculator, and FloatingSectionWPS
     # are now run on-demand from the Explore page (not during batch calculation).
-    cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
-    # Write to a temp file then atomically replace, so an interrupted write
+    # Atomic write (temp file → replace), so an interrupted write
     # (run_dashboard.py hard-kills the process on SIGINT) can't leave a
     # truncated, unloadable pickle that breaks every Explore callback.
-    tmp_key = cache_key.with_suffix(".tmp")
-    with open(tmp_key, "wb") as f:
-        pickle.dump(
-            {
-                "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
-                "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
-                "header_df": header_df,            # includes 'role' + cum production metrics
-                "lateral_df": lateral_df,
-                "directional_df": directional_df, # full survey (for map trajectories)
-                "production_df": production_df,   # may be None if not uploaded
-                "df_well_roles": df_well_roles,   # full role table (parent info, confidence, etc.)
-                "stats": stats.to_list(),
-            },
-            f,
-        )
-    tmp_key.replace(cache_key)
+    cache_key = PIPELINE_CACHE_DIR / f"pipeline_{rid}.pkl"
+    _write_pipeline_cache(cache_key, {
+        "df_ik_pairs": df_spacing,        # reject-filtered valid IK pairs
+        "df_ik_pairs_raw": df_spacing_raw,  # ALL IK pairs (including rejected)
+        "header_df": header_df,            # includes 'role' + cum production metrics
+        "lateral_df": lateral_df,
+        "directional_df": directional_df, # full survey (for map trajectories)
+        "production_df": production_df,   # may be None if not uploaded
+        "df_well_roles": df_well_roles,   # full role table (parent info, confidence, etc.)
+        "stats": stats.to_list(),
+    })
     logger.info("=== Spacing calculation DONE | total=%.1fs | cache=%s ===",
                 time.perf_counter() - t0, cache_key.name)
 
@@ -661,6 +677,28 @@ def assign_well_roles(
         treat_no_neighbor_as_parent=treat_no_neighbor_as_parent,
         role_pair_types=role_pair_types,
     )
+
+
+def recompute_roles(cache_path: str, **role_params) -> dict:
+    """Re-run role assignment on the cached IK pairs and rewrite the cache.
+
+    This is the on-demand "Tune Roles" action on the Explore page. It is cheap
+    relative to the spacing calc: it reuses the cached raw pairs + header and
+    re-runs only OverlappingNeighborhoodRoles, re-merging (idempotently) into
+    header_df. It does NOT recompute spacing or cumulative production.
+
+    Returns a dict of role -> count for a status message. After this runs, the
+    cache file's mtime changes (so load_cached_pipeline returns fresh data); the
+    caller must bump a value in pipeline-result-store to make consumers re-fire.
+    """
+    data = dict(load_cached_pipeline(cache_path))
+    df_well_roles = assign_well_roles(
+        data["df_ik_pairs_raw"], data["header_df"], **role_params
+    )
+    data["header_df"] = _merge_roles_into_header(data["header_df"], df_well_roles)
+    data["df_well_roles"] = df_well_roles
+    _write_pipeline_cache(Path(cache_path), data)
+    return data["header_df"]["role"].value_counts().to_dict()
 
 
 # ---------------------------------------------------------------------------

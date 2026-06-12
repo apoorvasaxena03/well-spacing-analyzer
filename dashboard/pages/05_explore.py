@@ -160,22 +160,6 @@ def _clean_dates_for_table(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _expand_neighborhood(IK: pd.DataFrame, uwis: list[str]) -> set[str]:
-    """
-    Expand selected wells to include all direct IK neighbors.
-
-    Mirrors the Spotfire 'data limiting' behaviour: when a well is selected,
-    ALL wells it has spacing pairs with are included in the neighborhood.
-
-    Returns the full set of UWIs (selected + their IK neighbours).
-    """
-    uwi_set = set(str(u) for u in uwis)
-    # Find all pairs involving selected wells (either as well_i or well_k)
-    mask = IK["well_i"].astype(str).isin(uwi_set) | IK["well_k"].astype(str).isin(uwi_set)
-    involved = IK.loc[mask]
-    # Expand: union of all well_i and well_k from those pairs
-    return uwi_set | set(involved["well_i"].astype(str)) | set(involved["well_k"].astype(str))
-
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------

@@ -777,10 +777,10 @@ def load_cached_ik_heeltoe(
         return pd.DataFrame(), pd.DataFrame()
 
     data = load_cached_pipeline(pipeline_result["cache_path"])
-    # Prefer raw IK pairs (well_i, well_k); fall back to enriched summary
+    # Prefer reject-filtered IK pairs; fall back to the raw pair table.
     df_ik = data.get("df_ik_pairs")
     if df_ik is None:
-        df_ik = data["df_spacing"]
+        df_ik = data.get("df_ik_pairs_raw", pd.DataFrame())
     lateral_df = data["lateral_df"]
 
     # HeelToe: midpoint of each well's lateral (mid_Lat, mid_Lon)
@@ -872,8 +872,14 @@ def compute_gun_barrel(
         dist3d_col = "3D_dist" if "3D_dist" in IK.columns else "dist3d"
 
         GB["next_i_uwi"] = GB["well_i"].shift(-1)
+        # Dedupe on (well_i, well_k) so a duplicated IK pair can't multiply GB
+        # rows and silently corrupt the shift(1).cumsum() chain below.
+        ik_slice = (
+            IK[["well_i", "well_k", "horizontal_dist", "vertical_dist", dist3d_col]]
+            .drop_duplicates(subset=["well_i", "well_k"])
+        )
         GB = GB.merge(
-            IK[["well_i", "well_k", "horizontal_dist", "vertical_dist", dist3d_col]],
+            ik_slice,
             left_on=["well_i", "next_i_uwi"],
             right_on=["well_i", "well_k"],
             how="left",

@@ -90,6 +90,14 @@ class TestComputeGunBarrel:
         has_3d = "3D_dist" in gb.columns or "dist3d" in gb.columns
         assert has_3d
 
+    def test_duplicate_ik_pairs_do_not_multiply_rows(self, ik_spacing_df, heeltoe_df):
+        """A duplicated (well_i, well_k) pair must not multiply GB rows or
+        corrupt the cum_dist chain (deduped before the adjacency merge)."""
+        dup = pd.concat([ik_spacing_df, ik_spacing_df.iloc[[0]]], ignore_index=True)
+        gb = compute_gun_barrel(dup, heeltoe_df)
+        assert len(gb) == ik_spacing_df["well_i"].nunique()
+        assert gb["cum_dist"].is_monotonic_increasing
+
 
 # ---------------------------------------------------------------------------
 # empty_figure

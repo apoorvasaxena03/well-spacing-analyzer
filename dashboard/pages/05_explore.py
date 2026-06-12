@@ -216,7 +216,7 @@ layout = dbc.Container(
                         size="sm",
                     ),
                     dbc.Button(
-                        "Tune Roles",
+                        "Analysis",
                         id="btn-tune-roles",
                         color="outline-info",
                         size="sm",
@@ -286,10 +286,167 @@ layout = dbc.Container(
             dbc.ModalBody(dcc.Graph(id="modal-spacing-prod-chart", style={"height": "85vh"})),
         ], id="modal-spacing-prod", size="xl", fullscreen="xl-down", is_open=False),
 
-        # Tune Roles — on-demand role re-assignment (no spacing re-run)
+        # Analysis — all post-spacing tools (roles + neighbor/spacing/diagnostics)
         dbc.Modal([
-            dbc.ModalHeader(dbc.ModalTitle("Tune Role Assignment (Parent / Child / Infill)")),
-            dbc.ModalBody([
+            dbc.ModalHeader(dbc.ModalTitle("Analysis")),
+                        dbc.Card(dbc.CardBody([
+                            # -- Shared Parameters --
+                            html.H6("Shared Parameters", className="mb-1"),
+                            html.P(
+                                "These thresholds are shared by Directional Bench Neighbors and "
+                                "Average Spacing. They control which IK pairs qualify as neighbors.",
+                                className="text-muted small mb-2",
+                            ),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Cutoff (ft)", size="sm"),
+                                    dbc.Input(id="dbn-cutoff-ft", type="number",
+                                              value=1800, min=0, step=100, size="sm"),
+                                    dbc.FormText(
+                                        "Maximum horizontal spacing (ft) to consider a well a neighbor. "
+                                        "Pairs with horizontal_dist > cutoff are excluded. "
+                                        "Typical range: 800-2,500 ft."
+                                    ),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Vertical cutoff (ft)", size="sm"),
+                                    dbc.Input(id="dbn-vertical-cutoff-ft", type="number",
+                                              placeholder="None", min=0, step=50, size="sm"),
+                                    dbc.FormText(
+                                        "Optional. If set, pairs must also satisfy vertical_dist <= this. "
+                                        "Useful for multi-bench developments where you want to exclude "
+                                        "wells in different benches that are laterally close but vertically far."
+                                    ),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Overlap % min", size="sm"),
+                                    dbc.Input(id="dbn-overlap-pct-min", type="number",
+                                              placeholder="None", min=0, max=1, step=0.05, size="sm"),
+                                    dbc.FormText(
+                                        "Optional. Minimum lateral overlap fraction (0-1) required. "
+                                        "E.g. 0.40 = well_k must overlap at least 40% of well_i's lateral. "
+                                        "Filters out pairs that barely overlap."
+                                    ),
+                                ], md=4),
+                            ], className="mb-2"),
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Axis mode", size="sm"),
+                                    dbc.Select(id="dbn-axis-mode", size="sm", value="any",
+                                               options=[
+                                                   {"label": "Any", "value": "any"},
+                                                   {"label": "EW only", "value": "EW"},
+                                                   {"label": "NS only", "value": "NS"},
+                                               ]),
+                                    dbc.FormText(
+                                        "Direction eligibility. 'Any' = neighbors from all directions. "
+                                        "'EW' = only east/west neighbors. 'NS' = only north/south. "
+                                        "Use when well pattern has a dominant drilling direction."
+                                    ),
+                                ], md=4),
+                                dbc.Col([
+                                    dbc.Label("Prefer axis", size="sm"),
+                                    dbc.Select(id="dbn-prefer-axis", size="sm", value="",
+                                               options=[
+                                                   {"label": "None", "value": ""},
+                                                   {"label": "EW", "value": "EW"},
+                                                   {"label": "NS", "value": "NS"},
+                                               ]),
+                                    dbc.FormText(
+                                        "Optional tie-breaker. When two candidates tie on distance, "
+                                        "prefer the one along this axis. Leave 'None' for no preference."
+                                    ),
+                                ], md=4),
+                            ], className="mb-3"),
+
+                            html.Hr(),
+
+                            # -- Overrides --
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H6("Per-Well Overrides", className="mb-1"),
+                                    html.P(
+                                        "Upload a CSV to set per-well cutoffs that override the shared values above. "
+                                        "Required column: 'uwi'. Optional columns: 'cutoff_ft', 'vertical_cutoff_ft', "
+                                        "'overlap_pct_k_min'. Leave cells blank to fall back to the shared value. "
+                                        "Applies to DBN and Avg Spacing only (WPS has no per-well overrides).",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.RadioItems(
+                                        id="overrides-mode",
+                                        options=[
+                                            {"label": "Shared (DBN + Avg)", "value": "shared"},
+                                            {"label": "Separate per class", "value": "separate"},
+                                        ],
+                                        value="shared",
+                                        inline=True,
+                                        className="small mb-2",
+                                    ),
+                                ]),
+                            ]),
+                            html.Div(id="overrides-shared-div", children=[
+                                dcc.Upload(
+                                    id="overrides-upload",
+                                    children=dbc.Button("Upload overrides CSV", size="sm",
+                                                        color="secondary", outline=True),
+                                    accept=".csv",
+                                ),
+                            ]),
+                            html.Div(id="overrides-separate-div", style={"display": "none"}, children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dbc.Label("DBN overrides", size="sm"),
+                                        dcc.Upload(
+                                            id="overrides-dbn-upload",
+                                            children=dbc.Button("Upload CSV", size="sm",
+                                                                color="secondary", outline=True),
+                                            accept=".csv",
+                                        ),
+                                    ], md=6),
+                                    dbc.Col([
+                                        dbc.Label("Avg overrides", size="sm"),
+                                        dcc.Upload(
+                                            id="overrides-avg-upload",
+                                            children=dbc.Button("Upload CSV", size="sm",
+                                                                color="secondary", outline=True),
+                                            accept=".csv",
+                                        ),
+                                    ], md=6),
+                                ]),
+                            ]),
+                            dash_table.DataTable(
+                                id="overrides-table",
+                                columns=[
+                                    {"name": "uwi", "id": "uwi"},
+                                    {"name": "cutoff_ft", "id": "cutoff_ft", "type": "numeric"},
+                                    {"name": "vertical_cutoff_ft", "id": "vertical_cutoff_ft", "type": "numeric"},
+                                    {"name": "overlap_pct_k_min", "id": "overlap_pct_k_min", "type": "numeric"},
+                                ],
+                                data=[],
+                                editable=True,
+                                row_deletable=True,
+                                page_size=5,
+                                style_table={"overflowX": "auto", "maxHeight": "15vh"},
+                                style_cell={"fontSize": "11px", "padding": "2px 6px"},
+                                style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                            ),
+
+                            html.Hr(),
+
+                            # ── Analysis tools (nav-rail: one tool at a time) ──
+                            dbc.Row([
+                                dbc.Col(dbc.Nav([
+                                    dbc.NavLink("Role Assignment",               id="anav-link-roles",      active=True,  className="px-2 py-1 small"),
+                                    dbc.NavLink("Directional Bench Neighbors",   id="anav-link-dbn",        active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Average Spacing",               id="anav-link-avg",        active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Floating Section WPS",          id="anav-link-wps",        active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Debug Pair Spacing",            id="anav-link-debug-pair", active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("WPS Visualization",             id="anav-link-wps-viz",    active=False, className="px-2 py-1 small"),
+                                    dbc.NavLink("Avg Spacing Neighborhood Plot", id="anav-link-avg-viz",    active=False, className="px-2 py-1 small"),
+                                ], vertical=True, pills=True), md=3, className="border-end pe-2"),
+                                dbc.Col([
+                                # ── Role Assignment ──
+                                html.Div([
                 html.P(
                     "Re-assign parent / child / infill roles on the already-computed spacing — "
                     "no need to re-run the full calculation. Adjust the thresholds and click "
@@ -380,14 +537,522 @@ layout = dbc.Container(
                                      "types from role assignment (they still appear as interference tags)."),
                     ]),
                 ], className="mt-3"),
-                html.Hr(),
-                dcc.Loading(html.Div(id="roles-status", className="small"), type="default"),
-            ]),
-            dbc.ModalFooter([
-                dbc.Button("Re-run Role Assignment", id="btn-rerun-roles", color="info"),
-                dbc.Button("Close", id="btn-close-roles", color="secondary", outline=True),
-            ]),
-        ], id="modal-roles", size="xl", scrollable=True, is_open=False),
+                                    html.Hr(),
+                                    dbc.Button("Re-run Role Assignment", id="btn-rerun-roles", color="info", className="mb-2"),
+                                    dcc.Loading(html.Div(id="roles-status", className="small"), type="default"),
+                                ], id="anav-content-roles"),
+
+                                # ── Directional Bench Neighbors ──
+                                html.Div([
+                                    html.P(
+                                        "Reduces the pairwise IK spacing table to one row per well. "
+                                        "For each well_i, picks up to 4 nearest neighbors: "
+                                        "same-bench closest (same_1), same-bench opposite direction (same_2), "
+                                        "different-bench closest (near_1), different-bench opposite (near_2). "
+                                        "Also classifies each well as Unbounded / Partially / Mostly / Fully Bounded.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    html.P(
+                                        "Uses the shared cutoff, vertical cutoff, overlap, and axis parameters above.",
+                                        className="text-muted small mb-2 fst-italic",
+                                    ),
+                                    dbc.Button("Run Neighbor Summary", id="btn-run-dbn",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="dbn-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="dbn-col-selector",
+                                        multi=True,
+                                        placeholder="Select columns to display...",
+                                        className="mb-2",
+                                        style={"fontSize": "12px"},
+                                    ),
+                                    dash_table.DataTable(
+                                        id="dbn-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "fontSize": "12px",
+                                            "padding": "4px 8px",
+                                            "minWidth": "80px",
+                                            "maxWidth": "250px",
+                                            "overflow": "hidden",
+                                            "textOverflow": "ellipsis",
+                                        },
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], id="anav-content-dbn", style={"display": "none"}),
+
+                                # ── Average Spacing ──
+                                html.Div([
+                                    html.P(
+                                        "Computes the average well spacing for each well by building a "
+                                        "neighborhood of eligible neighbors and computing chain or dense "
+                                        "spacing metrics. Output: one row per well with avg_hz_spacing_ft "
+                                        "and avg_vt_spacing_ft.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Neighborhood mode", size="sm"),
+                                            dbc.Select(id="avg-neighborhood-mode", size="sm", value="chain",
+                                                       options=[
+                                                           {"label": "Chain", "value": "chain"},
+                                                           {"label": "i2nbr", "value": "i2nbr"},
+                                                           {"label": "Dense", "value": "dense"},
+                                                       ]),
+                                            dbc.FormText(
+                                                "Chain (default): orders neighbors A-B-C-D along a line and "
+                                                "averages consecutive edge distances. Best for parallel wells. "
+                                                "i2nbr: simple mean of all i-to-neighbor distances. "
+                                                "Dense: mean of all unique member-member pairs."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Chain sort", size="sm"),
+                                            dbc.Select(id="avg-chain-sort-mode", size="sm", value="pca",
+                                                       options=[
+                                                           {"label": "PCA", "value": "pca"},
+                                                           {"label": "X", "value": "x"},
+                                                       ]),
+                                            dbc.FormText(
+                                                "How to order members along the chain. "
+                                                "PCA (default): project onto first principal component "
+                                                "(handles angled well groups). X: sort by UTM x-coordinate "
+                                                "(faster, fine for E-W wells)."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Edge pick", size="sm"),
+                                            dbc.Select(id="avg-edge-pick", size="sm", value="min",
+                                                       options=[
+                                                           {"label": "Min", "value": "min"},
+                                                           {"label": "Mean", "value": "mean"},
+                                                           {"label": "Forward", "value": "forward"},
+                                                       ]),
+                                            dbc.FormText(
+                                                "How to pick the spacing value for each chain edge (A-B). "
+                                                "Min: use min(A->B, B->A). Mean: average of both directions. "
+                                                "Forward: use A->B only (directional)."
+                                            ),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Run Avg Spacing", id="btn-run-avg",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="avg-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="avg-col-selector",
+                                        multi=True,
+                                        placeholder="Select columns to display...",
+                                        className="mb-2",
+                                        style={"fontSize": "12px"},
+                                    ),
+                                    dash_table.DataTable(
+                                        id="avg-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "fontSize": "12px",
+                                            "padding": "4px 8px",
+                                            "minWidth": "80px",
+                                            "maxWidth": "250px",
+                                            "overflow": "hidden",
+                                            "textOverflow": "ellipsis",
+                                        },
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], id="anav-content-avg", style={"display": "none"}),
+
+                                # ── Floating Section WPS ──
+                                html.Div([
+                                    html.P(
+                                        "Counts how many wells have lateral inside a floating rectangular "
+                                        "section centered on each well (Wells Per Section). Computes counts "
+                                        "in three orientations: Cardinal (north-up box), I-Frame (box aligned "
+                                        "to well azimuth), and Corridor (lateral-following rectangle). "
+                                        "Also reports anisotropy ratio (i-frame / cardinal). "
+                                        "No per-well overrides \u2014 all parameters are global.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Box half-width (ft)", size="sm"),
+                                            dbc.Input(id="wps-box-hw", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "East-west half-extent of the floating section. "
+                                                "2,640 ft = half mile (standard DSU). The full box is "
+                                                "2 x half-width wide."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Box half-height (ft)", size="sm"),
+                                            dbc.Input(id="wps-box-hh", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "North-south half-extent. 2,640 ft = half mile. "
+                                                "Together with half-width, defines a 1-mile x 1-mile "
+                                                "section (standard DSU)."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Min inside (ft)", size="sm"),
+                                            dbc.Input(id="wps-min-inside", type="number",
+                                                      value=660, min=0, step=50, size="sm"),
+                                            dbc.FormText(
+                                                "Minimum lateral length inside the box to count a well. "
+                                                "660 ft = 1/8 mile. Filters out wells that barely clip "
+                                                "the section edge."
+                                            ),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Corridor half-width (ft)", size="sm"),
+                                            dbc.Input(id="wps-corr-hw", type="number",
+                                                      value=2640, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "Cross-well half-width for corridor mode. The corridor "
+                                                "follows the reference lateral and extends this far on "
+                                                "each side perpendicular to it."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Corridor extra along (ft)", size="sm"),
+                                            dbc.Input(id="wps-corr-ea", type="number",
+                                                      value=0, min=0, step=100, size="sm"),
+                                            dbc.FormText(
+                                                "Extra margin beyond heel and toe along the lateral "
+                                                "direction. 0 = corridor ends at heel/toe. Positive "
+                                                "values extend the corridor."
+                                            ),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("Exclude self", size="sm"),
+                                            dbc.Switch(id="wps-exclude-self", value=True,
+                                                       className="mt-1"),
+                                            dbc.FormText(
+                                                "When ON (default), the reference well is not counted "
+                                                "in its own WPS. Turn OFF to include the well itself "
+                                                "in the count."
+                                            ),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Run WPS", id="btn-run-wps",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="wps-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    dcc.Dropdown(
+                                        id="wps-col-selector",
+                                        multi=True,
+                                        placeholder="Select columns to display...",
+                                        className="mb-2",
+                                        style={"fontSize": "12px"},
+                                    ),
+                                    dash_table.DataTable(
+                                        id="wps-result-table",
+                                        columns=[], data=[],
+                                        filter_action="native", sort_action="native",
+                                        sort_mode="multi", page_size=15,
+                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
+                                        style_cell={
+                                            "textAlign": "left",
+                                            "fontSize": "12px",
+                                            "padding": "4px 8px",
+                                            "minWidth": "80px",
+                                            "maxWidth": "250px",
+                                            "overflow": "hidden",
+                                            "textOverflow": "ellipsis",
+                                        },
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                        tooltip_duration=None,
+                                        fixed_rows={"headers": True},
+                                    ),
+                                ], id="anav-content-wps", style={"display": "none"}),
+
+                                # ── Debug Pair Spacing (Phase B) ──
+                                html.Div([
+                                    html.P(
+                                        "Generate detailed diagnostic plots for a specific well pair (i, k). "
+                                        "Shows UTM map view, projected i-frame, overlap band, crossline distance "
+                                        "series, direction rose, and contact analysis. The plots depend on alignment "
+                                        "type: parallel pairs get crossline series + overlap band; oblique/perpendicular "
+                                        "pairs get nearest-projection series + UTM segment overlay.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Well I (UWI)", size="sm"),
+                                            dbc.Input(id="debug-uwi-i", type="text",
+                                                      placeholder="e.g. 42003488930000", size="sm"),
+                                            dbc.FormText(
+                                                "Reference well UWI. The local coordinate frame is built "
+                                                "from this well's lateral. Type or paste the full 14-digit API."
+                                            ),
+                                        ], md=6),
+                                        dbc.Col([
+                                            dbc.Label("Well K (UWI)", size="sm"),
+                                            dbc.Input(id="debug-uwi-k", type="text",
+                                                      placeholder="e.g. 42003488900000", size="sm"),
+                                            dbc.FormText(
+                                                "Neighbor well UWI. Spacing is computed from well_i to well_k. "
+                                                "You can also click a row in the IK Pairs table to auto-fill."
+                                            ),
+                                        ], md=6),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Step (ft)", size="sm"),
+                                            dbc.Input(id="debug-step-ft", type="number",
+                                                      value=100, min=10, step=10, size="sm"),
+                                            dbc.FormText(
+                                                "Sampling interval along the lateral for computing crossline "
+                                                "distances. Smaller = more samples = smoother curves but slower. "
+                                                "Default 100 ft works well."
+                                            ),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Label("Contact threshold (ft)", size="sm"),
+                                            dbc.Input(id="debug-contact-ft", type="number",
+                                                      value=300, min=0, step=50, size="sm"),
+                                            dbc.FormText(
+                                                "Distance threshold for 'contact' classification. "
+                                                "Segments closer than this are counted as in contact. "
+                                                "Used for oblique/perpendicular pairs."
+                                            ),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Label("PCA axis", size="sm"),
+                                            dbc.Switch(id="debug-pca-axis", value=True,
+                                                       className="mt-1"),
+                                            dbc.FormText(
+                                                "Use PCA to determine the along-well axis (recommended). "
+                                                "OFF = use first-to-last point as axis direction."
+                                            ),
+                                        ], md=3),
+                                        dbc.Col([
+                                            dbc.Label("Theta parallel / perp (°)", size="sm"),
+                                            dbc.InputGroup([
+                                                dbc.Input(id="debug-theta-par", type="number",
+                                                          value=25, min=0, max=90, step=5, size="sm"),
+                                                dbc.InputGroupText("/", className="px-1"),
+                                                dbc.Input(id="debug-theta-perp", type="number",
+                                                          value=65, min=0, max=90, step=5, size="sm"),
+                                            ], size="sm"),
+                                            dbc.FormText(
+                                                "Alignment boundaries. Angle ≤ parallel° → parallel_like. "
+                                                "Angle ≥ perp° → perpendicular. Between → oblique."
+                                            ),
+                                        ], md=3),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Figure size", size="sm"),
+                                            dbc.Select(id="debug-figsize", size="sm", value="medium",
+                                                       options=[
+                                                           {"label": "Small (6x4)", "value": "small"},
+                                                           {"label": "Medium (8x5)", "value": "medium"},
+                                                           {"label": "Large (12x7)", "value": "large"},
+                                                       ]),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("DPI", size="sm"),
+                                            dbc.Select(id="debug-dpi", size="sm", value="150",
+                                                       options=[
+                                                           {"label": "100 (fast)", "value": "100"},
+                                                           {"label": "150 (default)", "value": "150"},
+                                                           {"label": "200 (high)", "value": "200"},
+                                                           {"label": "300 (print)", "value": "300"},
+                                                       ]),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Generate Pair Diagnostics", id="btn-debug-pair",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="debug-pair-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    # Metrics summary table
+                                    dash_table.DataTable(
+                                        id="debug-pair-metrics-table",
+                                        columns=[], data=[],
+                                        style_table={"overflowX": "auto", "maxHeight": "20vh"},
+                                        style_cell={"textAlign": "left", "fontSize": "11px",
+                                                    "padding": "3px 6px"},
+                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
+                                    ),
+                                    # Container for matplotlib figure images
+                                    html.Div([
+                                        dbc.Button("Expand", id="btn-expand-debug-pair",
+                                                   color="outline-secondary", size="sm",
+                                                   className="mb-2"),
+                                        html.Div(id="debug-pair-plots"),
+                                    ], className="mt-2"),
+                                ], id="anav-content-debug-pair", style={"display": "none"}),
+
+                                # ── WPS Visualization (Phase B) ──
+                                html.Div([
+                                    html.P(
+                                        "Visualize the floating section box/corridor for a single reference well. "
+                                        "Shows the reference lateral (bold), the bounding region, and all neighbors "
+                                        "color-coded by how they intersect the region. Green = passes min_inside "
+                                        "threshold. Orange = intersects but below threshold. Gray = midpoint only.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Reference UWI", size="sm"),
+                                            dbc.Input(id="wps-viz-uwi", type="text",
+                                                      placeholder="Click a well on map or type UWI",
+                                                      size="sm"),
+                                            dbc.FormText(
+                                                "The well to center the floating section on. "
+                                                "Auto-filled when you click a well on the map."
+                                            ),
+                                        ], md=6),
+                                        dbc.Col([
+                                            dbc.Label("Orientation", size="sm"),
+                                            dbc.Select(id="wps-viz-orientation", size="sm",
+                                                       value="cardinal",
+                                                       options=[
+                                                           {"label": "Cardinal (N-up box)", "value": "cardinal"},
+                                                           {"label": "I-Frame (aligned to lateral)", "value": "i_frame"},
+                                                           {"label": "Corridor (follows lateral)", "value": "corridor"},
+                                                       ]),
+                                            dbc.FormText(
+                                                "Cardinal: axis-aligned rectangle (standard DSU). "
+                                                "I-Frame: box rotated to match the well's lateral direction. "
+                                                "Corridor: rectangle that follows the lateral path."
+                                            ),
+                                        ], md=6),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Figure size", size="sm"),
+                                            dbc.Select(id="wps-viz-figsize", size="sm", value="medium",
+                                                       options=[
+                                                           {"label": "Small (7x7)", "value": "small"},
+                                                           {"label": "Medium (10x10)", "value": "medium"},
+                                                           {"label": "Large (14x14)", "value": "large"},
+                                                       ]),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("DPI", size="sm"),
+                                            dbc.Select(id="wps-viz-dpi", size="sm", value="150",
+                                                       options=[
+                                                           {"label": "100 (fast)", "value": "100"},
+                                                           {"label": "150 (default)", "value": "150"},
+                                                           {"label": "200 (high)", "value": "200"},
+                                                           {"label": "300 (print)", "value": "300"},
+                                                       ]),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Visualize Section", id="btn-wps-viz",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="wps-viz-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    html.Div([
+                                        dbc.Button("Expand", id="btn-expand-wps-viz",
+                                                   color="outline-secondary", size="sm",
+                                                   className="mb-2"),
+                                        html.Div(id="wps-viz-plot"),
+                                    ], className="mt-2"),
+                                ], id="anav-content-wps-viz", style={"display": "none"}),
+
+                                # ── Avg Spacing Neighborhood Plot (Phase B) ──
+                                html.Div([
+                                    html.P(
+                                        "Diagnostic plot showing a well's neighborhood: lateral trajectories, "
+                                        "midpoints, cutoff circle, convex hull, and chain/dense edge overlays. "
+                                        "Well_i is drawn bold black, survivors (kept neighbors) in color, "
+                                        "non-survivors lighter. Requires running Avg Spacing first.",
+                                        className="text-muted small mb-2",
+                                    ),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Well UWI", size="sm"),
+                                            dbc.Input(id="avg-viz-uwi", type="text",
+                                                      placeholder="Click a well on map or type UWI",
+                                                      size="sm"),
+                                            dbc.FormText(
+                                                "The well to visualize the neighborhood for. "
+                                                "Auto-filled when you click a well on the map."
+                                            ),
+                                        ], md=6),
+                                        dbc.Col([
+                                            dbc.Label("Plot mode", size="sm"),
+                                            dbc.Select(id="avg-viz-mode", size="sm",
+                                                       value="both",
+                                                       options=[
+                                                           {"label": "Both (chain + dense)", "value": "both"},
+                                                           {"label": "Chain only", "value": "chain"},
+                                                           {"label": "Dense only", "value": "dense"},
+                                                       ]),
+                                            dbc.FormText(
+                                                "Chain: shows A→B→C→D ordered edges with distance labels. "
+                                                "Dense: shows all member-member pair lines. "
+                                                "Both: overlays both (default)."
+                                            ),
+                                        ], md=6),
+                                    ], className="mb-2"),
+                                    dbc.Row([
+                                        dbc.Col([
+                                            dbc.Label("Figure size", size="sm"),
+                                            dbc.Select(id="avg-viz-figsize", size="sm", value="medium",
+                                                       options=[
+                                                           {"label": "Small (8x5)", "value": "small"},
+                                                           {"label": "Medium (12.5x8)", "value": "medium"},
+                                                           {"label": "Large (16x10)", "value": "large"},
+                                                       ]),
+                                        ], md=4),
+                                        dbc.Col([
+                                            dbc.Label("DPI", size="sm"),
+                                            dbc.Select(id="avg-viz-dpi", size="sm", value="150",
+                                                       options=[
+                                                           {"label": "100 (fast)", "value": "100"},
+                                                           {"label": "150 (default)", "value": "150"},
+                                                           {"label": "200 (high)", "value": "200"},
+                                                           {"label": "300 (print)", "value": "300"},
+                                                       ]),
+                                        ], md=4),
+                                    ], className="mb-2"),
+                                    dbc.Button("Plot Neighborhood", id="btn-avg-viz",
+                                               color="primary", size="sm", className="mb-2"),
+                                    dcc.Loading(
+                                        html.Div(id="avg-viz-status", className="small text-muted mb-2"),
+                                        type="dot",
+                                    ),
+                                    html.Div([
+                                        dbc.Button("Expand", id="btn-expand-avg-viz",
+                                                   color="outline-secondary", size="sm",
+                                                   className="mb-2"),
+                                        html.Div(id="avg-viz-plot"),
+                                    ], className="mt-2"),
+                                ], id="anav-content-avg-viz", style={"display": "none"}),
+                                ], md=9),
+                            ]),
+                        ]), className="mt-0"),
+            dbc.ModalFooter(dbc.Button("Close", id="btn-close-analysis", color="secondary", outline=True)),
+        ], id="modal-analysis", fullscreen=True, scrollable=True, is_open=False),
 
         # Track last GeoJSON n_clicks to distinguish well clicks from empty map clicks
         dcc.Store(id="last-geojson-clicks", data={"traj": 0, "bh": 0}),
@@ -1124,672 +1789,6 @@ layout = dbc.Container(
                     ]),  # end Charts tab
 
                     # ── Analysis Tab ─────────────────────────────────────
-                    dbc.Tab(label="Analysis", tab_id="tab-analysis", children=[
-                        dbc.Card(dbc.CardBody([
-                            # -- Shared Parameters --
-                            html.H6("Shared Parameters", className="mb-1"),
-                            html.P(
-                                "These thresholds are shared by Directional Bench Neighbors and "
-                                "Average Spacing. They control which IK pairs qualify as neighbors.",
-                                className="text-muted small mb-2",
-                            ),
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Cutoff (ft)", size="sm"),
-                                    dbc.Input(id="dbn-cutoff-ft", type="number",
-                                              value=1800, min=0, step=100, size="sm"),
-                                    dbc.FormText(
-                                        "Maximum horizontal spacing (ft) to consider a well a neighbor. "
-                                        "Pairs with horizontal_dist > cutoff are excluded. "
-                                        "Typical range: 800-2,500 ft."
-                                    ),
-                                ], md=4),
-                                dbc.Col([
-                                    dbc.Label("Vertical cutoff (ft)", size="sm"),
-                                    dbc.Input(id="dbn-vertical-cutoff-ft", type="number",
-                                              placeholder="None", min=0, step=50, size="sm"),
-                                    dbc.FormText(
-                                        "Optional. If set, pairs must also satisfy vertical_dist <= this. "
-                                        "Useful for multi-bench developments where you want to exclude "
-                                        "wells in different benches that are laterally close but vertically far."
-                                    ),
-                                ], md=4),
-                                dbc.Col([
-                                    dbc.Label("Overlap % min", size="sm"),
-                                    dbc.Input(id="dbn-overlap-pct-min", type="number",
-                                              placeholder="None", min=0, max=1, step=0.05, size="sm"),
-                                    dbc.FormText(
-                                        "Optional. Minimum lateral overlap fraction (0-1) required. "
-                                        "E.g. 0.40 = well_k must overlap at least 40% of well_i's lateral. "
-                                        "Filters out pairs that barely overlap."
-                                    ),
-                                ], md=4),
-                            ], className="mb-2"),
-                            dbc.Row([
-                                dbc.Col([
-                                    dbc.Label("Axis mode", size="sm"),
-                                    dbc.Select(id="dbn-axis-mode", size="sm", value="any",
-                                               options=[
-                                                   {"label": "Any", "value": "any"},
-                                                   {"label": "EW only", "value": "EW"},
-                                                   {"label": "NS only", "value": "NS"},
-                                               ]),
-                                    dbc.FormText(
-                                        "Direction eligibility. 'Any' = neighbors from all directions. "
-                                        "'EW' = only east/west neighbors. 'NS' = only north/south. "
-                                        "Use when well pattern has a dominant drilling direction."
-                                    ),
-                                ], md=4),
-                                dbc.Col([
-                                    dbc.Label("Prefer axis", size="sm"),
-                                    dbc.Select(id="dbn-prefer-axis", size="sm", value="",
-                                               options=[
-                                                   {"label": "None", "value": ""},
-                                                   {"label": "EW", "value": "EW"},
-                                                   {"label": "NS", "value": "NS"},
-                                               ]),
-                                    dbc.FormText(
-                                        "Optional tie-breaker. When two candidates tie on distance, "
-                                        "prefer the one along this axis. Leave 'None' for no preference."
-                                    ),
-                                ], md=4),
-                            ], className="mb-3"),
-
-                            html.Hr(),
-
-                            # -- Overrides --
-                            dbc.Row([
-                                dbc.Col([
-                                    html.H6("Per-Well Overrides", className="mb-1"),
-                                    html.P(
-                                        "Upload a CSV to set per-well cutoffs that override the shared values above. "
-                                        "Required column: 'uwi'. Optional columns: 'cutoff_ft', 'vertical_cutoff_ft', "
-                                        "'overlap_pct_k_min'. Leave cells blank to fall back to the shared value. "
-                                        "Applies to DBN and Avg Spacing only (WPS has no per-well overrides).",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.RadioItems(
-                                        id="overrides-mode",
-                                        options=[
-                                            {"label": "Shared (DBN + Avg)", "value": "shared"},
-                                            {"label": "Separate per class", "value": "separate"},
-                                        ],
-                                        value="shared",
-                                        inline=True,
-                                        className="small mb-2",
-                                    ),
-                                ]),
-                            ]),
-                            html.Div(id="overrides-shared-div", children=[
-                                dcc.Upload(
-                                    id="overrides-upload",
-                                    children=dbc.Button("Upload overrides CSV", size="sm",
-                                                        color="secondary", outline=True),
-                                    accept=".csv",
-                                ),
-                            ]),
-                            html.Div(id="overrides-separate-div", style={"display": "none"}, children=[
-                                dbc.Row([
-                                    dbc.Col([
-                                        dbc.Label("DBN overrides", size="sm"),
-                                        dcc.Upload(
-                                            id="overrides-dbn-upload",
-                                            children=dbc.Button("Upload CSV", size="sm",
-                                                                color="secondary", outline=True),
-                                            accept=".csv",
-                                        ),
-                                    ], md=6),
-                                    dbc.Col([
-                                        dbc.Label("Avg overrides", size="sm"),
-                                        dcc.Upload(
-                                            id="overrides-avg-upload",
-                                            children=dbc.Button("Upload CSV", size="sm",
-                                                                color="secondary", outline=True),
-                                            accept=".csv",
-                                        ),
-                                    ], md=6),
-                                ]),
-                            ]),
-                            dash_table.DataTable(
-                                id="overrides-table",
-                                columns=[
-                                    {"name": "uwi", "id": "uwi"},
-                                    {"name": "cutoff_ft", "id": "cutoff_ft", "type": "numeric"},
-                                    {"name": "vertical_cutoff_ft", "id": "vertical_cutoff_ft", "type": "numeric"},
-                                    {"name": "overlap_pct_k_min", "id": "overlap_pct_k_min", "type": "numeric"},
-                                ],
-                                data=[],
-                                editable=True,
-                                row_deletable=True,
-                                page_size=5,
-                                style_table={"overflowX": "auto", "maxHeight": "15vh"},
-                                style_cell={"fontSize": "11px", "padding": "2px 6px"},
-                                style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                            ),
-
-                            html.Hr(),
-
-                            # ── Analysis tools (nav-rail: one tool at a time) ──
-                            dbc.Row([
-                                dbc.Col(dbc.Nav([
-                                    dbc.NavLink("Directional Bench Neighbors",   id="anav-link-dbn",        active=True,  className="px-2 py-1 small"),
-                                    dbc.NavLink("Average Spacing",               id="anav-link-avg",        active=False, className="px-2 py-1 small"),
-                                    dbc.NavLink("Floating Section WPS",          id="anav-link-wps",        active=False, className="px-2 py-1 small"),
-                                    dbc.NavLink("Debug Pair Spacing",            id="anav-link-debug-pair", active=False, className="px-2 py-1 small"),
-                                    dbc.NavLink("WPS Visualization",             id="anav-link-wps-viz",    active=False, className="px-2 py-1 small"),
-                                    dbc.NavLink("Avg Spacing Neighborhood Plot", id="anav-link-avg-viz",    active=False, className="px-2 py-1 small"),
-                                ], vertical=True, pills=True), md=3, className="border-end pe-2"),
-                                dbc.Col([
-                                # ── Directional Bench Neighbors ──
-                                html.Div([
-                                    html.P(
-                                        "Reduces the pairwise IK spacing table to one row per well. "
-                                        "For each well_i, picks up to 4 nearest neighbors: "
-                                        "same-bench closest (same_1), same-bench opposite direction (same_2), "
-                                        "different-bench closest (near_1), different-bench opposite (near_2). "
-                                        "Also classifies each well as Unbounded / Partially / Mostly / Fully Bounded.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    html.P(
-                                        "Uses the shared cutoff, vertical cutoff, overlap, and axis parameters above.",
-                                        className="text-muted small mb-2 fst-italic",
-                                    ),
-                                    dbc.Button("Run Neighbor Summary", id="btn-run-dbn",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="dbn-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    dcc.Dropdown(
-                                        id="dbn-col-selector",
-                                        multi=True,
-                                        placeholder="Select columns to display...",
-                                        className="mb-2",
-                                        style={"fontSize": "12px"},
-                                    ),
-                                    dash_table.DataTable(
-                                        id="dbn-result-table",
-                                        columns=[], data=[],
-                                        filter_action="native", sort_action="native",
-                                        sort_mode="multi", page_size=15,
-                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
-                                        style_cell={
-                                            "textAlign": "left",
-                                            "fontSize": "12px",
-                                            "padding": "4px 8px",
-                                            "minWidth": "80px",
-                                            "maxWidth": "250px",
-                                            "overflow": "hidden",
-                                            "textOverflow": "ellipsis",
-                                        },
-                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                                        tooltip_duration=None,
-                                        fixed_rows={"headers": True},
-                                    ),
-                                ], id="anav-content-dbn"),
-
-                                # ── Average Spacing ──
-                                html.Div([
-                                    html.P(
-                                        "Computes the average well spacing for each well by building a "
-                                        "neighborhood of eligible neighbors and computing chain or dense "
-                                        "spacing metrics. Output: one row per well with avg_hz_spacing_ft "
-                                        "and avg_vt_spacing_ft.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Neighborhood mode", size="sm"),
-                                            dbc.Select(id="avg-neighborhood-mode", size="sm", value="chain",
-                                                       options=[
-                                                           {"label": "Chain", "value": "chain"},
-                                                           {"label": "i2nbr", "value": "i2nbr"},
-                                                           {"label": "Dense", "value": "dense"},
-                                                       ]),
-                                            dbc.FormText(
-                                                "Chain (default): orders neighbors A-B-C-D along a line and "
-                                                "averages consecutive edge distances. Best for parallel wells. "
-                                                "i2nbr: simple mean of all i-to-neighbor distances. "
-                                                "Dense: mean of all unique member-member pairs."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Chain sort", size="sm"),
-                                            dbc.Select(id="avg-chain-sort-mode", size="sm", value="pca",
-                                                       options=[
-                                                           {"label": "PCA", "value": "pca"},
-                                                           {"label": "X", "value": "x"},
-                                                       ]),
-                                            dbc.FormText(
-                                                "How to order members along the chain. "
-                                                "PCA (default): project onto first principal component "
-                                                "(handles angled well groups). X: sort by UTM x-coordinate "
-                                                "(faster, fine for E-W wells)."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Edge pick", size="sm"),
-                                            dbc.Select(id="avg-edge-pick", size="sm", value="min",
-                                                       options=[
-                                                           {"label": "Min", "value": "min"},
-                                                           {"label": "Mean", "value": "mean"},
-                                                           {"label": "Forward", "value": "forward"},
-                                                       ]),
-                                            dbc.FormText(
-                                                "How to pick the spacing value for each chain edge (A-B). "
-                                                "Min: use min(A->B, B->A). Mean: average of both directions. "
-                                                "Forward: use A->B only (directional)."
-                                            ),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Button("Run Avg Spacing", id="btn-run-avg",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="avg-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    dcc.Dropdown(
-                                        id="avg-col-selector",
-                                        multi=True,
-                                        placeholder="Select columns to display...",
-                                        className="mb-2",
-                                        style={"fontSize": "12px"},
-                                    ),
-                                    dash_table.DataTable(
-                                        id="avg-result-table",
-                                        columns=[], data=[],
-                                        filter_action="native", sort_action="native",
-                                        sort_mode="multi", page_size=15,
-                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
-                                        style_cell={
-                                            "textAlign": "left",
-                                            "fontSize": "12px",
-                                            "padding": "4px 8px",
-                                            "minWidth": "80px",
-                                            "maxWidth": "250px",
-                                            "overflow": "hidden",
-                                            "textOverflow": "ellipsis",
-                                        },
-                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                                        tooltip_duration=None,
-                                        fixed_rows={"headers": True},
-                                    ),
-                                ], id="anav-content-avg", style={"display": "none"}),
-
-                                # ── Floating Section WPS ──
-                                html.Div([
-                                    html.P(
-                                        "Counts how many wells have lateral inside a floating rectangular "
-                                        "section centered on each well (Wells Per Section). Computes counts "
-                                        "in three orientations: Cardinal (north-up box), I-Frame (box aligned "
-                                        "to well azimuth), and Corridor (lateral-following rectangle). "
-                                        "Also reports anisotropy ratio (i-frame / cardinal). "
-                                        "No per-well overrides \u2014 all parameters are global.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Box half-width (ft)", size="sm"),
-                                            dbc.Input(id="wps-box-hw", type="number",
-                                                      value=2640, min=0, step=100, size="sm"),
-                                            dbc.FormText(
-                                                "East-west half-extent of the floating section. "
-                                                "2,640 ft = half mile (standard DSU). The full box is "
-                                                "2 x half-width wide."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Box half-height (ft)", size="sm"),
-                                            dbc.Input(id="wps-box-hh", type="number",
-                                                      value=2640, min=0, step=100, size="sm"),
-                                            dbc.FormText(
-                                                "North-south half-extent. 2,640 ft = half mile. "
-                                                "Together with half-width, defines a 1-mile x 1-mile "
-                                                "section (standard DSU)."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Min inside (ft)", size="sm"),
-                                            dbc.Input(id="wps-min-inside", type="number",
-                                                      value=660, min=0, step=50, size="sm"),
-                                            dbc.FormText(
-                                                "Minimum lateral length inside the box to count a well. "
-                                                "660 ft = 1/8 mile. Filters out wells that barely clip "
-                                                "the section edge."
-                                            ),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Corridor half-width (ft)", size="sm"),
-                                            dbc.Input(id="wps-corr-hw", type="number",
-                                                      value=2640, min=0, step=100, size="sm"),
-                                            dbc.FormText(
-                                                "Cross-well half-width for corridor mode. The corridor "
-                                                "follows the reference lateral and extends this far on "
-                                                "each side perpendicular to it."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Corridor extra along (ft)", size="sm"),
-                                            dbc.Input(id="wps-corr-ea", type="number",
-                                                      value=0, min=0, step=100, size="sm"),
-                                            dbc.FormText(
-                                                "Extra margin beyond heel and toe along the lateral "
-                                                "direction. 0 = corridor ends at heel/toe. Positive "
-                                                "values extend the corridor."
-                                            ),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("Exclude self", size="sm"),
-                                            dbc.Switch(id="wps-exclude-self", value=True,
-                                                       className="mt-1"),
-                                            dbc.FormText(
-                                                "When ON (default), the reference well is not counted "
-                                                "in its own WPS. Turn OFF to include the well itself "
-                                                "in the count."
-                                            ),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Button("Run WPS", id="btn-run-wps",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="wps-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    dcc.Dropdown(
-                                        id="wps-col-selector",
-                                        multi=True,
-                                        placeholder="Select columns to display...",
-                                        className="mb-2",
-                                        style={"fontSize": "12px"},
-                                    ),
-                                    dash_table.DataTable(
-                                        id="wps-result-table",
-                                        columns=[], data=[],
-                                        filter_action="native", sort_action="native",
-                                        sort_mode="multi", page_size=15,
-                                        style_table={"overflowX": "auto", "maxHeight": "35vh"},
-                                        style_cell={
-                                            "textAlign": "left",
-                                            "fontSize": "12px",
-                                            "padding": "4px 8px",
-                                            "minWidth": "80px",
-                                            "maxWidth": "250px",
-                                            "overflow": "hidden",
-                                            "textOverflow": "ellipsis",
-                                        },
-                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                                        tooltip_duration=None,
-                                        fixed_rows={"headers": True},
-                                    ),
-                                ], id="anav-content-wps", style={"display": "none"}),
-
-                                # ── Debug Pair Spacing (Phase B) ──
-                                html.Div([
-                                    html.P(
-                                        "Generate detailed diagnostic plots for a specific well pair (i, k). "
-                                        "Shows UTM map view, projected i-frame, overlap band, crossline distance "
-                                        "series, direction rose, and contact analysis. The plots depend on alignment "
-                                        "type: parallel pairs get crossline series + overlap band; oblique/perpendicular "
-                                        "pairs get nearest-projection series + UTM segment overlay.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Well I (UWI)", size="sm"),
-                                            dbc.Input(id="debug-uwi-i", type="text",
-                                                      placeholder="e.g. 42003488930000", size="sm"),
-                                            dbc.FormText(
-                                                "Reference well UWI. The local coordinate frame is built "
-                                                "from this well's lateral. Type or paste the full 14-digit API."
-                                            ),
-                                        ], md=6),
-                                        dbc.Col([
-                                            dbc.Label("Well K (UWI)", size="sm"),
-                                            dbc.Input(id="debug-uwi-k", type="text",
-                                                      placeholder="e.g. 42003488900000", size="sm"),
-                                            dbc.FormText(
-                                                "Neighbor well UWI. Spacing is computed from well_i to well_k. "
-                                                "You can also click a row in the IK Pairs table to auto-fill."
-                                            ),
-                                        ], md=6),
-                                    ], className="mb-2"),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Step (ft)", size="sm"),
-                                            dbc.Input(id="debug-step-ft", type="number",
-                                                      value=100, min=10, step=10, size="sm"),
-                                            dbc.FormText(
-                                                "Sampling interval along the lateral for computing crossline "
-                                                "distances. Smaller = more samples = smoother curves but slower. "
-                                                "Default 100 ft works well."
-                                            ),
-                                        ], md=3),
-                                        dbc.Col([
-                                            dbc.Label("Contact threshold (ft)", size="sm"),
-                                            dbc.Input(id="debug-contact-ft", type="number",
-                                                      value=300, min=0, step=50, size="sm"),
-                                            dbc.FormText(
-                                                "Distance threshold for 'contact' classification. "
-                                                "Segments closer than this are counted as in contact. "
-                                                "Used for oblique/perpendicular pairs."
-                                            ),
-                                        ], md=3),
-                                        dbc.Col([
-                                            dbc.Label("PCA axis", size="sm"),
-                                            dbc.Switch(id="debug-pca-axis", value=True,
-                                                       className="mt-1"),
-                                            dbc.FormText(
-                                                "Use PCA to determine the along-well axis (recommended). "
-                                                "OFF = use first-to-last point as axis direction."
-                                            ),
-                                        ], md=3),
-                                        dbc.Col([
-                                            dbc.Label("Theta parallel / perp (°)", size="sm"),
-                                            dbc.InputGroup([
-                                                dbc.Input(id="debug-theta-par", type="number",
-                                                          value=25, min=0, max=90, step=5, size="sm"),
-                                                dbc.InputGroupText("/", className="px-1"),
-                                                dbc.Input(id="debug-theta-perp", type="number",
-                                                          value=65, min=0, max=90, step=5, size="sm"),
-                                            ], size="sm"),
-                                            dbc.FormText(
-                                                "Alignment boundaries. Angle ≤ parallel° → parallel_like. "
-                                                "Angle ≥ perp° → perpendicular. Between → oblique."
-                                            ),
-                                        ], md=3),
-                                    ], className="mb-2"),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Figure size", size="sm"),
-                                            dbc.Select(id="debug-figsize", size="sm", value="medium",
-                                                       options=[
-                                                           {"label": "Small (6x4)", "value": "small"},
-                                                           {"label": "Medium (8x5)", "value": "medium"},
-                                                           {"label": "Large (12x7)", "value": "large"},
-                                                       ]),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("DPI", size="sm"),
-                                            dbc.Select(id="debug-dpi", size="sm", value="150",
-                                                       options=[
-                                                           {"label": "100 (fast)", "value": "100"},
-                                                           {"label": "150 (default)", "value": "150"},
-                                                           {"label": "200 (high)", "value": "200"},
-                                                           {"label": "300 (print)", "value": "300"},
-                                                       ]),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Button("Generate Pair Diagnostics", id="btn-debug-pair",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="debug-pair-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    # Metrics summary table
-                                    dash_table.DataTable(
-                                        id="debug-pair-metrics-table",
-                                        columns=[], data=[],
-                                        style_table={"overflowX": "auto", "maxHeight": "20vh"},
-                                        style_cell={"textAlign": "left", "fontSize": "11px",
-                                                    "padding": "3px 6px"},
-                                        style_header={"fontWeight": "bold", "backgroundColor": "#f8f9fa"},
-                                    ),
-                                    # Container for matplotlib figure images
-                                    html.Div([
-                                        dbc.Button("Expand", id="btn-expand-debug-pair",
-                                                   color="outline-secondary", size="sm",
-                                                   className="mb-2"),
-                                        html.Div(id="debug-pair-plots"),
-                                    ], className="mt-2"),
-                                ], id="anav-content-debug-pair", style={"display": "none"}),
-
-                                # ── WPS Visualization (Phase B) ──
-                                html.Div([
-                                    html.P(
-                                        "Visualize the floating section box/corridor for a single reference well. "
-                                        "Shows the reference lateral (bold), the bounding region, and all neighbors "
-                                        "color-coded by how they intersect the region. Green = passes min_inside "
-                                        "threshold. Orange = intersects but below threshold. Gray = midpoint only.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Reference UWI", size="sm"),
-                                            dbc.Input(id="wps-viz-uwi", type="text",
-                                                      placeholder="Click a well on map or type UWI",
-                                                      size="sm"),
-                                            dbc.FormText(
-                                                "The well to center the floating section on. "
-                                                "Auto-filled when you click a well on the map."
-                                            ),
-                                        ], md=6),
-                                        dbc.Col([
-                                            dbc.Label("Orientation", size="sm"),
-                                            dbc.Select(id="wps-viz-orientation", size="sm",
-                                                       value="cardinal",
-                                                       options=[
-                                                           {"label": "Cardinal (N-up box)", "value": "cardinal"},
-                                                           {"label": "I-Frame (aligned to lateral)", "value": "i_frame"},
-                                                           {"label": "Corridor (follows lateral)", "value": "corridor"},
-                                                       ]),
-                                            dbc.FormText(
-                                                "Cardinal: axis-aligned rectangle (standard DSU). "
-                                                "I-Frame: box rotated to match the well's lateral direction. "
-                                                "Corridor: rectangle that follows the lateral path."
-                                            ),
-                                        ], md=6),
-                                    ], className="mb-2"),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Figure size", size="sm"),
-                                            dbc.Select(id="wps-viz-figsize", size="sm", value="medium",
-                                                       options=[
-                                                           {"label": "Small (7x7)", "value": "small"},
-                                                           {"label": "Medium (10x10)", "value": "medium"},
-                                                           {"label": "Large (14x14)", "value": "large"},
-                                                       ]),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("DPI", size="sm"),
-                                            dbc.Select(id="wps-viz-dpi", size="sm", value="150",
-                                                       options=[
-                                                           {"label": "100 (fast)", "value": "100"},
-                                                           {"label": "150 (default)", "value": "150"},
-                                                           {"label": "200 (high)", "value": "200"},
-                                                           {"label": "300 (print)", "value": "300"},
-                                                       ]),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Button("Visualize Section", id="btn-wps-viz",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="wps-viz-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    html.Div([
-                                        dbc.Button("Expand", id="btn-expand-wps-viz",
-                                                   color="outline-secondary", size="sm",
-                                                   className="mb-2"),
-                                        html.Div(id="wps-viz-plot"),
-                                    ], className="mt-2"),
-                                ], id="anav-content-wps-viz", style={"display": "none"}),
-
-                                # ── Avg Spacing Neighborhood Plot (Phase B) ──
-                                html.Div([
-                                    html.P(
-                                        "Diagnostic plot showing a well's neighborhood: lateral trajectories, "
-                                        "midpoints, cutoff circle, convex hull, and chain/dense edge overlays. "
-                                        "Well_i is drawn bold black, survivors (kept neighbors) in color, "
-                                        "non-survivors lighter. Requires running Avg Spacing first.",
-                                        className="text-muted small mb-2",
-                                    ),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Well UWI", size="sm"),
-                                            dbc.Input(id="avg-viz-uwi", type="text",
-                                                      placeholder="Click a well on map or type UWI",
-                                                      size="sm"),
-                                            dbc.FormText(
-                                                "The well to visualize the neighborhood for. "
-                                                "Auto-filled when you click a well on the map."
-                                            ),
-                                        ], md=6),
-                                        dbc.Col([
-                                            dbc.Label("Plot mode", size="sm"),
-                                            dbc.Select(id="avg-viz-mode", size="sm",
-                                                       value="both",
-                                                       options=[
-                                                           {"label": "Both (chain + dense)", "value": "both"},
-                                                           {"label": "Chain only", "value": "chain"},
-                                                           {"label": "Dense only", "value": "dense"},
-                                                       ]),
-                                            dbc.FormText(
-                                                "Chain: shows A→B→C→D ordered edges with distance labels. "
-                                                "Dense: shows all member-member pair lines. "
-                                                "Both: overlays both (default)."
-                                            ),
-                                        ], md=6),
-                                    ], className="mb-2"),
-                                    dbc.Row([
-                                        dbc.Col([
-                                            dbc.Label("Figure size", size="sm"),
-                                            dbc.Select(id="avg-viz-figsize", size="sm", value="medium",
-                                                       options=[
-                                                           {"label": "Small (8x5)", "value": "small"},
-                                                           {"label": "Medium (12.5x8)", "value": "medium"},
-                                                           {"label": "Large (16x10)", "value": "large"},
-                                                       ]),
-                                        ], md=4),
-                                        dbc.Col([
-                                            dbc.Label("DPI", size="sm"),
-                                            dbc.Select(id="avg-viz-dpi", size="sm", value="150",
-                                                       options=[
-                                                           {"label": "100 (fast)", "value": "100"},
-                                                           {"label": "150 (default)", "value": "150"},
-                                                           {"label": "200 (high)", "value": "200"},
-                                                           {"label": "300 (print)", "value": "300"},
-                                                       ]),
-                                        ], md=4),
-                                    ], className="mb-2"),
-                                    dbc.Button("Plot Neighborhood", id="btn-avg-viz",
-                                               color="primary", size="sm", className="mb-2"),
-                                    dcc.Loading(
-                                        html.Div(id="avg-viz-status", className="small text-muted mb-2"),
-                                        type="dot",
-                                    ),
-                                    html.Div([
-                                        dbc.Button("Expand", id="btn-expand-avg-viz",
-                                                   color="outline-secondary", size="sm",
-                                                   className="mb-2"),
-                                        html.Div(id="avg-viz-plot"),
-                                    ], className="mt-2"),
-                                ], id="anav-content-avg-viz", style={"display": "none"}),
-                                ], md=9),
-                            ]),
-                        ]), className="mt-0"),
-                    ]),  # end Analysis tab
                   ], id="right-panel-tabs", active_tab="tab-charts"),
                     # ── Data Tables ────────────────────────────────────────
                     dbc.Card(
@@ -3838,10 +3837,10 @@ def expand_spacing_prod(n_clicks, fig):
 # ---------------------------------------------------------------------------
 
 @callback(
-    Output("modal-roles", "is_open"),
+    Output("modal-analysis", "is_open"),
     Input("btn-tune-roles", "n_clicks"),
-    Input("btn-close-roles", "n_clicks"),
-    State("modal-roles", "is_open"),
+    Input("btn-close-analysis", "n_clicks"),
+    State("modal-analysis", "is_open"),
     prevent_initial_call=True,
 )
 def toggle_roles_modal(open_click, close_click, is_open):
@@ -3903,7 +3902,7 @@ def rerun_roles(n_clicks, pipeline_result, parallel_eps, perp_eps, oblique_eps,
 # Analysis tab nav-rail — show one tool's panel at a time
 # ---------------------------------------------------------------------------
 
-_ANALYSIS_TOOLS = ["dbn", "avg", "wps", "debug-pair", "wps-viz", "avg-viz"]
+_ANALYSIS_TOOLS = ["roles", "dbn", "avg", "wps", "debug-pair", "wps-viz", "avg-viz"]
 
 
 @callback(

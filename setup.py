@@ -6,17 +6,20 @@ HYPHEM_E_DOT = '-e .'
 def get_requirments(file_path:str)->List[str]:
     """
     This function will return the list of requirements
+
+    Strips comments, blank lines, and the `-e .` self-reference (keeping it
+    would make install_requires point the project at itself).
     """
 
     requirements=[]
 
     with open(file_path) as file_obj:
-        requirements = file_obj.readlines()
-        requirements = [req.replace("\n"," ") for req in requirements]
+        for line in file_obj:
+            req = line.split("#", 1)[0].strip()
+            if not req or req == HYPHEM_E_DOT:
+                continue
+            requirements.append(req)
 
-        if HYPHEM_E_DOT in requirements:
-            requirements.remove(HYPHEM_E_DOT)
-    
     return requirements
 
 setup(

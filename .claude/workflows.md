@@ -83,14 +83,13 @@ These are the multi-step patterns you'll use most often. Each workflow reference
 **When**: Adding a new feature or fixing a bug.
 
 **Steps**:
-1. `git checkout dev && git pull` — start from latest dev
-2. `git checkout -b feature/<short-description>`
-3. Make changes to `src/` or `notebooks/`
-4. Use **`/audit`** or **`/find-bugs`** to review your changes before committing
-5. Use **`/commit`** to create a Conventional Commit with proper message
-6. Push: `git push -u origin feature/<short-description>`
-7. Use **`/create-pr`** to open a PR targeting `dev`
-8. After review and merge to `dev`, open a second PR: `dev` → `main`
+1. **`/create-branch feature <short description>`** — fetches and cuts `feature/<short-description>` from latest `origin/dev` (use `fix`, `perf`, `refactor`, `docs`, `test`, or `chore` as the type when appropriate)
+2. Make changes to `src/`, `dashboard/`, `tests/`, or `notebooks/`
+3. Use **`/audit`** or **`/find-bugs`** to review your changes before committing
+4. Use **`/commit`** — stages explicit paths, runs `pytest` for code changes, writes a Conventional Commit
+5. Use **`/push`** — sets upstream on first push; never force-pushes
+6. Use **`/create-pr`** — opens a PR targeting `dev`
+7. To release: from `dev`, run **`/create-pr`** again — it opens a `dev` → `main` release PR grouped by change type
 
 ---
 

@@ -118,9 +118,12 @@ Every session gets a unique run_id (format: `YYYYMMDD_HHMMSS_<8hex>`) injected i
 
 - **Main branch**: `main` — production-ready only
 - **Dev branch**: `dev` — integration branch
-- **Feature branches**: `feature/<description>` → PR → `dev` → merge to `main`
-- **Commit style**: Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `perf:`)
-- **PRs**: Always include summary bullets + test plan checklist
+- **Working branches**: `<type>/<description>` (`feature/`, `fix/`, `perf/`, `refactor/`, `docs/`, `test/`, `chore/`), cut from `origin/dev` → PR → `dev`; releases are a `dev` → `main` PR
+- **Commit style**: Conventional Commits (`feat:`, `fix:`, `perf:`, `refactor:`, `test:`, `docs:`, `build:`, `chore:`)
+- **PRs**: Always include summary bullets + test plan checklist (tick only checks actually run)
+- **Never**: commit or push directly to `main`, force-push, or `--no-verify`
+- **No AI attribution**: no `Co-Authored-By: Claude` trailers, "Generated with Claude Code" footers, or similar in commits, PRs, or issues. Enforced by `"attribution"` in `.claude/settings.json`
+- **Skills**: `/create-branch` → `/commit` → `/push` → `/create-pr` (in `.claude/skills/`; side-effecting, so user-invoked only)
 
 ---
 
@@ -153,9 +156,11 @@ pytest                             # 156 tests across tests/unit + tests/integra
 | `/find-bugs [module]` | Targeted bug hunt on a specific module |
 | `/walkthrough` | Full guided code walkthrough for deep understanding |
 | `/run-analysis` | Step-by-step guide for running a spacing analysis |
-| `/commit` | Stage changes and create a Conventional Commit |
-| `/create-pr` | Create a GitHub PR from current branch |
-| `/create-issue` | Create a GitHub issue from current bug/feature context |
+| `/create-branch` | Cut a `<type>/<description>` branch from latest `origin/dev` |
+| `/commit` | Stage specific files, run the test gate, create a Conventional Commit |
+| `/push` | Push current branch safely (upstream on first push; never force, never `main`) |
+| `/create-pr` | Open a PR: `<type>/*` → `dev`, or a `dev` → `main` release PR |
+| `/create-issue` | File a GitHub issue using only labels that exist in the repo |
 | `/update-docs` | Sync CLAUDE.md and docs/ with current code state |
 
 ---
